@@ -1,0 +1,97 @@
+name: agentflow
+
+services:
+  postgres:
+    image: postgres:16.15-alpine3.24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - agentflow_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  keycloak-postgres:
+    image: postgres:16.15-alpine3.24
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KEYCLOAK_DB:?Set KEYCLOAK_DB in .env}
+      POSTGRES_USER: ${KEYCLOAK_DB_USER:?Set KEYCLOAK_DB_USER in .env}
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+    volumes:
+      - keycloak_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.3
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-postgres
+      KC_DB_URL_DATABASE: ${KEYCLOAK_DB:?Set KEYCLOAK_DB in .env}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER:?Set KEYCLOAK_DB_USER in .env}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:?Set KEYCLOAK_ADMIN in .env}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HOSTNAME: http://localhost:8080
+      KEYCLOAK_DEV_USER: ${KEYCLOAK_DEV_USER:?Set KEYCLOAK_DEV_USER in .env}
+      KEYCLOAK_DEV_USER_PASSWORD: ${KEYCLOAK_DEV_USER_PASSWORD:?Set KEYCLOAK_DEV_USER_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - ./infra/keycloak/agentflow-realm.json:/opt/keycloak/data/import/agentflow-realm.json:ro
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  agent:
+    build:
+      context: ./src/agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      AUTH_ENABLED: "true"
+      OIDC_ISSUER: http://localhost:8080/realms/agentflow
+      OIDC_AUDIENCE: agentflow-api
+      OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
+      AGENT_DEMO: ${AGENT_DEMO:-true}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-openai-compatible}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-}
+      OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
+    ports:
+      - "127.0.0.1:8001:8001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      keycloak:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+volumes:
+  agentflow_postgres:
+  keycloak_postgres:
+
+networks:
+  backend:
+    driver: bridge

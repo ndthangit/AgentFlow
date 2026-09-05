@@ -170,6 +170,31 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["code"], "CONFIGURATION_ERROR")
 
+    async def test_http_requires_and_verifies_bearer_token(self):
+        environment = {
+            "AUTH_ENABLED": "true",
+            "OIDC_ISSUER": "http://issuer/realms/agentflow",
+            "OIDC_AUDIENCE": "agentflow-api",
+        }
+        with (
+            patch.dict(os.environ, environment),
+            patch("agent.api.KeycloakTokenVerifier") as verifier_class,
+        ):
+            verifier_class.return_value.verify.return_value = {"sub": "user-1"}
+            transport = httpx.ASGITransport(app=create_app(demo=True))
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                missing = await client.post("/v1/runs", json={"task": "test"})
+                accepted = await client.post(
+                    "/v1/runs",
+                    json={"task": "test"},
+                    headers={"Authorization": "Bearer signed-token"},
+                )
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(accepted.status_code, 200)
+        verifier_class.return_value.verify.assert_called_once_with("signed-token")
+
 
 class CliTests(unittest.TestCase):
     def test_json_stdin_stdout_and_exit_codes(self):

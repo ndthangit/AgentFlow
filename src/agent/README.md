@@ -105,6 +105,8 @@ Invoke-RestMethod -Uri http://127.0.0.1:8001/v1/runs -Method Post -ContentType '
 - `GET /docs`: OpenAPI UI do FastAPI cung cấp.
 - Input sai trả 422; thiếu cấu hình trả 503; deadline 504; lỗi output/provider/step limit trả 502.
 
+Khi `AUTH_ENABLED=true`, `POST /v1/runs` yêu cầu JWT Bearer token. Agent xác minh chữ ký RS256 bằng JWKS, đồng thời kiểm tra issuer, audience, thời hạn và các claim bắt buộc. Docker Compose đã cấu hình chế độ này với Keycloak; xem [hướng dẫn hạ tầng](../../infra/README.md). `GET /health` vẫn public cho liveness probe.
+
 Client Node.js mẫu: [examples/invoke-agent.mjs](examples/invoke-agent.mjs). Khi server demo đang chạy:
 
 ```powershell
