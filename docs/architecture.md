@@ -2,6 +2,8 @@
 
 Ngày nghiên cứu: **05/09/2026**. Trạng thái: **đề xuất để bắt đầu triển khai**.
 
+**Điều chỉnh phạm vi PoC:** bắt đầu bằng [agent Python dùng Deep Agents/LangGraph](../src/agent/README.md), có CLI/HTTP và output JSON, để kiểm chứng ranh giới flow–agent. Stack dưới đây là kiến trúc đích; Codex/OpenCode được bổ sung sau. Python chỉ nằm ở runtime mẫu, chưa thay đổi lựa chọn TypeScript cho editor/API/engine dự kiến.
+
 ## 1. Mục tiêu và giả định
 
 AgentFlow giúp người dùng ghép công việc thành một đồ thị trực quan: nhận webhook, gọi API, biến đổi dữ liệu, chạy agent, chạy test, chờ người duyệt và chuyển kết quả sang hệ thống khác. Coding agent được quản lý như một tài nguyên thực thi có session, workspace, quyền công cụ và giới hạn chi phí.

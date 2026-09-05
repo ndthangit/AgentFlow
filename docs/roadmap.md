@@ -1,6 +1,6 @@
 # Lộ trình MVP và vận hành
 
-Trạng thái: kế hoạch đề xuất ngày **05/09/2026**. Repo hiện có tài liệu thiết kế; các thành phần dưới đây **chưa được triển khai**.
+Trạng thái: kế hoạch đề xuất ngày **05/09/2026**, đã điều chỉnh để bắt đầu từ [agent mẫu Deep Agents](../src/agent/README.md). Agent độc lập đã có CLI/HTTP và kiểm thử offline; engine, runner hạ tầng và UI dưới đây chưa triển khai.
 
 ## 1. Kết quả MVP cần đạt
 
@@ -12,7 +12,8 @@ Chưa chốt số tuần vì chưa có nhân lực và yêu cầu hạ tầng. T
 
 | Mốc | Công việc | Tiêu chí nghiệm thu |
 | --- | --- | --- |
-| M0 — PoC engine và runtime | Temporal flow ngắn; Codex/OpenCode headless; artifact; khóa phiên bản | Cả hai runtime trả output chuẩn; xác minh cancel, session persistence và lỗi mất kết nối |
+| M0a — Agent mẫu | Deep Agents/LangGraph, tool nhỏ, output schema, CLI/HTTP, model demo | Đã có mã mẫu và kiểm thử offline; cần cấu hình API key để thử model thật |
+| M0b — PoC engine gọi agent | Temporal flow ngắn gọi agent mẫu qua HTTP/CLI | Nhận output/error đúng; xác minh deadline và policy retry trước khi thêm runtime khác |
 | M1 — Lõi workflow | DSL validator/interpreter; versioning; Postgres; start command/outbox; HTTP/Transform/If | Webhook trùng tạo một logical run; branch inactive không làm join treo; restart tiếp tục đúng |
 | M2 — Agent runner | Adapter contract, workspace, process supervisor, result manifest, quota | Agent sửa repo mẫu; test từ snapshot; worker chết có thể lấy kết quả đã lưu hoặc báo unknown đúng |
 | M3 — Editor và quan sát | React Flow, node form, input mapping, publish, run timeline và SSE | Reload trình duyệt xem lại run; node lỗi hiển thị nguyên nhân và artifact liên quan |
@@ -120,6 +121,8 @@ Không dùng run ID/session ID làm metric label có cardinality cao; giữ chú
 Retention cần thống nhất giữa history, result manifest, event log và artifact: không xóa snapshot/session mà run đang mở hoặc approval còn cần. Dedup ledger phải tồn tại ít nhất bằng khoảng retry/redelivery được hỗ trợ. Xóa dữ liệu theo tenant phải bao phủ cả database, object storage, session store và log theo chính sách.
 
 ## 8. Sau MVP
+
+Codex/OpenCode adapters được thực hiện sau khi đường tích hợp agent mẫu ổn định; không phải điều kiện để thử flow đầu tiên.
 
 1. Subflow, bounded loops, Map với concurrency limit và version pinning.
 2. Interactive agent approval/steering sau khi chứng minh recovery theo runtime.

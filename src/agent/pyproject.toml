@@ -1,0 +1,33 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "A small Deep Agents runtime for AgentFlow integration examples"
+readme = "README.md"
+authors = [
+    { name = "ndthangit", email = "ndtducthang2004@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "deepagents>=0.7.13,<0.8",
+    "fastapi>=0.141.1,<0.142",
+    "langchain>=1.4.0,<2",
+    "langchain-anthropic>=1.7.1,<2",
+    "langchain-core>=1.6.2,<2",
+    "langchain-openai>=1.1,<2",
+    "langgraph>=1.2.11,<2",
+    "pydantic>=2.13.5,<3",
+    "uvicorn>=0.52.4,<0.53",
+]
+
+[project.scripts]
+agent = "agent.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "ruff>=0.16.6",
+]
