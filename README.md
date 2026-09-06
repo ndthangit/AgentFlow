@@ -2,7 +2,7 @@
 
 AgentFlow là ý tưởng nền tảng thiết kế workflow bằng cách kéo thả, theo trải nghiệm tương tự n8n, cho phép kết hợp các bước gọi API, xử lý dữ liệu, chờ duyệt và chạy AI agent như Codex hoặc OpenCode trong cùng một flow.
 
-**Trạng thái: đã có [agent mẫu Deep Agents/LangGraph](src/agent/README.md); engine và UI vẫn ở giai đoạn thiết kế.** Bộ tài liệu tiếng Việt được nghiên cứu ngày **05/09/2026**. Ưu tiên hiện tại là kiểm chứng input/output bằng agent Python đơn giản trước khi tích hợp Codex/OpenCode.
+**Trạng thái: đã có [FastAPI system](src/system/README.md) và [agent integration Deep Agents/LangGraph](src/agent/README.md); engine thực thi và UI đang tiếp tục phát triển.** Bộ tài liệu tiếng Việt được nghiên cứu ngày **05/09/2026**.
 
 Chạy mẫu không cần API key từ thư mục gốc: `cd src/agent`, `uv sync --locked`, rồi `uv run agent --demo --task "Plan a small workflow"`. Demo dùng model giả lập qua graph thật; hướng dẫn model thật, HTTP và client Node.js nằm trong README của agent.
 

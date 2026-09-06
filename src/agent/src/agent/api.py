@@ -1,4 +1,4 @@
-"""Local HTTP boundary. Runs are synchronous and are not persisted."""
+"""HTTP adapter exposing the standalone Deep Agent runtime."""
 
 import os
 from asyncio import to_thread
@@ -19,7 +19,7 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
     auth_enabled = os.getenv("AUTH_ENABLED", "false").lower() == "true"
     verifier = KeycloakTokenVerifier(OidcSettings.from_env()) if auth_enabled else None
     bearer = HTTPBearer(auto_error=False)
-    app = FastAPI(title="AgentFlow Sample Agent", version="0.1.0")
+    app = FastAPI(title="AgentFlow Agent Integration", version="0.1.0")
 
     async def authorize(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -43,7 +43,11 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "mode": "demo" if use_demo else "live"}
+        return {
+            "status": "ok",
+            "service": "agent-integration",
+            "mode": "demo" if use_demo else "live",
+        }
 
     @app.post("/v1/runs", response_model=RunResult)
     async def create_run(
@@ -52,7 +56,7 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
         try:
             return await run_agent(request, demo=use_demo)
         except AgentRunError as exc:
-            status = {
+            response_status = {
                 "CONFIGURATION_ERROR": 503,
                 "TIMEOUT": 504,
                 "STEP_LIMIT": 502,
@@ -60,7 +64,7 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
                 "AGENT_FAILED": 502,
             }[exc.code]
             return JSONResponse(
-                status_code=status,
+                status_code=response_status,
                 content={"error": {"code": exc.code, "message": exc.message}},
             )
 

@@ -40,6 +40,9 @@
     {
       "username": "${KEYCLOAK_DEV_USER}",
       "enabled": true,
+      "firstName": "AgentFlow",
+      "lastName": "Developer",
+      "email": "developer@agentflow.local",
       "emailVerified": true,
       "credentials": [
         {

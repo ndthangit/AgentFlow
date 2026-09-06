@@ -4,12 +4,14 @@
 
 | Service | Cổng host | Vai trò |
 | --- | --- | --- |
+| `system` | `8000` | FastAPI control plane và API workflow |
 | `agent` | `8001` | Deep Agents API, build từ `src/agent/Dockerfile` |
-| `postgres` | `5432` | PostgreSQL dành cho dữ liệu ứng dụng AgentFlow sau này |
+| `postgres` | `5432` | Một database dùng chung, phân tách bằng schema |
 | `keycloak` | `8080`, management `9000` | OIDC authentication và trang quản trị |
-| `keycloak-postgres` | Không public | PostgreSQL riêng của Keycloak |
 
-PostgreSQL ứng dụng đã sẵn sàng nhưng agent mẫu hiện chưa ghi dữ liệu. Temporal, object storage và UI chưa được đưa vào Compose vì chưa có service ứng dụng sử dụng chúng.
+`db-init` tạo idempotent hai schema `system` và `keycloak` trước khi các service khởi động. Temporal, object storage và UI chưa được đưa vào Compose vì chưa có service sử dụng chúng.
+
+Service `system` tự chạy migration Alembic và dùng schema PostgreSQL `system` để lưu workflow draft, version bất biến và run projection. Keycloak dùng cùng PostgreSQL/database trong môi trường phát triển nhưng tách ở schema `keycloak`. Agent là integration độc lập và không kết nối database.
 
 ## Khởi động
 
@@ -19,7 +21,7 @@ Từ thư mục gốc repository:
 Copy-Item .env.example .env
 # Thay toàn bộ mật khẩu trong .env trước lần chạy đầu tiên.
 docker compose config
-docker compose build agent
+docker compose build system agent
 docker compose up -d
 docker compose ps
 ```

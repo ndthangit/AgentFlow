@@ -132,7 +132,7 @@ print(result.output.model_dump())
 - Một agent; general-purpose subagent được tắt qua harness profile. Cấu hình profile là process-global, nên chạy module này như runtime riêng.
 - Không có shell, web search, credential của connector hoặc hành động bên ngoài; chỉ có lời gọi model khi chạy live.
 - Giới hạn task/context, output tối đa 12 bước, graph tối đa 40 supersteps và deadline 120 giây. Đây không phải hard billing cap; request provider đã gửi có thể vẫn bị tính phí sau timeout.
-- Chưa có streaming, resume, cancel endpoint, idempotency ledger, auth, queue hoặc persistence. Client ngắt HTTP không đồng nghĩa với hủy tác vụ; deadline runtime vẫn áp dụng. Server mẫu dành cho localhost.
+- Agent là integration độc lập và không sở hữu database. FastAPI control plane, PostgreSQL và migration nằm trong [`../system`](../system/README.md). Agent chưa có streaming, resume hoặc cancel endpoint; deadline runtime vẫn áp dụng.
 - `run_id` dùng để tương quan kết quả trả về, chưa dùng truy vấn job. Khi tích hợp engine thật, worker chịu trách nhiệm gắn kết quả vào node execution và quản lý retry.
 
 ## Kiểm thử

@@ -1,0 +1,23 @@
+[project]
+name = "agentflow-system"
+version = "0.1.0"
+description = "FastAPI control plane for AgentFlow"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.16,<2",
+    "asyncpg>=0.30,<1",
+    "fastapi>=0.141,<0.142",
+    "pyjwt[crypto]>=2.10,<3",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "uvicorn>=0.52,<0.53",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "system_api"
+
+[dependency-groups]
+dev = ["httpx>=0.28", "ruff>=0.16"]
