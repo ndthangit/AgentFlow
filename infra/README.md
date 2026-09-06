@@ -4,6 +4,7 @@
 
 | Service | Cổng host | Vai trò |
 | --- | --- | --- |
+| `web` | `3000` | React/Vite workflow studio và đăng nhập Keycloak PKCE |
 | `system` | `8000` | FastAPI control plane và API workflow |
 | `agent` | `8001` | Deep Agents API, build từ `src/agent/Dockerfile` |
 | `postgres` | `5432` | Một database dùng chung, phân tách bằng schema |
@@ -26,6 +27,8 @@ docker compose up -d
 docker compose ps
 ```
 
+Mở `http://localhost:3000`, đăng nhập bằng user development trong `.env`, sau đó có thể tạo workflow, sửa draft JSON, validate, publish và tạo run. Giao diện chạy local bằng Vite tại `http://localhost:5173`; cả hai origin đã được cấu hình trong Keycloak và CORS của System API.
+
 Mặc định `AGENT_DEMO=true`, nên không cần LLM để kiểm tra hạ tầng. Để gọi LLM self-host, đặt `AGENT_DEMO=false`, cấu hình model/base URL trong `.env`, rồi chạy:
 
 ```powershell
@@ -36,9 +39,10 @@ Nếu LLM chạy trên host, container gọi qua `host.docker.internal`; Compose
 
 ## Lấy token development
 
-Realm `agentflow` được import ở lần khởi động đầu. Realm có:
+Mỗi lần container Keycloak khởi động, `infra/keycloak/entrypoint.sh` chạy lệnh import offline với `--override true` từ `infra/keycloak/agentflow-realm.json`, rồi mới chạy server. Vì vậy thay đổi client/user trong JSON được áp dụng cả khi PostgreSQL volume đã tồn tại. Realm có:
 
 - resource server `agentflow-api`;
+- public client `agentflow-web` dùng Authorization Code + PKCE, cho phép cả `localhost` và `127.0.0.1` trên cổng 3000/5173;
 - public client `agentflow-cli`, bật Direct Access Grant chỉ để thử local;
 - user lấy từ `KEYCLOAK_DEV_USER` và `KEYCLOAK_DEV_USER_PASSWORD`.
 

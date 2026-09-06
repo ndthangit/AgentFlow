@@ -9,6 +9,7 @@ from typing import Annotated
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,16 @@ def create_app() -> FastAPI:
     verifier = KeycloakTokenVerifier(OidcSettings.from_env()) if auth_enabled else None
     bearer = HTTPBearer(auto_error=False)
     app = FastAPI(title="AgentFlow System API", version="0.1.0")
+    web_origins = os.getenv(
+        "WEB_ORIGINS", "http://localhost:3000,http://localhost:5173"
+    ).split(",")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[origin.strip() for origin in web_origins if origin.strip()],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
     async def authorize(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],

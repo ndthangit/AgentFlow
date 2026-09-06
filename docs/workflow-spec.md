@@ -1,6 +1,6 @@
 # Đặc tả workflow và API dự kiến
 
-Trạng thái: **DSL/API đề xuất v0.1**, chưa có runtime hoặc schema validator triển khai. Các ví dụ nhằm thống nhất hợp đồng trước khi viết code.
+Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện đã lưu draft/version/run và kiểm tra node ID, edge reference, cycle; worker thực thi node và validator schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
 
 ## 1. Workflow được xuất bản như thế nào?
 
@@ -37,7 +37,7 @@ Control edge xác định điều kiện kích hoạt. Input mapping xác địn
 - Node fail làm fail run theo policy mặc định và hủy phần đang chạy. Nếu bật error edge, chỉ error port được kích hoạt, success port inactive; downstream nhận error object có schema.
 - Mảng trong JSON là dữ liệu. Fan-out phải thể hiện bằng node riêng để tránh vô tình tạo hàng nghìn agent.
 
-Validator cần kiểm tra duplicate node ID, node/port không tồn tại, node unreachable, cycle, type/schema version, reference chưa có dependency, thiếu default và budget không hợp lệ. Chỉ chấp nhận node implementation nằm trong registry được quản lý.
+Validator hiện đã kiểm tra duplicate node ID, node không tồn tại trong edge và cycle. Các bước tiếp theo cần kiểm tra port, node unreachable, type/schema version, reference chưa có dependency, thiếu default và budget không hợp lệ. Chỉ chấp nhận node implementation nằm trong registry được quản lý.
 
 ## 4. Ví dụ flow sửa lỗi rồi tạo PR
 

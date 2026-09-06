@@ -39,7 +39,7 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.3
     restart: unless-stopped
-    command: ["start-dev", "--import-realm"]
+    entrypoint: ["/bin/bash", "/opt/keycloak/bin/agentflow-entrypoint.sh"]
     environment:
       KC_DB: postgres
       KC_DB_URL_HOST: postgres
@@ -59,9 +59,20 @@ services:
       - "127.0.0.1:9000:9000"
     volumes:
       - ./infra/keycloak/agentflow-realm.json:/opt/keycloak/data/import/agentflow-realm.json:ro
+      - ./infra/keycloak/entrypoint.sh:/opt/keycloak/bin/agentflow-entrypoint.sh:ro
     depends_on:
       db-init:
         condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - /bin/bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; grep -q '200 OK' <&3"
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 12
     networks: [backend]
 
   system:
@@ -76,13 +87,33 @@ services:
       OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       AGENT_BASE_URL: http://agent:8001
+      WEB_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       db-init:
         condition: service_completed_successfully
       keycloak:
-        condition: service_started
+        condition: service_healthy
+    networks: [backend]
+
+  web:
+    build:
+      context: ./src/web
+      dockerfile: Dockerfile
+      args:
+        VITE_SYSTEM_API_URL: http://localhost:8000
+        VITE_KEYCLOAK_URL: http://localhost:8080
+        VITE_KEYCLOAK_REALM: agentflow
+        VITE_KEYCLOAK_CLIENT_ID: agentflow-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      system:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
     networks: [backend]
 
   agent:
@@ -106,7 +137,7 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       keycloak:
-        condition: service_started
+        condition: service_healthy
     networks: [backend]
 
 volumes:

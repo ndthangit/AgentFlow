@@ -147,4 +147,4 @@ Mọi truy vấn artifact, event, credential và session đều phải kiểm tr
 - Chưa tự động chuyển runtime khi agent đang chạy. Đổi Codex sang OpenCode là một execution mới với input chuẩn hóa và artifact bàn giao.
 - Việc phát triển sản phẩm độc lập hoặc mở rộng n8n cần đánh giá riêng về UX, nhu cầu tương thích và giấy phép trước khi tái sử dụng mã nguồn. Tài liệu này đề xuất sản phẩm độc lập và không dựa vào việc sao chép engine n8n.
 
-Chi tiết tiếp theo: [event-driven](event-driven.md), [agent adapter](agent-integration.md), [workflow DSL](workflow-spec.md), [lộ trình](roadmap.md).
+Chi tiết tiếp theo: [lưu trữ và xử lý workflow](workflow-execution.md), [event-driven](event-driven.md), [agent adapter](agent-integration.md), [workflow DSL](workflow-spec.md), [lộ trình](roadmap.md).
