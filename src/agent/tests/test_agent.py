@@ -11,7 +11,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphRecursionError
 
 from agent.api import create_app
-from agent.contracts import AgentRunError, RunRequest
+from agent.contracts import AgentRunError, AgentSkill, RunRequest
 from agent.demo import DemoModel
 from agent.graph import build_agent, build_configured_model
 from agent.runtime import run_agent
@@ -42,6 +42,36 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.mode, "demo")
         self.assertEqual(first.status, "succeeded")
         self.assertNotEqual(first.run_id, second.run_id)
+
+    async def test_selected_skills_are_added_to_system_prompt(self):
+        skill = AgentSkill(
+            id="skill-1",
+            slug="review-output",
+            name="Review Output",
+            version=1,
+            content_hash="a" * 64,
+            instructions="Check the result before returning it.",
+        )
+        with patch("agent.runtime.build_agent") as factory:
+            factory.return_value.ainvoke = AsyncMock(
+                return_value={
+                    "structured_response": {
+                        "summary": "done",
+                        "steps": [
+                            {
+                                "node_type": "end",
+                                "label": "Done",
+                                "instructions": "Return result",
+                            }
+                        ],
+                        "notes": [],
+                    }
+                }
+            )
+            await run_agent(RunRequest(task="test", skills=[skill]), demo=True)
+        prompt = factory.call_args.kwargs["skill_instructions"]
+        self.assertIn("Review Output", prompt)
+        self.assertIn(skill.instructions, prompt)
 
     async def test_missing_credentials_fail_without_provider_call(self):
         with (

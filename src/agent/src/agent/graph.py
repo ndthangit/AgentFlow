@@ -97,14 +97,14 @@ def build_configured_model() -> BaseChatModel:
     )
 
 
-def build_agent(model: BaseChatModel | None = None):
+def build_agent(model: BaseChatModel | None = None, *, skill_instructions: str = ""):
     """Create a fresh graph; all scratch files stay in this invocation's state."""
     if model is None:
         model = build_configured_model()
     return create_deep_agent(
         model=model,
         tools=[get_node_catalog],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT + skill_instructions,
         middleware=[TodoListMiddleware()],
         backend=StateBackend(),
         subagents=[],

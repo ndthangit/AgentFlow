@@ -16,6 +16,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
+COPY skills ./skills
 COPY migrations ./migrations
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN uv sync --frozen --no-dev \

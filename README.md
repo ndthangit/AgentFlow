@@ -34,6 +34,7 @@ flowchart LR
 | [Tích hợp AI agent](docs/agent-integration.md) | Mẫu Deep Agents hiện tại và hướng mở rộng Codex/OpenCode sau này |
 | [Đặc tả workflow](docs/workflow-spec.md) | Node, edge, dữ liệu, ví dụ flow và API dự kiến |
 | [Lưu trữ và xử lý workflow](docs/workflow-execution.md) | PostgreSQL schema, vòng đời draft/version/run và luồng worker mục tiêu |
+| [Quản lý skill](docs/skills.md) | Built-in/user skill, API lựa chọn và snapshot skill cho agent |
 | [Lộ trình triển khai](docs/roadmap.md) | Các mốc MVP, tiêu chí nghiệm thu, triển khai và vận hành |
 
 Các trang có nguồn chính thức đặt cạnh thông tin được kiểm chứng. Agent mẫu có kiểm thử tự động bằng graph thật và model giả lập; chưa benchmark hoặc kiểm chứng lời gọi provider thật. Các kiến trúc triển khai dài hạn vẫn là đề xuất.

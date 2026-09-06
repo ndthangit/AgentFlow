@@ -1,5 +1,5 @@
 import { accessToken } from "./auth";
-import type { FlowRun, Workflow, WorkflowVersion } from "./types";
+import type { FlowRun, Skill, Workflow, WorkflowVersion } from "./types";
 
 const API_URL = import.meta.env.VITE_SYSTEM_API_URL ?? "http://localhost:8000";
 
@@ -21,6 +21,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  listSkills: () => request<Skill[]>("/v1/skills"),
+  createSkill: (input: {
+    slug: string;
+    name: string;
+    description: string;
+    instructions: string;
+  }) =>
+    request<Skill>("/v1/skills", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  listWorkflowSkills: (workflowId: string) =>
+    request<Skill[]>(`/v1/workflows/${workflowId}/skills`),
+  selectWorkflowSkills: (workflowId: string, skillIds: string[]) =>
+    request<Skill[]>(`/v1/workflows/${workflowId}/skills`, {
+      method: "PUT",
+      body: JSON.stringify({ skill_ids: skillIds }),
+    }),
   listWorkflows: () => request<Workflow[]>("/v1/workflows"),
   createWorkflow: (name: string) =>
     request<Workflow>("/v1/workflows", {

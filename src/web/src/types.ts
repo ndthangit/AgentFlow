@@ -25,3 +25,17 @@ export type FlowRun = {
   created_at: string;
   updated_at: string;
 };
+
+export type Skill = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  instructions: string;
+  version: number;
+  content_hash: string;
+  enabled: boolean;
+  source: "builtin" | "user";
+  created_at: string;
+  updated_at: string;
+};
