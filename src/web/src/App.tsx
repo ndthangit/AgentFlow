@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
 import { keycloak } from "./auth";
-import type { FlowRun, Skill, Workflow, WorkflowVersion } from "./types";
+import { ModelsPage } from "./ModelsPage";
+import type { FlowRun, LlmProvider, Skill, Workflow, WorkflowVersion } from "./types";
 
-type AppTab = "workflows" | "skills";
+type AppTab = "workflows" | "skills" | "models";
 
 const starterDraft = {
   nodes: [
@@ -31,6 +32,7 @@ export function App() {
   const [version, setVersion] = useState<WorkflowVersion>();
   const [run, setRun] = useState<FlowRun>();
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [providers, setProviders] = useState<LlmProvider[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [skillForm, setSkillForm] = useState(emptySkill);
 
@@ -51,8 +53,12 @@ export function App() {
     setSkills(await api.listSkills());
   }
 
+  async function refreshProviders() {
+    setProviders(await api.listLlmProviders());
+  }
+
   useEffect(() => {
-    Promise.all([refreshWorkflows(), refreshSkills()]).catch((error: Error) =>
+    Promise.all([refreshWorkflows(), refreshSkills(), refreshProviders()]).catch((error: Error) =>
       setMessage(error.message),
     );
   }, []);
@@ -107,6 +113,9 @@ export function App() {
           <button className={activeTab === "skills" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("skills")}>
             <span className="nav-icon">◆</span><span><strong>Skills</strong><small>Quản lý kỹ năng agent</small></span><b>{enabledSkills.length}</b>
           </button>
+          <button className={activeTab === "models" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("models")}>
+            <span className="nav-icon">◉</span><span><strong>Models</strong><small>LLM providers và models</small></span><b>{providers.filter((item) => item.enabled).length}</b>
+          </button>
         </nav>
 
         {activeTab === "workflows" ? (
@@ -133,10 +142,15 @@ export function App() {
               <button disabled={busy || !name.trim()}>Tạo mới</button>
             </form>
           </>
-        ) : (
+        ) : activeTab === "skills" ? (
           <div className="sidebar-note">
             <strong>Skill library</strong>
             <p>Các skill được cài ở đây sẽ xuất hiện trong bộ chọn của từng workflow.</p>
+          </div>
+        ) : (
+          <div className="sidebar-note">
+            <strong>Model providers</strong>
+            <p>Kết nối OpenRouter và tải danh sách model để chuẩn bị gán cho agent.</p>
           </div>
         )}
       </aside>
@@ -144,8 +158,8 @@ export function App() {
       <main className={activeTab === "workflows" ? "workspace" : "workspace skills-workspace"}>
         <header>
           <div>
-            <p className="eyebrow">{activeTab === "workflows" ? "WORKFLOW STUDIO" : "SKILL LIBRARY"}</p>
-            <h1>{activeTab === "workflows" ? selected?.name ?? "AgentFlow" : "Skills"}</h1>
+            <p className="eyebrow">{activeTab === "workflows" ? "WORKFLOW STUDIO" : activeTab === "skills" ? "SKILL LIBRARY" : "MODEL CATALOG"}</p>
+            <h1>{activeTab === "workflows" ? selected?.name ?? "AgentFlow" : activeTab === "skills" ? "Skills" : "Models"}</h1>
           </div>
           <div className="account"><span className="status-dot" /><div><strong>{keycloak.tokenParsed?.preferred_username ?? "developer"}</strong><small>Đã xác thực</small></div><button onClick={() => void keycloak.logout()}>Đăng xuất</button></div>
         </header>
@@ -190,7 +204,7 @@ export function App() {
               </section>
             )}
           </>
-        ) : (
+        ) : activeTab === "skills" ? (
           <section className="skills-page">
             <div className="library-intro">
               <div><p className="eyebrow">AVAILABLE TO AGENTS</p><h2>Skill đã cài</h2><p>Quản lý hướng dẫn dùng chung. Khi publish workflow, nội dung của các skill được chọn sẽ được snapshot vào version.</p></div>
@@ -234,6 +248,8 @@ export function App() {
               </form>
             </div>
           </section>
+        ) : (
+          <ModelsPage providers={providers} refresh={refreshProviders} />
         )}
 
         {activeTab === "workflows" && (

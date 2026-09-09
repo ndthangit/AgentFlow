@@ -87,9 +87,12 @@ services:
       OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       AGENT_BASE_URL: http://agent:8001
+      PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       WEB_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - agentflow_system_secrets:/var/lib/agentflow
     depends_on:
       db-init:
         condition: service_completed_successfully
@@ -142,6 +145,7 @@ services:
 
 volumes:
   agentflow_postgres:
+  agentflow_system_secrets:
 
 networks:
   backend:

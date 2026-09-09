@@ -7,6 +7,7 @@ import uuid
 from asyncio import to_thread
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from functools import lru_cache
 from typing import Annotated
 
 import jwt
@@ -19,7 +20,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from system_api.auth import KeycloakTokenVerifier, OidcSettings
 from system_api.database import SessionFactory, get_session
-from system_api.models import FlowRun, Skill, Workflow, WorkflowSkill, WorkflowVersion
+from system_api.llm_providers import (
+    LlmProviderCreate,
+    LlmProviderUpdate,
+    LlmProviderView,
+    ProviderAuthenticationError,
+    ProviderConfigurationError,
+    ProviderModel,
+    ProviderRequestError,
+    create_provider_adapter,
+)
+from system_api.models import (
+    FlowRun,
+    LlmProvider,
+    Skill,
+    Workflow,
+    WorkflowSkill,
+    WorkflowVersion,
+)
+from system_api.provider_secrets import ProviderSecretError, ProviderSecretStore
 from system_api.skills import (
     BUILTIN_OWNER,
     SkillCreate,
@@ -45,6 +64,42 @@ def create_app() -> FastAPI:
     auth_enabled = os.getenv("AUTH_ENABLED", "false").lower() == "true"
     verifier = KeycloakTokenVerifier(OidcSettings.from_env()) if auth_enabled else None
     bearer = HTTPBearer(auto_error=False)
+
+    @lru_cache(maxsize=1)
+    def provider_secret_store() -> ProviderSecretStore:
+        try:
+            return ProviderSecretStore.from_config()
+        except ProviderSecretError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    def decrypt_provider_api_key(provider: LlmProvider) -> str:
+        try:
+            return provider_secret_store().decrypt(provider.api_key_encrypted)
+        except ProviderSecretError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    def encrypt_provider_api_key(api_key: str) -> str:
+        try:
+            return provider_secret_store().encrypt(api_key)
+        except ProviderSecretError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    async def verify_provider_connection(
+        kind: str, settings: dict, api_key: str
+    ) -> None:
+        try:
+            adapter = create_provider_adapter(kind, settings, api_key)
+            await adapter.verify()
+        except ProviderAuthenticationError:
+            raise HTTPException(
+                status_code=422, detail="Provider rejected the API key"
+            ) from None
+        except ProviderConfigurationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except ProviderRequestError:
+            raise HTTPException(
+                status_code=502, detail="Could not verify provider connection"
+            ) from None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -92,6 +147,153 @@ def create_app() -> FastAPI:
     async def ready(session: Annotated[AsyncSession, Depends(get_session)]):
         await session.execute(text("SELECT 1"))
         return {"status": "ready", "database": "postgresql"}
+
+    @app.get("/v1/llm-providers", response_model=list[LlmProviderView])
+    async def list_llm_providers(
+        claims: Annotated[dict, Depends(authorize)],
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ):
+        result = await session.scalars(
+            select(LlmProvider)
+            .where(LlmProvider.owner_subject == claims["sub"])
+            .order_by(LlmProvider.name)
+        )
+        return list(result)
+
+    @app.post("/v1/llm-providers", response_model=LlmProviderView, status_code=201)
+    async def create_llm_provider(
+        request: LlmProviderCreate,
+        claims: Annotated[dict, Depends(authorize)],
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ):
+        settings = request.settings.model_dump(mode="json")
+        api_key = request.api_key.get_secret_value()
+        await verify_provider_connection(request.kind, settings, api_key)
+        provider = LlmProvider(
+            owner_subject=claims["sub"],
+            name=request.name,
+            kind=request.kind,
+            settings=settings,
+            api_key_encrypted=encrypt_provider_api_key(api_key),
+        )
+        session.add(provider)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409, detail="Provider name already exists"
+            ) from None
+        await session.refresh(provider)
+        return provider
+
+    @app.get("/v1/llm-providers/{provider_id}", response_model=LlmProviderView)
+    async def get_llm_provider(
+        provider_id: uuid.UUID,
+        claims: Annotated[dict, Depends(authorize)],
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ):
+        provider = await session.scalar(
+            select(LlmProvider).where(
+                LlmProvider.id == provider_id,
+                LlmProvider.owner_subject == claims["sub"],
+            )
+        )
+        if provider is None:
+            raise HTTPException(status_code=404, detail="LLM provider not found")
+        return provider
+
+    @app.put("/v1/llm-providers/{provider_id}", response_model=LlmProviderView)
+    async def update_llm_provider(
+        provider_id: uuid.UUID,
+        request: LlmProviderUpdate,
+        claims: Annotated[dict, Depends(authorize)],
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ):
+        current_provider = await session.scalar(
+            select(LlmProvider).where(
+                LlmProvider.id == provider_id,
+                LlmProvider.owner_subject == claims["sub"],
+            )
+        )
+        if current_provider is None:
+            raise HTTPException(status_code=404, detail="LLM provider not found")
+        if current_provider.revision != request.expected_revision:
+            raise HTTPException(status_code=409, detail="Provider revision conflict")
+
+        settings = request.settings.model_dump(mode="json")
+        replacement_api_key = (
+            request.api_key.get_secret_value() if request.api_key is not None else None
+        )
+        if request.enabled or replacement_api_key is not None:
+            api_key = replacement_api_key or decrypt_provider_api_key(current_provider)
+            await verify_provider_connection(current_provider.kind, settings, api_key)
+        encrypted_api_key = current_provider.api_key_encrypted
+        if replacement_api_key is not None:
+            encrypted_api_key = encrypt_provider_api_key(replacement_api_key)
+
+        result = await session.execute(
+            update(LlmProvider)
+            .where(
+                LlmProvider.id == provider_id,
+                LlmProvider.owner_subject == claims["sub"],
+                LlmProvider.revision == request.expected_revision,
+            )
+            .values(
+                name=request.name,
+                settings=settings,
+                api_key_encrypted=encrypted_api_key,
+                enabled=request.enabled,
+                revision=LlmProvider.revision + 1,
+            )
+            .returning(LlmProvider)
+        )
+        provider = result.scalar_one_or_none()
+        if provider is None:
+            raise HTTPException(status_code=409, detail="Provider revision conflict")
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409, detail="Provider name already exists"
+            ) from None
+        return provider
+
+    @app.get(
+        "/v1/llm-providers/{provider_id}/models",
+        response_model=list[ProviderModel],
+    )
+    async def list_llm_provider_models(
+        provider_id: uuid.UUID,
+        claims: Annotated[dict, Depends(authorize)],
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ):
+        provider = await session.scalar(
+            select(LlmProvider).where(
+                LlmProvider.id == provider_id,
+                LlmProvider.owner_subject == claims["sub"],
+                LlmProvider.enabled.is_(True),
+            )
+        )
+        if provider is None:
+            raise HTTPException(
+                status_code=404, detail="Enabled LLM provider not found"
+            )
+        try:
+            api_key = decrypt_provider_api_key(provider)
+            adapter = create_provider_adapter(provider.kind, provider.settings, api_key)
+            return await adapter.list_models()
+        except ProviderAuthenticationError:
+            raise HTTPException(
+                status_code=422, detail="Provider rejected the API key"
+            ) from None
+        except ProviderConfigurationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except ProviderRequestError:
+            raise HTTPException(
+                status_code=502, detail="LLM provider request failed"
+            ) from None
 
     async def owned_workflow(
         workflow_id: uuid.UUID, subject: str, session: AsyncSession

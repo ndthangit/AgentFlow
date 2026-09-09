@@ -39,3 +39,28 @@ export type Skill = {
   created_at: string;
   updated_at: string;
 };
+
+export type OpenRouterSettings = {
+  default_model: string | null;
+  site_url: string | null;
+  app_title: string;
+};
+
+export type LlmProvider = {
+  id: string;
+  name: string;
+  kind: "openrouter";
+  settings: OpenRouterSettings;
+  has_api_key: boolean;
+  enabled: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProviderModel = {
+  id: string;
+  name: string;
+  context_length: number | null;
+  pricing: Record<string, string>;
+};

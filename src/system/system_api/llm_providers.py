@@ -1,17 +1,14 @@
 """Provider-neutral LLM contracts and the first OpenRouter adapter."""
 
-import os
-import re
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 class ChatMessage(BaseModel):
@@ -45,23 +42,16 @@ class ProviderModel(BaseModel):
 class OpenRouterSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    api_key_env: str = "OPENROUTER_API_KEY"
     default_model: str | None = Field(default=None, max_length=200)
     site_url: HttpUrl | None = None
     app_title: str = Field(default="AgentFlow", min_length=1, max_length=120)
-
-    @field_validator("api_key_env")
-    @classmethod
-    def valid_env_name(cls, value: str) -> str:
-        if not ENV_NAME_PATTERN.fullmatch(value):
-            raise ValueError("api_key_env must be an uppercase environment variable name")
-        return value
 
 
 class LlmProviderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=160)
     kind: Literal["openrouter"]
+    api_key: SecretStr = Field(min_length=1, max_length=1000)
     settings: OpenRouterSettings = Field(default_factory=OpenRouterSettings)
 
 
@@ -69,6 +59,7 @@ class LlmProviderUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     expected_revision: int = Field(ge=1)
     name: str = Field(min_length=1, max_length=160)
+    api_key: SecretStr | None = Field(default=None, min_length=1, max_length=1000)
     settings: OpenRouterSettings
     enabled: bool = True
 
@@ -78,7 +69,8 @@ class LlmProviderView(BaseModel):
     id: uuid.UUID
     name: str
     kind: str
-    settings: dict[str, Any]
+    settings: OpenRouterSettings
+    has_api_key: bool
     enabled: bool
     revision: int
     created_at: datetime
@@ -86,19 +78,19 @@ class LlmProviderView(BaseModel):
 
 
 class CredentialResolver(ABC):
-    """Resolves a secret outside persisted provider configuration."""
+    """Supplies a provider secret without placing it in persisted settings."""
 
     @abstractmethod
-    def resolve(self, reference: str) -> str:
+    def resolve(self) -> str:
         raise NotImplementedError
 
 
-class EnvironmentCredentialResolver(CredentialResolver):
-    def resolve(self, reference: str) -> str:
-        value = os.getenv(reference, "").strip()
-        if not value:
-            raise ProviderConfigurationError(f"Credential environment variable {reference} is not set")
-        return value
+class StaticCredentialResolver(CredentialResolver):
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    def resolve(self) -> str:
+        return self._api_key
 
 
 class ProviderError(RuntimeError):
@@ -113,10 +105,18 @@ class ProviderRequestError(ProviderError):
     pass
 
 
+class ProviderAuthenticationError(ProviderRequestError):
+    pass
+
+
 class LlmProviderAdapter(ABC):
     """Stable interface used by AgentFlow regardless of the external provider."""
 
     kind: str
+
+    @abstractmethod
+    async def verify(self) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     async def list_models(self) -> list[ProviderModel]:
@@ -133,15 +133,15 @@ class OpenRouterAdapter(LlmProviderAdapter):
     def __init__(
         self,
         settings: OpenRouterSettings,
-        credential_resolver: CredentialResolver | None = None,
+        credential_resolver: CredentialResolver,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.settings = settings
-        self._resolver = credential_resolver or EnvironmentCredentialResolver()
+        self._resolver = credential_resolver
         self._client = client
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self._resolver.resolve(self.settings.api_key_env)}"}
+        headers = {"Authorization": f"Bearer {self._resolver.resolve()}"}
         if self.settings.site_url:
             headers["HTTP-Referer"] = str(self.settings.site_url)
             headers["X-OpenRouter-Title"] = self.settings.app_title
@@ -149,16 +149,33 @@ class OpenRouterAdapter(LlmProviderAdapter):
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         owns_client = self._client is None
-        client = self._client or httpx.AsyncClient(base_url=OPENROUTER_BASE_URL, timeout=60)
+        client = self._client or httpx.AsyncClient(
+            base_url=OPENROUTER_BASE_URL, timeout=60
+        )
         try:
-            response = await client.request(method, path, headers=self._headers(), **kwargs)
+            response = await client.request(
+                method, path, headers=self._headers(), **kwargs
+            )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403}:
+                raise ProviderAuthenticationError(
+                    "OpenRouter rejected the API key"
+                ) from exc
+            raise ProviderRequestError("OpenRouter request failed") from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderRequestError("OpenRouter request failed") from exc
         finally:
             if owns_client:
                 await client.aclose()
+
+    async def verify(self) -> None:
+        payload = await self._request("GET", "/key")
+        if not isinstance(payload.get("data"), dict):
+            raise ProviderRequestError(
+                "OpenRouter returned an invalid verification response"
+            )
 
     async def list_models(self) -> list[ProviderModel]:
         payload = await self._request("GET", "/models")
@@ -191,15 +208,21 @@ class OpenRouterAdapter(LlmProviderAdapter):
                 raw=payload,
             )
         except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderRequestError("OpenRouter returned an invalid response") from exc
+            raise ProviderRequestError(
+                "OpenRouter returned an invalid response"
+            ) from exc
 
 
 def create_provider_adapter(
     kind: str,
     settings: dict[str, Any],
-    credential_resolver: CredentialResolver | None = None,
+    api_key: str,
     client: httpx.AsyncClient | None = None,
 ) -> LlmProviderAdapter:
     if kind == "openrouter":
-        return OpenRouterAdapter(OpenRouterSettings.model_validate(settings), credential_resolver, client)
+        return OpenRouterAdapter(
+            OpenRouterSettings.model_validate(settings),
+            StaticCredentialResolver(api_key),
+            client,
+        )
     raise ProviderConfigurationError(f"Unsupported LLM provider: {kind}")

@@ -126,7 +126,7 @@ class WorkflowSkill(Base):
 
 
 class LlmProvider(Base):
-    """User-owned LLM connection configuration without storing API-key values."""
+    """User-owned LLM connection configuration with an encrypted API key."""
 
     __tablename__ = "llm_providers"
     __table_args__ = (
@@ -139,6 +139,7 @@ class LlmProvider(Base):
     name: Mapped[str] = mapped_column(String(160))
     kind: Mapped[str] = mapped_column(String(40), index=True)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(
@@ -147,3 +148,7 @@ class LlmProvider(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self.api_key_encrypted)

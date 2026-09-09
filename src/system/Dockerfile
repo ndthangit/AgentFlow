@@ -10,12 +10,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=uv /uv /uvx /bin/
 RUN groupadd --system --gid 10001 agentflow \
-    && useradd --system --uid 10001 --gid agentflow --home-dir /app agentflow
+    && useradd --system --uid 10001 --gid agentflow --home-dir /app agentflow \
+    && install -d -o agentflow -g agentflow /var/lib/agentflow
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md alembic.ini ./
 RUN uv sync --frozen --no-dev --no-install-project
-COPY src ./src
+COPY system_api ./system_api
 COPY skills ./skills
 COPY migrations ./migrations
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
