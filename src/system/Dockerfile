@@ -14,13 +14,22 @@ RUN groupadd --system --gid 10001 agentflow \
     && install -d -o agentflow -g agentflow /var/lib/agentflow
 
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md alembic.ini ./
-RUN uv sync --frozen --no-dev --no-install-project
-COPY system_api ./system_api
+COPY pyproject.toml uv.lock alembic.ini ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+COPY README.md ./README.md
+COPY main.py ./main.py
+COPY api ./api
+COPY core ./core
+COPY domain ./domain
+COPY providers ./providers
+COPY runtime ./runtime
+COPY services ./services
 COPY skills ./skills
 COPY migrations ./migrations
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
-RUN uv sync --frozen --no-dev \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project \
     && chmod +x /app/docker-entrypoint.sh \
     && chown -R agentflow:agentflow /app
 

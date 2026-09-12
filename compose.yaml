@@ -19,6 +19,21 @@ services:
       retries: 10
     networks: [backend]
 
+  redis:
+    image: redis:8.2.7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - agentflow_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
   db-init:
     image: postgres:16.15-alpine3.24
     restart: "no"
@@ -53,6 +68,7 @@ services:
       KC_METRICS_ENABLED: "true"
       KC_HOSTNAME: http://localhost:8080
       KEYCLOAK_DEV_USER: ${KEYCLOAK_DEV_USER:?Set KEYCLOAK_DEV_USER in .env}
+      KEYCLOAK_DEV_USER_ID: ${KEYCLOAK_DEV_USER_ID:?Set KEYCLOAK_DEV_USER_ID in .env}
       KEYCLOAK_DEV_USER_PASSWORD: ${KEYCLOAK_DEV_USER_PASSWORD:?Set KEYCLOAK_DEV_USER_PASSWORD in .env}
     ports:
       - "127.0.0.1:8080:8080"
@@ -76,6 +92,7 @@ services:
     networks: [backend]
 
   system:
+    image: agentflow-system
     build:
       context: ./src/system
       dockerfile: Dockerfile
@@ -87,6 +104,10 @@ services:
       OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       AGENT_BASE_URL: http://agent:8001
+      REDIS_URL: redis://redis:6379/0
+      WORKFLOW_QUEUE_STREAM: agentflow:workflow-runs
+      WORKFLOW_QUEUE_GROUP: workflow-workers
+      WORKFLOW_QUEUE_MAXLEN: ${WORKFLOW_QUEUE_MAXLEN:-10000}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       WEB_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
     ports:
@@ -98,6 +119,28 @@ services:
         condition: service_completed_successfully
       keycloak:
         condition: service_healthy
+    networks: [backend]
+
+  workflow-worker:
+    image: agentflow-system
+    restart: unless-stopped
+    command: ["python", "-m", "runtime.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      REDIS_URL: redis://redis:6379/0
+      WORKFLOW_QUEUE_STREAM: agentflow:workflow-runs
+      WORKFLOW_QUEUE_GROUP: workflow-workers
+      WORKFLOW_RECLAIM_IDLE_MS: ${WORKFLOW_RECLAIM_IDLE_MS:-300000}
+      PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
+    volumes:
+      - agentflow_system_secrets:/var/lib/agentflow
+    depends_on:
+      system:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
     networks: [backend]
 
   web:
@@ -145,6 +188,7 @@ services:
 
 volumes:
   agentflow_postgres:
+  agentflow_redis:
   agentflow_system_secrets:
 
 networks:

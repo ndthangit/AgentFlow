@@ -4,6 +4,7 @@ import type {
   LlmProvider,
   OpenRouterSettings,
   ProviderModel,
+  RunStep,
   Skill,
   Workflow,
   WorkflowVersion,
@@ -22,9 +23,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { detail?: string } | null;
-    throw new Error(payload?.detail || `HTTP ${response.status}`);
+    const payload = await response.json().catch(() => null) as {
+      detail?: string | { message?: string; errors?: string[] };
+    } | null;
+    const detail = payload?.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : detail?.message ?? detail?.errors?.join(" · ");
+    throw new Error(message || `HTTP ${response.status}`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -58,10 +66,12 @@ export const api = {
       body: JSON.stringify({ skill_ids: skillIds }),
     }),
   listWorkflows: () => request<Workflow[]>("/v1/workflows"),
-  createWorkflow: (name: string) =>
+  deleteWorkflow: (workflowId: string) =>
+    request<void>(`/v1/workflows/${workflowId}`, { method: "DELETE" }),
+  createWorkflow: (name: string, draft?: Record<string, unknown>) =>
     request<Workflow>("/v1/workflows", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...(draft ? { draft } : {}) }),
     }),
   updateDraft: (workflow: Workflow, draft: Record<string, unknown>) =>
     request<Workflow>(`/v1/workflows/${workflow.id}/draft`, {
@@ -77,9 +87,14 @@ export const api = {
     request<WorkflowVersion>(`/v1/workflows/${workflowId}/versions`, {
       method: "POST",
     }),
-  createRun: (workflowId: string, versionId: string) =>
+  createRun: (workflowId: string, versionId: string, input: Record<string, unknown>) =>
     request<FlowRun>(`/v1/workflows/${workflowId}/runs`, {
       method: "POST",
-      body: JSON.stringify({ version_id: versionId, input: {} }),
+      body: JSON.stringify({ version_id: versionId, input }),
     }),
+  listWorkflowRuns: (workflowId: string) =>
+    request<FlowRun[]>(`/v1/workflows/${workflowId}/runs`),
+  getRun: (runId: string) => request<FlowRun>(`/v1/runs/${runId}`),
+  listRunSteps: (runId: string) =>
+    request<RunStep[]>(`/v1/runs/${runId}/steps`),
 };

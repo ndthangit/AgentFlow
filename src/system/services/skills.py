@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from system_api.models import Skill
+from domain.models import Skill
 
 BUILTIN_OWNER = "__system__"
 SKILLS_PATH = Path(__file__).resolve().parents[2] / "skills"

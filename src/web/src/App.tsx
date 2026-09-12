@@ -3,23 +3,201 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { keycloak } from "./auth";
 import { ModelsPage } from "./ModelsPage";
-import type { FlowRun, LlmProvider, Skill, Workflow, WorkflowVersion } from "./types";
+import type { FlowRun, LlmProvider, RunStep, Skill, Workflow, WorkflowVersion } from "./types";
+import { WorkflowEditor } from "./WorkflowEditor";
 
 type AppTab = "workflows" | "skills" | "models";
 
 const starterDraft = {
   nodes: [
-    { id: "start", type: "trigger.manual" },
-    { id: "agent", type: "agent" },
-    { id: "done", type: "end" },
+    {
+      id: "input",
+      type: "input.schema",
+      name: "Dữ liệu đầu vào",
+      note: "Định nghĩa dữ liệu workflow tiếp nhận.",
+      schema: { type: "object", properties: {}, additionalProperties: false },
+    },
+    {
+      id: "agent",
+      type: "agent",
+      name: "Agent",
+      note: "Mô tả ngắn nhiệm vụ của agent.",
+      config: {
+        instructions: "",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        outputSchema: { type: "object", properties: {}, additionalProperties: false },
+      },
+    },
+    {
+      id: "output",
+      type: "output.schema",
+      name: "Dữ liệu đầu ra",
+      note: "Định nghĩa kết quả workflow trả về.",
+      schema: { type: "object", properties: {}, additionalProperties: false },
+    },
   ],
   edges: [
-    { from: "start", to: "agent", port: "success" },
-    { from: "agent", to: "done", port: "success" },
+    { from: "input", to: "agent", port: "success" },
+    { from: "agent", to: "output", port: "success" },
+  ],
+};
+
+const agentPythonWorkflowDraft = {
+  nodes: [
+    {
+      id: "research_agent",
+      type: "agent",
+      name: "Agent phân tích",
+      note: "Phân tích chủ đề và tạo nội dung nháp có cấu trúc.",
+      inputs: { topic: { from: "$input.topic" } },
+      config: {
+        instructions: "Phân tích chủ đề người dùng cung cấp. Trả về draft là một đoạn nội dung ngắn, rõ ràng và có các ý chính.",
+        inputSchema: {
+          type: "object",
+          properties: { topic: { type: "string" } },
+          required: ["topic"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: { draft: { type: "string" } },
+          required: ["draft"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      id: "python_formatter",
+      type: "code.python",
+      name: "Python chuẩn hóa",
+      note: "Chuẩn hóa khoảng trắng và thống kê số từ trong bản nháp.",
+      inputs: { draft: { from: "$nodes.research_agent.output.draft" } },
+      config: {
+        language: "python",
+        code: [
+          "def main(inputs):",
+          "    cleaned_text = ' '.join(inputs['draft'].split())",
+          "    return {",
+          "        'cleaned_text': cleaned_text,",
+          "        'word_count': len(cleaned_text.split()),",
+          "    }",
+        ].join("\n"),
+        inputSchema: {
+          type: "object",
+          properties: { draft: { type: "string" } },
+          required: ["draft"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            cleaned_text: { type: "string" },
+            word_count: { type: "integer" },
+          },
+          required: ["cleaned_text", "word_count"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      id: "review_agent",
+      type: "agent",
+      name: "Agent biên tập",
+      note: "Biên tập bản nháp đã chuẩn hóa thành câu trả lời cuối cùng.",
+      inputs: {
+        content: { from: "$nodes.python_formatter.output.cleaned_text" },
+        word_count: { from: "$nodes.python_formatter.output.word_count" },
+      },
+      config: {
+        instructions: "Biên tập content thành câu trả lời hoàn chỉnh bằng tiếng Việt. Giữ thông tin chính xác, dễ đọc và trả về trường final_answer.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            content: { type: "string" },
+            word_count: { type: "integer" },
+          },
+          required: ["content", "word_count"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: { final_answer: { type: "string" } },
+          required: ["final_answer"],
+          additionalProperties: false,
+        },
+      },
+    },
+  ],
+  edges: [
+    { from: "research_agent", to: "python_formatter", port: "success" },
+    { from: "python_formatter", to: "review_agent", port: "success" },
+  ],
+};
+
+const sumWorkflowDraft = {
+  nodes: [
+    {
+      id: "input",
+      type: "input.schema",
+      name: "Hai số đầu vào",
+      note: "Nhận num1 và num2 từ dữ liệu chạy.",
+      schema: {
+        type: "object",
+        properties: { num1: { type: "number" }, num2: { type: "number" } },
+        required: ["num1", "num2"],
+        additionalProperties: false,
+      },
+    },
+    {
+      id: "sum",
+      type: "math.add",
+      name: "Cộng hai số",
+      note: "Tính num1 + num2 mà không cần gọi LLM.",
+      inputs: { left: { from: "$input.num1" }, right: { from: "$input.num2" } },
+      config: { outputKey: "sum" },
+    },
+    {
+      id: "output",
+      type: "output.schema",
+      name: "Kết quả",
+      note: "Trả về tổng của hai số.",
+      inputs: { sum: { from: "$nodes.sum.output.sum" } },
+      schema: {
+        type: "object",
+        properties: { sum: { type: "number" } },
+        required: ["sum"],
+        additionalProperties: false,
+      },
+    },
+  ],
+  edges: [
+    { from: "input", to: "sum", port: "success" },
+    { from: "sum", to: "output", port: "success" },
   ],
 };
 
 const emptySkill = { slug: "", name: "", description: "", instructions: "" };
+
+function workflowNodeTypes(workflow: Workflow) {
+  const nodes = workflow.draft.nodes;
+  if (!Array.isArray(nodes)) return [];
+  return nodes.flatMap((node) => (
+    node && typeof node === "object" && "type" in node && typeof node.type === "string"
+      ? [node.type]
+      : []
+  ));
+}
+
+function workflowNodeLabel(type: string) {
+  const labels: Record<string, string> = {
+    agent: "Agent",
+    "code.python": "Python",
+    "input.schema": "Input",
+    "output.schema": "Output",
+    "math.add": "Math",
+  };
+  return labels[type] ?? type;
+}
 
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("workflows");
@@ -31,6 +209,10 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState<WorkflowVersion>();
   const [run, setRun] = useState<FlowRun>();
+  const [runs, setRuns] = useState<FlowRun[]>([]);
+  const [runSteps, setRunSteps] = useState<RunStep[]>([]);
+  const [runStepsLoading, setRunStepsLoading] = useState(false);
+  const [runInput, setRunInput] = useState("{}");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [providers, setProviders] = useState<LlmProvider[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
@@ -45,7 +227,10 @@ export function App() {
   async function refreshWorkflows(select?: string) {
     const items = await api.listWorkflows();
     setWorkflows(items);
-    setSelectedId(select ?? selectedId ?? items[0]?.id);
+    setSelectedId((current) => {
+      const next = select ?? current;
+      return items.some((workflow) => workflow.id === next) ? next : undefined;
+    });
     setMessage(items.length ? "Sẵn sàng" : "Tạo workflow đầu tiên để bắt đầu");
   }
 
@@ -65,14 +250,82 @@ export function App() {
 
   useEffect(() => {
     if (!selected) return;
+    let cancelled = false;
     setEditor(JSON.stringify(selected.draft, null, 2));
     setVersion(undefined);
     setRun(undefined);
+    setRuns([]);
+    const nodes = selected.draft.nodes;
+    const isSumWorkflow = Array.isArray(nodes) && nodes.some((node) => (
+      node && typeof node === "object" && "type" in node && node.type === "math.add"
+    ));
+    const isAgentPythonDemo = Array.isArray(nodes) && nodes.some((node) => (
+      node && typeof node === "object" && "type" in node && node.type === "code.python"
+    ));
+    setRunInput(isSumWorkflow
+      ? JSON.stringify({ num1: 1, num2: 3 }, null, 2)
+      : isAgentPythonDemo
+        ? JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2)
+        : "{}");
     api
       .listWorkflowSkills(selected.id)
-      .then((items) => setSelectedSkillIds(items.map((skill) => skill.id)))
-      .catch((error: Error) => setMessage(error.message));
+      .then((items) => {
+        if (!cancelled) setSelectedSkillIds(items.map((skill) => skill.id));
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setMessage(error.message);
+      });
+    api
+      .listWorkflowRuns(selected.id)
+      .then((items) => {
+        if (!cancelled) {
+          setRuns(items);
+          setRun(items[0]);
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setMessage(error.message);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (!run) {
+      setRunSteps([]);
+      setRunStepsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const runId = run.id;
+    const loadRun = () => {
+      setRunStepsLoading(true);
+      Promise.all([api.getRun(runId), api.listRunSteps(runId)])
+        .then(([latest, steps]) => {
+          if (cancelled) return;
+          setRun(latest);
+          setRuns((items) => items.map((item) => item.id === latest.id ? latest : item));
+          setRunSteps(steps);
+          if (latest.status === "succeeded") setMessage("Worker đã chạy xong workflow");
+          if (latest.status === "failed") setMessage("Workflow thất bại — xem lỗi từng bước bên dưới");
+        })
+        .catch((error: Error) => {
+          if (!cancelled) setMessage(error.message);
+        })
+        .finally(() => {
+          if (!cancelled) setRunStepsLoading(false);
+        });
+    };
+    loadRun();
+    const polling = run.status === "pending" || run.status === "running"
+      ? window.setInterval(loadRun, 1000)
+      : undefined;
+    return () => {
+      cancelled = true;
+      if (polling !== undefined) window.clearInterval(polling);
+    };
+  }, [run?.id, run?.status]);
 
   async function perform(action: () => Promise<void>) {
     setBusy(true);
@@ -93,9 +346,32 @@ export function App() {
     return parsed as Record<string, unknown>;
   }
 
+  function parseRunInput() {
+    const parsed: unknown = JSON.parse(runInput);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Input chạy phải là một JSON object");
+    }
+    return parsed as Record<string, unknown>;
+  }
+
   function openWorkflow(workflowId: string) {
     setSelectedId(workflowId);
     setActiveTab("workflows");
+  }
+
+  function showWorkflowList() {
+    setSelectedId(undefined);
+    setActiveTab("workflows");
+  }
+
+  function removeWorkflow(workflow: Workflow) {
+    if (!window.confirm(`Xóa workflow “${workflow.name}” cùng toàn bộ version và lịch sử chạy?`)) return;
+    void perform(async () => {
+      await api.deleteWorkflow(workflow.id);
+      setSelectedId((current) => current === workflow.id ? undefined : current);
+      await refreshWorkflows();
+      setMessage(`Đã xóa workflow “${workflow.name}”`);
+    });
   }
 
   return (
@@ -107,7 +383,7 @@ export function App() {
         </div>
 
         <nav className="primary-nav" aria-label="Điều hướng chính">
-          <button className={activeTab === "workflows" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("workflows")}>
+          <button className={activeTab === "workflows" ? "nav-tab active" : "nav-tab"} onClick={showWorkflowList}>
             <span className="nav-icon">⌘</span><span><strong>Workflows</strong><small>Thiết kế và chạy flow</small></span><b>{workflows.length}</b>
           </button>
           <button className={activeTab === "skills" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("skills")}>
@@ -120,14 +396,11 @@ export function App() {
 
         {activeTab === "workflows" ? (
           <>
-            <div className="sidebar-title"><span>Danh sách workflow</span><b>{workflows.length}</b></div>
-            <nav className="workflow-list">
-              {workflows.map((workflow) => (
-                <button className={workflow.id === selectedId ? "workflow active" : "workflow"} key={workflow.id} onClick={() => openWorkflow(workflow.id)}>
-                  <span className="flow-icon">↗</span><span><strong>{workflow.name}</strong><small>Revision {workflow.revision}</small></span>
-                </button>
-              ))}
-            </nav>
+            <div className="sidebar-note workflow-sidebar-note">
+              <strong>{workflows.length} workflow đã tạo</strong>
+              <p>Mở trang Workflows để xem, chỉnh sửa hoặc xóa workflow.</p>
+              <button onClick={showWorkflowList}>Xem tất cả workflow</button>
+            </div>
             <form className="new-flow" onSubmit={(event) => {
               event.preventDefault();
               if (!name.trim()) return;
@@ -141,6 +414,18 @@ export function App() {
               <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Tên workflow mới" maxLength={160} />
               <button disabled={busy || !name.trim()}>Tạo mới</button>
             </form>
+            <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
+              const created = await api.createWorkflow("Demo Agent → Python → Agent", agentPythonWorkflowDraft);
+              await refreshWorkflows(created.id);
+              setRunInput(JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2));
+              setMessage("Đã tạo workflow demo gồm 2 Agent và 1 Python node");
+            })}>＋ Tạo demo 2 Agent + Python</button>
+            <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
+              const created = await api.createWorkflow("Tính tổng hai số", sumWorkflowDraft);
+              await refreshWorkflows(created.id);
+              setRunInput(JSON.stringify({ num1: 1, num2: 3 }, null, 2));
+              setMessage("Đã tạo workflow mẫu tính tổng");
+            })}>＋ Tạo mẫu tính tổng</button>
           </>
         ) : activeTab === "skills" ? (
           <div className="sidebar-note">
@@ -157,32 +442,150 @@ export function App() {
 
       <main className={activeTab === "workflows" ? "workspace" : "workspace skills-workspace"}>
         <header>
-          <div>
+          <div className="page-heading">
+            {activeTab === "workflows" && selected && <button className="back-to-workflows" onClick={showWorkflowList}>← Tất cả workflow</button>}
             <p className="eyebrow">{activeTab === "workflows" ? "WORKFLOW STUDIO" : activeTab === "skills" ? "SKILL LIBRARY" : "MODEL CATALOG"}</p>
-            <h1>{activeTab === "workflows" ? selected?.name ?? "AgentFlow" : activeTab === "skills" ? "Skills" : "Models"}</h1>
+            <h1>{activeTab === "workflows" ? selected?.name ?? "Workflows" : activeTab === "skills" ? "Skills" : "Models"}</h1>
           </div>
           <div className="account"><span className="status-dot" /><div><strong>{keycloak.tokenParsed?.preferred_username ?? "developer"}</strong><small>Đã xác thực</small></div><button onClick={() => void keycloak.logout()}>Đăng xuất</button></div>
         </header>
 
-        {activeTab === "workflows" ? (
-          <>
-            <section className="canvas-card">
-              <div className="canvas-toolbar"><div><span className="pill">Draft</span>{selected && <span>Revision {selected.revision}</span>}</div><span className="save-state">{message}</span></div>
-              {!selected ? (
-                <div className="empty"><div>⌁</div><h2>Chưa có workflow</h2><p>Tạo workflow bên trái để chỉnh graph JSON, validate và chạy thử.</p></div>
-              ) : (
-                <div className="editor-grid">
-                  <section className="flow-preview">
-                    <div className="node trigger"><small>TRIGGER</small><strong>Manual start</strong><span>Nhận input từ người dùng</span></div>
-                    <div className="connector"><i /><b>1</b><i /></div>
-                    <div className="node agent-node"><small>AI AGENT</small><strong>Deep Agent</strong><span>Lập kế hoạch bằng LLM</span></div>
-                    <div className="connector"><i /><b>2</b><i /></div>
-                    <div className="node end"><small>OUTPUT</small><strong>Complete</strong><span>Trả kết quả của flow</span></div>
-                  </section>
-                  <section className="json-panel"><div className="panel-title"><span>Graph definition</span><code>JSON</code></div><textarea value={editor} onChange={(event) => setEditor(event.target.value)} spellCheck={false} /></section>
+        {activeTab === "workflows" ? !selected ? (
+          <section className="workflow-catalog-page">
+            <div className="workflow-catalog-hero">
+              <div>
+                <p className="eyebrow">YOUR AUTOMATIONS</p>
+                <h2>Workflow đã tạo</h2>
+                <p>Chọn một workflow để mở canvas, cấu hình node, publish và xem lịch sử chạy.</p>
+              </div>
+              <span className="workflow-total"><strong>{workflows.length}</strong> workflow</span>
+            </div>
+
+            <div className="workflow-card-grid">
+              {workflows.map((workflow) => {
+                const nodeTypes = workflowNodeTypes(workflow);
+                return (
+                  <article className="workflow-card" key={workflow.id}>
+                    <button className="workflow-card-main" onClick={() => openWorkflow(workflow.id)}>
+                      <span className="workflow-card-icon">↗</span>
+                      <span className="workflow-card-content">
+                        <span className="workflow-card-topline"><b>Revision {workflow.revision}</b><small>{nodeTypes.length} node</small></span>
+                        <strong>{workflow.name}</strong>
+                        <span className="workflow-node-chips">
+                          {nodeTypes.slice(0, 5).map((type, index) => <i key={`${type}-${index}`}>{workflowNodeLabel(type)}</i>)}
+                          {nodeTypes.length > 5 && <i>+{nodeTypes.length - 5}</i>}
+                        </span>
+                        <small>Cập nhật {new Date(workflow.updated_at).toLocaleString("vi-VN")}</small>
+                      </span>
+                      <span className="workflow-open">Mở →</span>
+                    </button>
+                    <button className="workflow-delete" disabled={busy} onClick={() => removeWorkflow(workflow)} aria-label={`Xóa workflow ${workflow.name}`}>Xóa</button>
+                  </article>
+                );
+              })}
+              {!workflows.length && (
+                <div className="workflow-catalog-empty">
+                  <span>⌁</span>
+                  <h3>Chưa có workflow</h3>
+                  <p>Tạo workflow đầu tiên từ biểu mẫu bên trái.</p>
                 </div>
               )}
+            </div>
+          </section>
+        ) : (
+          <>
+            <section className="canvas-card">
+              <div className="canvas-toolbar"><div><span className="pill">Draft</span><span>Revision {selected.revision}</span></div><span className="save-state">{message}</span></div>
+              <WorkflowEditor value={editor} onChange={setEditor} disabled={busy} />
             </section>
+
+            {selected && (
+              <section className="run-input-card">
+                <div><p className="eyebrow">RUN DATA</p><h2>Input chạy thử</h2><p>Nhập JSON đúng với Input schema. Demo Agent/Python dùng topic; mẫu tính tổng dùng num1 và num2.</p></div>
+                <textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} spellCheck={false} />
+                <div className="run-output">
+                  <strong>Kết quả gần nhất</strong>
+                  <code>{run?.output ? JSON.stringify(run.output, null, 2) : "Chưa có kết quả"}</code>
+                </div>
+              </section>
+            )}
+
+            {selected && (
+              <section className="run-history-card">
+                <div className="run-history-heading">
+                  <div>
+                    <p className="eyebrow">RUN HISTORY</p>
+                    <h2>Lịch sử chạy</h2>
+                    <p>Mỗi lần bấm Chạy được lưu thành một bản ghi riêng.</p>
+                  </div>
+                  <div className="run-history-summary">
+                    <strong>{runs.length}</strong>
+                    <span>lần chạy gần nhất</span>
+                    <button disabled={busy} onClick={() => void perform(async () => {
+                      const items = await api.listWorkflowRuns(selected.id);
+                      setRuns(items);
+                      if (run) setRun(items.find((item) => item.id === run.id) ?? items[0]);
+                      else setRun(items[0]);
+                      setMessage("Đã tải lại lịch sử chạy");
+                    })}>Tải lại</button>
+                  </div>
+                </div>
+                <div className="run-history-body">
+                  <div className="run-history-list">
+                    {runs.map((item) => (
+                      <button
+                        className={run?.id === item.id ? "run-history-row selected" : "run-history-row"}
+                        key={item.id}
+                        onClick={() => {
+                          setRun(item);
+                          setRunInput(JSON.stringify(item.input, null, 2));
+                        }}
+                      >
+                        <span className={`run-status ${item.status}`}>{item.status}</span>
+                        <span><strong>Run {item.id.slice(0, 8)}</strong><small>{new Date(item.created_at).toLocaleString("vi-VN")}</small></span>
+                        <code>{item.output ? JSON.stringify(item.output) : "Chưa có output"}</code>
+                        <b>Xem</b>
+                      </button>
+                    ))}
+                    {!runs.length && <div className="run-history-empty">Chưa có lịch sử. Publish workflow rồi bấm Chạy để tạo lần chạy đầu tiên.</div>}
+                  </div>
+
+                  <aside className="run-detail-panel">
+                    {run ? (
+                      <>
+                        <div className="run-detail-title">
+                          <div><span className={`run-status ${run.status}`}>{run.status}</span><h3>Run {run.id.slice(0, 8)}</h3></div>
+                          <small>{new Date(run.created_at).toLocaleString("vi-VN")}</small>
+                        </div>
+                        <div className="run-io-summary">
+                          <div><strong>Workflow input</strong><pre>{JSON.stringify(run.input, null, 2)}</pre></div>
+                          <div><strong>Workflow output</strong><pre>{run.output ? JSON.stringify(run.output, null, 2) : "Chưa có output"}</pre></div>
+                        </div>
+                        <div className="run-step-heading"><strong>Chi tiết từng bước</strong><span>{runSteps.length} bước</span></div>
+                        <div className="run-step-list">
+                          {runSteps.map((step) => (
+                            <details className="run-step" key={step.id} open={runSteps.length <= 3}>
+                              <summary>
+                                <b>{step.sequence}</b>
+                                <span><strong>{step.node_name}</strong><small>{step.node_type} · {step.node_id}</small></span>
+                                <i className={`run-status ${step.status}`}>{step.status}</i>
+                              </summary>
+                              <div className="run-step-io">
+                                <div><strong>Input</strong><pre>{step.input ? JSON.stringify(step.input, null, 2) : "Chưa có input thực thi"}</pre></div>
+                                <div><strong>Output</strong><pre>{step.output ? JSON.stringify(step.output, null, 2) : "Chưa có output"}</pre></div>
+                              </div>
+                              {step.error && <div className="run-step-error"><strong>Error</strong><pre>{JSON.stringify(step.error, null, 2)}</pre></div>}
+                            </details>
+                          ))}
+                          {runStepsLoading && <div className="run-steps-empty">Đang tải chi tiết các bước…</div>}
+                          {!runStepsLoading && !runSteps.length && <div className="run-steps-empty">Run cũ chưa có dữ liệu từng bước.</div>}
+                        </div>
+                      </>
+                    ) : <div className="run-steps-empty">Chọn một run để xem input và output từng bước.</div>}
+                  </aside>
+                </div>
+              </section>
+            )}
 
             {selected && (
               <section className="skills-card">
@@ -252,14 +655,14 @@ export function App() {
           <ModelsPage providers={providers} refresh={refreshProviders} />
         )}
 
-        {activeTab === "workflows" && (
+        {activeTab === "workflows" && selected && (
           <footer className="action-bar">
             <div className="run-state">{run ? <><span className="run-dot" />Run <code>{run.id.slice(0, 8)}</code> · {run.status}</> : "Chưa có run trong phiên này"}</div>
             <div className="actions">
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const result = await api.validate(selected!.id); setMessage(result.valid ? "Graph hợp lệ" : result.errors.join(" · ")); })}>Kiểm tra</button>
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const saved = await api.updateDraft(selected!, parseDraft()); setWorkflows((items) => items.map((item) => item.id === saved.id ? saved : item)); setMessage(`Đã lưu revision ${saved.revision}`); })}>Lưu draft</button>
               <button className="primary" disabled={!selected || busy} onClick={() => void perform(async () => { const published = await api.publish(selected!.id); setVersion(published); setMessage(`Đã publish version ${published.version}`); })}>Publish</button>
-              <button className="run-button" disabled={!selected || !version || busy} onClick={() => void perform(async () => { const created = await api.createRun(selected!.id, version!.id); setRun(created); setMessage(`Run đang ở trạng thái ${created.status}`); })}>▶ Chạy</button>
+              <button className="run-button" disabled={!selected || !version || busy} onClick={() => void perform(async () => { const created = await api.createRun(selected!.id, version!.id, parseRunInput()); setRun(created); setRuns((items) => [created, ...items.filter((item) => item.id !== created.id)]); setMessage(created.status === "succeeded" ? `Đã chạy xong workflow: ${JSON.stringify(created.output)}` : `Run đang ở trạng thái ${created.status}`); })}>▶ Chạy</button>
             </div>
           </footer>
         )}

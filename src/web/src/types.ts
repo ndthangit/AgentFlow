@@ -26,6 +26,22 @@ export type FlowRun = {
   updated_at: string;
 };
 
+export type RunStep = {
+  id: string;
+  run_id: string;
+  sequence: number;
+  node_id: string;
+  node_type: string;
+  node_name: string;
+  status: string;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
+  error: Record<string, unknown> | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+};
+
 export type Skill = {
   id: string;
   slug: string;

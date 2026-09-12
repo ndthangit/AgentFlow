@@ -80,6 +80,66 @@ class FlowRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    steps: Mapped[list["RunStep"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    dispatch: Mapped["RunDispatch | None"] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class RunDispatch(Base):
+    """Transactional outbox row consumed by the Redis queue orchestrator."""
+
+    __tablename__ = "run_dispatches"
+    __table_args__ = (UniqueConstraint("run_id"), {"schema": "system"})
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("system.runs.id", ondelete="CASCADE"), index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    run: Mapped[FlowRun] = relationship(back_populates="dispatch")
+
+
+class RunStep(Base):
+    """Durable per-node execution detail for the workflow run viewer."""
+
+    __tablename__ = "run_steps"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence"),
+        {"schema": "system"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("system.runs.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    node_id: Mapped[str] = mapped_column(String(160))
+    node_type: Mapped[str] = mapped_column(String(100))
+    node_name: Mapped[str] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    run: Mapped[FlowRun] = relationship(back_populates="steps")
 
 
 class Skill(Base):

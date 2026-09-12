@@ -1,6 +1,6 @@
 # Đặc tả workflow và API dự kiến
 
-Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện đã lưu draft/version/run và kiểm tra node ID, edge reference, cycle; worker thực thi node và validator schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
+Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện lưu draft/version/run, kiểm tra graph và thực thi đồng bộ các node MVP gồm schema, math, Agent qua LLM provider và Python giới hạn. Durable worker, branch/join và validator JSON Schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
 
 ## 1. Workflow được xuất bản như thế nào?
 
@@ -171,11 +171,14 @@ Executor thuộc worker; UI chỉ nhận metadata phục vụ cấu hình. MVP c
 | Endpoint | Ý nghĩa |
 | --- | --- |
 | `POST /v1/workflows` | Tạo draft |
+| `DELETE /v1/workflows/{id}` | Xóa workflow thuộc user cùng version, run và liên kết skill liên quan |
 | `PUT /v1/workflows/{id}/draft` | Lưu draft kèm expected revision; xung đột trả 409 |
 | `POST /v1/workflows/{id}/validate` | Trả lỗi graph/schema/quyền trước publish |
 | `POST /v1/workflows/{id}/versions` | Publish snapshot bất biến |
 | `POST /v1/workflows/{id}/runs` | Bắt đầu từ version ID + input; yêu cầu Idempotency-Key |
+| `GET /v1/workflows/{id}/runs` | Lấy lịch sử các lần chạy của workflow, mới nhất trước |
 | `GET /v1/runs/{runId}` | Snapshot trạng thái, outcome và projection freshness |
+| `GET /v1/runs/{runId}/steps` | Input, output, lỗi và trạng thái từng node theo thứ tự thực thi |
 | `GET /v1/runs/{runId}/events` | SSE đã phân quyền, có cursor replay |
 | `POST /v1/runs/{runId}/cancel` | Ghi lệnh hủy, trả 202 khi đã nhận |
 | `POST /v1/approvals/{requestId}/decisions` | Approve/deny kèm action hash và idempotency key |

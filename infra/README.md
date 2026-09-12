@@ -5,14 +5,16 @@
 | Service | Cổng host | Vai trò |
 | --- | --- | --- |
 | `web` | `3000` | React/Vite workflow studio và đăng nhập Keycloak PKCE |
-| `system` | `8000` | FastAPI control plane và API workflow |
+| `system` | `8000` | FastAPI control plane, API workflow và orchestrator dispatch outbox |
+| `workflow-worker` | Nội bộ | Consumer thực thi workflow và cập nhật run/step |
+| `redis` | `6379` | Redis Stream queue, consumer group và retry pending job |
 | `agent` | `8001` | Deep Agents API, build từ `src/agent/Dockerfile` |
 | `postgres` | `5432` | Một database dùng chung, phân tách bằng schema |
 | `keycloak` | `8080`, management `9000` | OIDC authentication và trang quản trị |
 
-`db-init` tạo idempotent hai schema `system` và `keycloak` trước khi các service khởi động. Temporal, object storage và UI chưa được đưa vào Compose vì chưa có service sử dụng chúng.
+`db-init` tạo idempotent hai schema `system` và `keycloak` trước khi các service khởi động. Redis bật AOF `everysec` và lưu trong named volume `agentflow_redis`. Temporal và object storage chưa được đưa vào Compose.
 
-Service `system` tự chạy migration Alembic và dùng schema PostgreSQL `system` để lưu workflow draft, version bất biến và run projection. Keycloak dùng cùng PostgreSQL/database trong môi trường phát triển nhưng tách ở schema `keycloak`. Agent là integration độc lập và không kết nối database.
+Service `system` tự chạy migration Alembic, lưu workflow/run/outbox và khởi động orchestrator loop cùng lifecycle FastAPI để đẩy outbox vào Redis. Chỉ `workflow-worker` thực thi graph. Keycloak dùng cùng PostgreSQL/database trong môi trường phát triển nhưng tách ở schema `keycloak`.
 
 ## Khởi động
 
@@ -39,7 +41,7 @@ Nếu LLM chạy trên host, container gọi qua `host.docker.internal`; Compose
 
 ## Lấy token development
 
-Mỗi lần container Keycloak khởi động, `infra/keycloak/entrypoint.sh` chạy lệnh import offline với `--override true` từ `infra/keycloak/agentflow-realm.json`, rồi mới chạy server. Vì vậy thay đổi client/user trong JSON được áp dụng cả khi PostgreSQL volume đã tồn tại. Realm có:
+Mỗi lần container Keycloak khởi động, `infra/keycloak/entrypoint.sh` chạy lệnh import offline với `--override false` từ `infra/keycloak/agentflow-realm.json`, rồi mới chạy server. Import chỉ tạo realm khi chưa tồn tại; restart không xóa realm hoặc tạo lại user. `KEYCLOAK_DEV_USER_ID` giữ OIDC `sub` ổn định cho lần khởi tạo mới. Muốn cập nhật client/user của realm đã có, dùng Admin Console hoặc `kcadm` thay vì import ghi đè. Realm có:
 
 - resource server `agentflow-api`;
 - public client `agentflow-web` dùng Authorization Code + PKCE, cho phép cả `localhost` và `127.0.0.1` trên cổng 3000/5173;
@@ -73,7 +75,7 @@ Admin Console: `http://localhost:8080/admin`, dùng `KEYCLOAK_ADMIN` và `KEYCLO
 
 ## Dữ liệu và reset development
 
-Database nằm trong named volumes `agentflow_postgres` và `keycloak_postgres`. `docker compose down` giữ dữ liệu. Realm import bị bỏ qua nếu realm đã tồn tại, nên sửa JSON không tự cập nhật database cũ.
+System và Keycloak dùng chung database trong named volume `agentflow_postgres`; queue dùng `agentflow_redis`; khóa mã hóa provider nằm trong `agentflow_system_secrets`. `docker compose down` giữ các volume này. Realm import bị bỏ qua nếu realm đã tồn tại, nên sửa JSON không tự cập nhật database cũ.
 
 Muốn xóa toàn bộ dữ liệu development và import lại realm:
 
@@ -82,12 +84,12 @@ docker compose down --volumes
 docker compose up -d
 ```
 
-Lệnh trên xóa cả hai database local và không thể hoàn tác.
+Lệnh trên xóa database local và khóa mã hóa API key trong hai volume; không thể hoàn tác.
 
 ## Phạm vi triển khai
 
 Compose dùng Keycloak `start-dev`, HTTP và Direct Access Grant để thử tích hợp trên localhost. Không dùng cấu hình này trực tiếp cho production. Production cần TLS/reverse proxy, hostname thật, authorization flow phù hợp, secret manager, backup, Keycloak optimized build và PostgreSQL được vận hành độc lập.
 
-Image đã khóa theo phiên bản để build lặp lại dễ hơn: PostgreSQL `16.15-alpine3.24`, Keycloak `26.7.3`, Python `3.13.14-slim`, uv `0.12.1`. Khi nâng image, đọc migration guide và thử backup/restore trước.
+Image đã khóa theo phiên bản để build lặp lại dễ hơn: PostgreSQL `16.15-alpine3.24`, Redis `8.2.7-alpine`, Keycloak `26.7.3`, Python `3.13.14-slim`, uv `0.12.1`. Khi nâng image, đọc migration guide và thử backup/restore trước.
 
 Nguồn: [Keycloak container](https://www.keycloak.org/server/containers), [realm import và environment placeholders](https://www.keycloak.org/server/importExport), [Keycloak health](https://www.keycloak.org/observability/health), [PostgreSQL official image](https://hub.docker.com/_/postgres).

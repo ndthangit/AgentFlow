@@ -5,14 +5,14 @@ from tempfile import TemporaryDirectory
 import httpx
 from pydantic import ValidationError
 
-from system_api.llm_providers import (
+from providers.adapters import (
     ChatCompletionRequest,
     LlmProviderCreate,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     create_provider_adapter,
 )
-from system_api.provider_secrets import ProviderSecretStore
+from providers.secrets import ProviderSecretStore
 
 
 class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -107,6 +107,84 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.message.content, "hello")
         self.assertEqual(result.usage["total_tokens"], 3)
+
+    async def test_openrouter_accepts_nested_usage_details(self):
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chat-1",
+                    "model": "openai/test-model",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "{}"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 4,
+                        "prompt_tokens_details": {"cached_tokens": 0},
+                    },
+                },
+            )
+
+        client = httpx.AsyncClient(
+            base_url="https://openrouter.ai/api/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+        adapter = create_provider_adapter(
+            "openrouter",
+            {"default_model": "openai/test-model"},
+            "test-secret",
+            client,
+        )
+        result = await adapter.complete(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
+        )
+
+        self.assertEqual(result.usage["prompt_tokens_details"], {"cached_tokens": 0})
+
+    async def test_openrouter_retries_an_empty_choices_response(self):
+        calls = 0
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(200, json={"choices": []})
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chat-2",
+                    "model": "openai/test-model",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "{}"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        client = httpx.AsyncClient(
+            base_url="https://openrouter.ai/api/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+        adapter = create_provider_adapter(
+            "openrouter",
+            {"default_model": "openai/test-model"},
+            "test-secret",
+            client,
+        )
+
+        result = await adapter.complete(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}])
+        )
+
+        self.assertEqual(result.message.content, "{}")
+        self.assertEqual(calls, 2)
 
     async def test_openrouter_model_catalog_is_normalized(self):
         async def handler(request: httpx.Request) -> httpx.Response:

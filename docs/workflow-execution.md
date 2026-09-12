@@ -1,6 +1,6 @@
 # Lưu trữ và xử lý một workflow
 
-Tài liệu này mô tả đường đi của dữ liệu từ lúc người dùng tạo draft đến lúc một workflow run kết thúc. Phần **hiện có** phản ánh code trong `src/system`; phần **runtime mục tiêu** mô tả worker sẽ được bổ sung tiếp theo.
+Tài liệu này mô tả đường đi của dữ liệu từ lúc người dùng tạo draft đến lúc một workflow run kết thúc. Phần **hiện có** phản ánh code trong `src/system`; phần **runtime mục tiêu** mô tả những khả năng bền vững còn cần bổ sung.
 
 ## 1. Ranh giới service và nơi lưu dữ liệu
 
@@ -8,10 +8,12 @@ Môi trường phát triển dùng một PostgreSQL database `agentflow`, nhưng
 
 | Thành phần | Nơi lưu | Trách nhiệm |
 | --- | --- | --- |
-| FastAPI `system` | schema `system` | Workflow draft, version đã publish và trạng thái run |
+| FastAPI `system` / orchestrator | schema `system` + Redis Stream | API workflow, transactional outbox và dispatch `run_id` vào queue |
+| Workflow worker | Không sở hữu database riêng | Claim job, chạy graph và cập nhật run/step projection |
+| Redis | volume `agentflow_redis` | Queue at-least-once, consumer group và pending-entry list |
 | Keycloak | schema `keycloak` | Realm, user, client, role, session đăng nhập |
 | Agent integration | Không có database riêng | Nhận yêu cầu thực thi agent và trả kết quả có schema |
-| Artifact storage, worker history | Chưa triển khai | Log lớn, file, diff, checkpoint và lịch sử thực thi bền vững |
+| Artifact storage, worker attempts | Chưa triển khai | Log lớn, file, diff, checkpoint, retry và lease bền vững |
 
 Hai schema dùng chung PostgreSQL server/database để vận hành development đơn giản. Không tạo foreign key giữa `system` và `keycloak`; System chỉ tin danh tính `sub` sau khi xác minh JWT. Việc dùng chung database không cho phép System đọc hoặc sửa bảng nội bộ của Keycloak.
 
@@ -25,8 +27,11 @@ flowchart LR
     API --> SYS[system schema]
     PG --- KCS
     PG --- SYS
-    API -. runtime mục tiêu .-> WORKER[Workflow worker]
-    WORKER -. HTTP/internal contract .-> AGENT[Agent integration :8001]
+    API --> OUTBOX[(run_dispatches)]
+    API -->|orchestrator loop: XADD| REDIS[(Redis Stream)]
+    REDIS -->|XREADGROUP| WORKER[Workflow worker]
+    WORKER -->|run/step projection| SYS
+    WORKER -->|LLM adapter| LLM[Configured provider]
 ```
 
 ## 2. Các bảng hiện có
@@ -67,12 +72,16 @@ Run luôn tham chiếu `workflow_version_id`, không tham chiếu draft. Vì v�
 | --- | --- |
 | `workflow_version_id` | Snapshot workflow được chọn để chạy |
 | `owner_subject` | Chủ thể Keycloak tạo run |
-| `status` | Hiện tại khởi tạo với `pending` |
+| `status` | `pending`, `running`, `succeeded` hoặc `failed` |
 | `input` | JSONB input của lần chạy |
-| `output` | JSONB kết quả nhỏ; hiện để trống khi mới tạo |
+| `output` | JSONB kết quả của node cuối; để trống khi run thất bại |
 | `created_at`, `updated_at` | Thời gian tạo và cập nhật trạng thái |
 
-`runs` là dữ liệu truy vấn cho UI, không nên trở thành nơi duy nhất quyết định node tiếp theo khi có worker bền vững. Runtime mục tiêu cần thêm node execution, attempt, command và event/outbox.
+`runs` là projection để API/UI truy vấn. Redis giữ delivery state; `run_dispatches` bảo đảm yêu cầu dispatch được ghi atomically cùng run.
+
+### `system.run_dispatches`
+
+Mỗi run có một outbox row duy nhất. API tạo `runs`, các `run_steps` pending và `run_dispatches` trong cùng transaction. Orchestrator chỉ đánh dấu `dispatched_at` sau khi `XADD` thành công; nếu Redis tạm ngừng, row giữ nguyên để vòng sau thử lại.
 
 ## 3. Luồng hiện đã chạy được
 
@@ -82,6 +91,8 @@ sequenceDiagram
     participant K as Keycloak
     participant A as FastAPI System
     participant P as PostgreSQL/system
+    participant R as Redis Stream
+    participant W as Workflow worker
 
     C->>K: Đăng nhập
     K-->>C: Access token
@@ -95,8 +106,16 @@ sequenceDiagram
     C->>A: POST /versions
     A->>P: INSERT immutable graph + SHA-256
     C->>A: POST /runs với version_id + input
-    A->>P: INSERT run status=pending
-    A-->>C: HTTP 202 + run projection
+    A->>P: INSERT run + steps + outbox (một transaction)
+    A-->>C: HTTP 202 + run pending
+    A->>P: Background loop claim outbox chưa dispatch
+    A->>R: XADD run_id
+    A->>P: Set dispatched_at
+    W->>R: XREADGROUP / claim job
+    W->>P: pending -> running
+    W->>W: Chạy DAG, LLM và Python giới hạn
+    W->>P: Ghi output, step và trạng thái terminal
+    W->>R: XACK
 ```
 
 Các bước cụ thể:
@@ -105,14 +124,17 @@ Các bước cụ thể:
 2. `PUT /v1/workflows/{id}/draft` tăng revision trong cùng câu lệnh cập nhật có điều kiện.
 3. `POST /v1/workflows/{id}/validate` hiện kiểm tra cấu trúc `nodes`/`edges`, ID rỗng hoặc trùng, edge tham chiếu node không tồn tại và cycle.
 4. `POST /v1/workflows/{id}/versions` chỉ publish graph hợp lệ, đánh số version tiếp theo và lưu hash.
-5. `POST /v1/workflows/{id}/runs` xác minh version thuộc đúng workflow, sau đó ghi run `pending` và trả HTTP `202`.
-6. `GET /v1/runs/{run_id}` đọc projection theo `run_id` và `owner_subject`.
+5. `POST /v1/workflows/{id}/runs` xác minh version rồi tạo run, step và outbox atomically. API trả HTTP `202` ngay với trạng thái `pending`; nó không gọi LLM hoặc chạy Python.
+6. Orchestrator loop chạy trong chính lifecycle FastAPI gửi outbox vào Redis Stream. Worker trong consumer group claim job bằng phép cập nhật `pending -> running`, tải immutable graph rồi thực thi tuần tự `input.schema`, `math.add`, `agent`, `code.python` và `output.schema`. Agent dùng provider/model của chủ run.
+7. `GET /v1/runs/{run_id}` và `/steps` trả projection đang được worker cập nhật. UI poll mỗi giây khi run là `pending/running`. Nếu một bước lỗi, bước đó là `failed`, các bước sau là `skipped`, và run kết thúc `failed`.
+8. Worker chỉ `XACK` sau khi kết quả được commit. Message chưa ack quá thời gian cấu hình được worker khỏe mạnh nhận lại bằng `XAUTOCLAIM`.
+9. `GET /v1/workflows/{id}/runs` trả tối đa 100 lần chạy gần nhất của workflow, mới nhất trước và chỉ trong phạm vi người dùng hiện tại.
 
-Ở trạng thái code hiện tại, bước 5 chỉ ghi nhận run bền vững. Chưa có dispatcher/worker lấy run `pending`, nên run chưa tự chuyển sang `running` hoặc `succeeded`.
+`code.python` hiện dùng evaluator AST cho một tập Python giới hạn phục vụ biến đổi JSON (`main(inputs)`, biến cục bộ, dict/list, `len`, `split`, `join`). Nó không dùng `exec`, không cho phép import, vòng lặp hoặc truy cập tùy ý vào filesystem/network. Một runner cô lập đầy đủ vẫn thuộc runtime mục tiêu.
 
-## 4. Runtime xử lý workflow mục tiêu
+## 4. Runtime bền vững mục tiêu
 
-Worker tiếp theo nên xử lý theo snapshot, không đọc draft trong lúc chạy:
+Worker hiện đã xử lý theo snapshot và Redis consumer group. Các trạng thái/khả năng nâng cao còn lại:
 
 ```mermaid
 stateDiagram-v2
@@ -143,20 +165,23 @@ Một chu kỳ xử lý đề xuất:
 
 ## 5. Dữ liệu cần bổ sung cho worker
 
-Các bảng sau chưa có trong migration hiện tại, nhưng cần cho runtime bền vững:
+`run_steps` hiện đã lưu projection nhẹ để UI xem trạng thái và input/output từng node. Các bảng dưới đây vẫn cần bổ sung khi triển khai worker bền vững:
 
 | Bảng | Nội dung chính |
 | --- | --- |
-| `node_executions` | Một lần kích hoạt node trong run, input/output reference và trạng thái |
 | `node_attempts` | Số attempt, lease generation, thời gian và lỗi chuẩn hóa |
 | `commands` | Start/cancel/approval command cùng idempotency key và payload hash |
-| `outbox` | Event/command cần dispatch sau khi transaction domain commit |
+| `run_dispatches` | Đã triển khai: outbox dispatch run vào Redis Stream |
 | `run_events` | Event audit có sequence để SSE replay |
 | `agent_sessions` | Provider, session ID, runner/job reference và workspace snapshot |
 | `approval_requests` | Action hash, reviewer scope, deadline và decision |
 | `artifacts` | Object key, content type, size, checksum và retention |
 
 Các bảng trên vẫn thuộc schema `system` trong môi trường hiện tại. Nếu sau này một service trở thành chủ sở hữu dữ liệu độc lập, có thể chuyển schema/database bằng migration mà không để agent integration truy cập trực tiếp bảng System.
+
+### Langfuse và lịch sử nghiệp vụ
+
+`run_steps` là nguồn dữ liệu chính cho màn hình lịch sử vì nó cùng quyền sở hữu và vòng đời với workflow run. Langfuse phù hợp làm lớp observability tùy chọn cho LLM generation, token, cost và latency: một AgentFlow run ánh xạ thành trace, mỗi node/LLM call thành observation. Không dùng Langfuse thay cho `run_steps`, và không tự đưa secret hoặc payload nhạy cảm vào trace. Bản self-host hiện cần thêm web/worker, Redis hoặc Valkey, ClickHouse và blob storage, nên chưa được thêm vào Compose MVP. Tham khảo [Langfuse data model](https://langfuse.com/docs/observability/data-model) và [self-hosting sizing](https://langfuse.com/self-hosting/configuration/scaling).
 
 ## 6. Transaction, retry và khôi phục
 
@@ -209,13 +234,15 @@ Projection hiện tại ngay sau khi API commit:
 {
   "id": "0d905356-02e0-48f1-9618-6fc6c53f9685",
   "workflow_version_id": "6f902d28-979b-4c5f-b9dc-94bc7f29dc77",
-  "status": "pending",
+  "status": "succeeded",
   "input": {
     "ticket_id": "SUP-1024",
     "message": "Không đăng nhập được"
   },
-  "output": null
+  "output": {
+    "result": "..."
+  }
 }
 ```
 
-Khi worker được triển khai, chính hàng run này sẽ phản ánh trạng thái tổng hợp; chi tiết từng bước nằm trong `node_executions` và `node_attempts`, còn file/log lớn nằm trong artifact storage.
+Hàng run phản ánh trạng thái tổng hợp; `run_steps` cung cấp chi tiết node cho UI. Khi worker được triển khai, attempt/retry và log lớn sẽ nằm trong `node_attempts` cùng artifact storage.

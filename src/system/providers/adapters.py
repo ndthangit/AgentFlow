@@ -28,7 +28,7 @@ class ChatCompletionResult(BaseModel):
     model: str
     message: ChatMessage
     finish_reason: str | None = None
-    usage: dict[str, int] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -196,21 +196,35 @@ class OpenRouterAdapter(LlmProviderAdapter):
         body = request.model_dump(exclude_none=True)
         body["model"] = model
         body["messages"] = [message.model_dump() for message in request.messages]
-        payload = await self._request("POST", "/chat/completions", json=body)
-        try:
-            choice = payload["choices"][0]
+        invalid_reason = "invalid response envelope"
+        for _attempt in range(2):
+            payload = await self._request("POST", "/chat/completions", json=body)
+            error = payload.get("error")
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                raise ProviderRequestError(
+                    f"OpenRouter completion failed: {error['message']}"
+                )
+            choices = payload.get("choices")
+            if not isinstance(choices, list) or not choices:
+                invalid_reason = "response contained no completion choices"
+                continue
+            choice = choices[0]
+            message = choice.get("message") if isinstance(choice, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                invalid_reason = "completion message contained no text content"
+                continue
             return ChatCompletionResult(
-                id=payload["id"],
-                model=payload.get("model", model),
-                message=ChatMessage.model_validate(choice["message"]),
+                id=str(payload.get("id") or ""),
+                model=str(payload.get("model") or model),
+                message=ChatMessage(role="assistant", content=content),
                 finish_reason=choice.get("finish_reason"),
-                usage=payload.get("usage") or {},
+                usage=payload.get("usage")
+                if isinstance(payload.get("usage"), dict)
+                else {},
                 raw=payload,
             )
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderRequestError(
-                "OpenRouter returned an invalid response"
-            ) from exc
+        raise ProviderRequestError(f"OpenRouter {invalid_reason} after retry")
 
 
 def create_provider_adapter(

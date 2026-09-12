@@ -75,6 +75,7 @@
   ],
   "users": [
     {
+      "id": "${KEYCLOAK_DEV_USER_ID}",
       "username": "${KEYCLOAK_DEV_USER}",
       "enabled": true,
       "firstName": "AgentFlow",
