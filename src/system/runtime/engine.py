@@ -32,6 +32,9 @@ class WorkflowExecution:
     steps: list[ExecutionStep]
 
 
+StepObserver = Callable[[ExecutionStep], Awaitable[None]]
+
+
 def schema_errors(
     value: Any, schema: dict[str, Any], path: str = "$input"
 ) -> list[str]:
@@ -146,6 +149,7 @@ async def execute_workflow(
     graph: dict[str, Any],
     run_input: dict[str, Any],
     execute_agent: AgentExecutor,
+    on_step_update: StepObserver | None = None,
 ) -> WorkflowExecution:
     """Execute every node in topological order and retain success/failure details."""
     ordered, parents = ordered_nodes(graph)
@@ -158,6 +162,21 @@ async def execute_workflow(
         node_type = node.get("type", "unknown")
         started_at = datetime.now(UTC)
         node_input: dict[str, Any] | None = None
+        if on_step_update is not None:
+            await on_step_update(
+                ExecutionStep(
+                    sequence=sequence,
+                    node_id=node_id,
+                    node_type=node_type,
+                    node_name=node.get("name", node_id),
+                    status="running",
+                    input=None,
+                    output=None,
+                    error=None,
+                    started_at=started_at,
+                    completed_at=None,
+                )
+            )
         try:
             if node_type == "input.schema":
                 node_input = dict(run_input)
@@ -216,58 +235,61 @@ async def execute_workflow(
             outputs[node_id] = node_output
             workflow_output = node_output
             completed_at = datetime.now(UTC)
-            steps.append(
-                ExecutionStep(
-                    sequence=sequence,
-                    node_id=node_id,
-                    node_type=node_type,
-                    node_name=node.get("name", node_id),
-                    status="succeeded",
-                    input=node_input,
-                    output=node_output,
-                    error=None,
-                    started_at=started_at,
-                    completed_at=completed_at,
-                )
+            completed_step = ExecutionStep(
+                sequence=sequence,
+                node_id=node_id,
+                node_type=node_type,
+                node_name=node.get("name", node_id),
+                status="succeeded",
+                input=node_input,
+                output=node_output,
+                error=None,
+                started_at=started_at,
+                completed_at=completed_at,
             )
+            steps.append(completed_step)
+            if on_step_update is not None:
+                await on_step_update(completed_step)
         except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
             # Provider adapters and parsers surface ordinary Exceptions. Persist the
             # concise message on the failed step so a run never remains silently pending.
             completed_at = datetime.now(UTC)
-            steps.append(
-                ExecutionStep(
-                    sequence=sequence,
-                    node_id=node_id,
-                    node_type=node_type,
-                    node_name=node.get("name", node_id),
-                    status="failed",
-                    input=node_input,
-                    output=None,
-                    error={"code": "STEP_EXECUTION_FAILED", "message": str(exc)},
-                    started_at=started_at,
-                    completed_at=completed_at,
-                )
+            failed_step = ExecutionStep(
+                sequence=sequence,
+                node_id=node_id,
+                node_type=node_type,
+                node_name=node.get("name", node_id),
+                status="failed",
+                input=node_input,
+                output=None,
+                error={"code": "STEP_EXECUTION_FAILED", "message": str(exc)},
+                started_at=started_at,
+                completed_at=completed_at,
             )
+            steps.append(failed_step)
+            if on_step_update is not None:
+                await on_step_update(failed_step)
             for skipped_sequence, skipped in enumerate(
                 ordered[sequence:], start=sequence + 1
             ):
-                steps.append(
-                    ExecutionStep(
-                        sequence=skipped_sequence,
-                        node_id=skipped["id"],
-                        node_type=skipped.get("type", "unknown"),
-                        node_name=skipped.get("name", skipped["id"]),
-                        status="skipped",
-                        input=None,
-                        output=None,
-                        error={
-                            "code": "UPSTREAM_STEP_FAILED",
-                            "message": f"Skipped because node {node_id} failed",
-                        },
-                        started_at=None,
-                        completed_at=None,
-                    )
+                skipped_step = ExecutionStep(
+                    sequence=skipped_sequence,
+                    node_id=skipped["id"],
+                    node_type=skipped.get("type", "unknown"),
+                    node_name=skipped.get("name", skipped["id"]),
+                    status="skipped",
+                    input=None,
+                    output=None,
+                    error={
+                        "code": "UPSTREAM_STEP_FAILED",
+                        "message": f"Skipped because node {node_id} failed",
+                    },
+                    started_at=None,
+                    completed_at=None,
                 )
+                steps.append(skipped_step)
+                if on_step_update is not None:
+                    await on_step_update(skipped_step)
             return WorkflowExecution(status="failed", output=None, steps=steps)
 
     return WorkflowExecution(status="succeeded", output=workflow_output, steps=steps)

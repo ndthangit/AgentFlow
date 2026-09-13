@@ -52,6 +52,20 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
         errors.append(f"node {node_id} must define schema as an object")
     if node_type == "agent":
         _validate_configured_node(node, errors, require_language=False)
+        config = node.get("config")
+        if isinstance(config, dict) and "skillIds" in config:
+            skill_ids = config["skillIds"]
+            if (
+                not isinstance(skill_ids, list)
+                or any(
+                    not isinstance(skill_id, str) or not skill_id
+                    for skill_id in skill_ids
+                )
+                or len(set(skill_ids)) != len(skill_ids)
+            ):
+                errors.append(
+                    f"agent node {node_id} skillIds must be unique non-empty strings"
+                )
     elif node_type == "code.python":
         _validate_configured_node(node, errors, require_language=True)
     elif node_type == "math.add":

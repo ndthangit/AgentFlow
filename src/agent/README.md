@@ -128,8 +128,8 @@ print(result.output.model_dump())
 
 ## Phạm vi bản mẫu
 
-- Mỗi request có graph state mới, không lưu session/checkpoint và không đọc file trên host. Scratchpad chỉ nằm trong state của lần chạy.
-- Một agent; general-purpose subagent được tắt qua harness profile. Cấu hình profile là process-global, nên chạy module này như runtime riêng.
+- HTTP service dùng một `AgentRuntime` và một model dùng chung. Mỗi request tạo graph state riêng, nhận bộ skill riêng và không đọc file trên host; scratchpad và skill không truyền sang session khác.
+- Chỉ có một agent; general-purpose subagent được tắt qua harness profile. Cấu hình profile là process-global, nên chạy module này như runtime riêng.
 - Không có shell, web search, credential của connector hoặc hành động bên ngoài; chỉ có lời gọi model khi chạy live.
 - Giới hạn task/context, output tối đa 12 bước, graph tối đa 40 supersteps và deadline 120 giây. Đây không phải hard billing cap; request provider đã gửi có thể vẫn bị tính phí sau timeout.
 - Agent là integration độc lập và không sở hữu database. FastAPI control plane, PostgreSQL và migration nằm trong [`../system`](../system/README.md). Agent chưa có streaming, resume hoặc cancel endpoint; deadline runtime vẫn áp dụng.

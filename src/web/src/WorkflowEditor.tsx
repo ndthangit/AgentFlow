@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 
+import type { Skill } from "./types";
+
 type WorkflowEditorProps = {
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  skills?: Skill[];
 };
 
 type GraphNode = Record<string, unknown> & {
@@ -22,6 +25,7 @@ type Graph = Record<string, unknown> & {
 };
 
 type EditableNodeType = "input.schema" | "agent" | "code.python" | "output.schema";
+type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array";
 
 type NodeForm = {
   id: string;
@@ -32,6 +36,8 @@ type NodeForm = {
   code: string;
   inputSchema: string;
   outputSchema: string;
+  skillIds: string[];
+  inheritsWorkflowSkills: boolean;
 };
 
 const emptyObjectSchema = {
@@ -87,6 +93,10 @@ function formFromNode(node: GraphNode): NodeForm {
     code: typeof config.code === "string" ? config.code : "",
     inputSchema: schemaText(config.inputSchema),
     outputSchema: schemaText(config.outputSchema),
+    skillIds: Array.isArray(config.skillIds)
+      ? config.skillIds.filter((item): item is string => typeof item === "string")
+      : [],
+    inheritsWorkflowSkills: !Array.isArray(config.skillIds),
   };
 }
 
@@ -99,6 +109,137 @@ function parseSchema(value: string, label: string): Record<string, unknown> {
   }
   if (!isRecord(parsed)) throw new Error(`${label} phải là một JSON object.`);
   return parsed;
+}
+
+const schemaTypes: { value: SchemaType; label: string }[] = [
+  { value: "string", label: "Văn bản (string)" },
+  { value: "number", label: "Số (number)" },
+  { value: "integer", label: "Số nguyên (integer)" },
+  { value: "boolean", label: "Đúng / sai (boolean)" },
+  { value: "object", label: "Đối tượng (object)" },
+  { value: "array", label: "Danh sách (array)" },
+];
+
+function schemaForType(type: SchemaType): Record<string, unknown> {
+  if (type === "object") return { type, properties: {}, additionalProperties: false };
+  if (type === "array") return { type, items: { type: "string" } };
+  return { type };
+}
+
+function SchemaBuilder({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const parsed = useMemo<{ schema: Record<string, unknown>; error?: string }>(() => {
+    try {
+      const schema: unknown = JSON.parse(value);
+      return isRecord(schema)
+        ? { schema }
+        : { schema: emptyObjectSchema, error: "Schema phải là một JSON object." };
+    } catch {
+      return { schema: emptyObjectSchema, error: "JSON nâng cao chưa hợp lệ." };
+    }
+  }, [value]);
+  const properties = isRecord(parsed.schema.properties) ? parsed.schema.properties : {};
+  const required = Array.isArray(parsed.schema.required)
+    ? parsed.schema.required.filter((item): item is string => typeof item === "string")
+    : [];
+
+  function commit(nextProperties: Record<string, unknown>, nextRequired = required) {
+    const nextSchema: Record<string, unknown> = {
+      ...parsed.schema,
+      type: "object",
+      properties: nextProperties,
+      additionalProperties: false,
+    };
+    if (nextRequired.length) nextSchema.required = nextRequired;
+    else delete nextSchema.required;
+    onChange(JSON.stringify(nextSchema, null, 2));
+  }
+
+  function addField() {
+    let suffix = Object.keys(properties).length + 1;
+    let name = `field_${suffix}`;
+    while (name in properties) name = `field_${++suffix}`;
+    commit({ ...properties, [name]: { type: "string" } });
+  }
+
+  function renameField(currentName: string, nextName: string) {
+    if (nextName !== currentName && nextName in properties) return;
+    const nextProperties: Record<string, unknown> = {};
+    for (const [name, definition] of Object.entries(properties)) {
+      nextProperties[name === currentName ? nextName : name] = definition;
+    }
+    commit(
+      nextProperties,
+      required.map((name) => name === currentName ? nextName : name),
+    );
+  }
+
+  function setFieldType(name: string, type: SchemaType) {
+    commit({ ...properties, [name]: schemaForType(type) });
+  }
+
+  function setArrayItemType(name: string, type: SchemaType) {
+    const definition = isRecord(properties[name]) ? properties[name] : {};
+    commit({ ...properties, [name]: { ...definition, items: schemaForType(type) } });
+  }
+
+  function setRequired(name: string, checked: boolean) {
+    commit(
+      properties,
+      checked ? [...new Set([...required, name])] : required.filter((item) => item !== name),
+    );
+  }
+
+  function removeField(name: string) {
+    const nextProperties = { ...properties };
+    delete nextProperties[name];
+    commit(nextProperties, required.filter((item) => item !== name));
+  }
+
+  return (
+    <section className="schema-builder">
+      <div className="schema-builder-heading">
+        <div><strong>{label}</strong><span>Khai báo các trường dữ liệu JSON</span></div>
+        <button type="button" onClick={addField}>+ Thêm trường</button>
+      </div>
+      <div className="schema-field-list">
+        {Object.entries(properties).map(([name, rawDefinition], index) => {
+          const definition = isRecord(rawDefinition) ? rawDefinition : {};
+          const type = schemaTypes.some((item) => item.value === definition.type)
+            ? definition.type as SchemaType
+            : "string";
+          const items = isRecord(definition.items) ? definition.items : {};
+          const itemType = schemaTypes.some((item) => item.value === items.type)
+            ? items.type as SchemaType
+            : "string";
+          return (
+            <div className={type === "array" ? "schema-field with-items" : "schema-field"} key={index}>
+              <label>Tên trường<input value={name} placeholder="Ví dụ: email" onChange={(event) => renameField(name, event.target.value)} /></label>
+              <label>Kiểu dữ liệu<select value={type} onChange={(event) => setFieldType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+              {type === "array" && (
+                <label>Kiểu phần tử<select value={itemType} onChange={(event) => setArrayItemType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+              )}
+              <label className="schema-required"><input type="checkbox" checked={required.includes(name)} onChange={(event) => setRequired(name, event.target.checked)} /> Bắt buộc</label>
+              <button type="button" className="schema-remove" aria-label={`Xóa trường ${name}`} onClick={() => removeField(name)}>Xóa</button>
+            </div>
+          );
+        })}
+        {!Object.keys(properties).length && <p className="schema-empty">Chưa có trường dữ liệu. Chọn “Thêm trường” để bắt đầu.</p>}
+      </div>
+      <details className="schema-advanced">
+        <summary>JSON Schema nâng cao</summary>
+        <textarea className="schema-textarea" value={value} spellCheck={false} onChange={(event) => onChange(event.target.value)} />
+        {parsed.error && <p>{parsed.error}</p>}
+      </details>
+    </section>
+  );
 }
 
 function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
@@ -124,6 +265,7 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
       note: "Mô tả ngắn nhiệm vụ của agent.",
       config: {
         instructions: "",
+        skillIds: [],
         inputSchema: emptyObjectSchema,
         outputSchema: emptyObjectSchema,
       },
@@ -165,13 +307,16 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
   return nodes.length;
 }
 
-export function WorkflowEditor({ value, onChange, disabled = false }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, onChange, disabled = false, skills = [] }: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
   const [selectedId, setSelectedId] = useState<string>();
   const selectedNode = graph?.nodes.find((node) => node.id === selectedId);
   const [form, setForm] = useState<NodeForm>();
   const [formError, setFormError] = useState("");
+  const agentSkillIds = form?.inheritsWorkflowSkills
+    ? skills.map((skill) => skill.id)
+    : form?.skillIds ?? [];
 
   useEffect(() => {
     if (selectedNode) return;
@@ -259,6 +404,7 @@ export function WorkflowEditor({ value, onChange, disabled = false }: WorkflowEd
         updated.config = {
           ...config,
           instructions: form.instructions.trim(),
+          skillIds: agentSkillIds.filter((skillId) => skills.some((skill) => skill.id === skillId)),
           inputSchema: parseSchema(form.inputSchema, "Input schema"),
           outputSchema: parseSchema(form.outputSchema, "Output schema"),
         };
@@ -354,14 +500,34 @@ export function WorkflowEditor({ value, onChange, disabled = false }: WorkflowEd
               <label>Note<textarea className="compact-textarea" value={form.note} placeholder="Mô tả vai trò của node…" onChange={(event) => setForm({ ...form, note: event.target.value })} /></label>
 
               {(selectedNode.type === "input.schema" || selectedNode.type === "output.schema") && (
-                <label>JSON Schema<textarea className="schema-textarea" value={form.schema} spellCheck={false} onChange={(event) => setForm({ ...form, schema: event.target.value })} /></label>
+                <SchemaBuilder label={selectedNode.type === "input.schema" ? "Input schema" : "Output schema"} value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
               )}
 
               {selectedNode.type === "agent" && (
                 <>
                   <label>Instructions<textarea className="compact-textarea instructions" value={form.instructions} placeholder="Agent cần thực hiện điều gì?" onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
-                  <label>Input schema<textarea className="schema-textarea" value={form.inputSchema} spellCheck={false} onChange={(event) => setForm({ ...form, inputSchema: event.target.value })} /></label>
-                  <label>Output schema<textarea className="schema-textarea" value={form.outputSchema} spellCheck={false} onChange={(event) => setForm({ ...form, outputSchema: event.target.value })} /></label>
+                  <section className="agent-skill-picker">
+                    <div><strong>Skills của Agent</strong><span>Mỗi Agent chỉ nhận các skill được chọn tại đây.</span></div>
+                    <select
+                      value=""
+                      disabled={!skills.some((skill) => !agentSkillIds.includes(skill.id))}
+                      onChange={(event) => {
+                        if (event.target.value) setForm({ ...form, skillIds: [...agentSkillIds, event.target.value], inheritsWorkflowSkills: false });
+                      }}
+                    >
+                      <option value="">+ Thêm skill…</option>
+                      {skills.filter((skill) => !agentSkillIds.includes(skill.id)).map((skill) => <option value={skill.id} key={skill.id}>{skill.name}</option>)}
+                    </select>
+                    <div className="agent-skill-list">
+                      {agentSkillIds.flatMap((skillId) => {
+                        const skill = skills.find((item) => item.id === skillId);
+                        return skill ? [<span key={skill.id}><b>{skill.name}</b><small>{skill.slug} · v{skill.version}</small><button type="button" aria-label={`Bỏ skill ${skill.name}`} onClick={() => setForm({ ...form, skillIds: agentSkillIds.filter((id) => id !== skill.id), inheritsWorkflowSkills: false })}>×</button></span>] : [];
+                      })}
+                      {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>Chưa gắn skill. Hãy thêm skill vào kho workflow trước.</p>}
+                    </div>
+                  </section>
+                  <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
+                  <SchemaBuilder label="Output schema" value={form.outputSchema} onChange={(outputSchema) => setForm({ ...form, outputSchema })} />
                 </>
               )}
 
@@ -369,8 +535,8 @@ export function WorkflowEditor({ value, onChange, disabled = false }: WorkflowEd
                 <>
                   <label>Python code<textarea className="code-textarea" value={form.code} spellCheck={false} onChange={(event) => setForm({ ...form, code: event.target.value })} /></label>
                   <p className="node-form-hint">Khai báo hàm main(inputs) và trả về một JSON object.</p>
-                  <label>Input schema<textarea className="schema-textarea" value={form.inputSchema} spellCheck={false} onChange={(event) => setForm({ ...form, inputSchema: event.target.value })} /></label>
-                  <label>Output schema<textarea className="schema-textarea" value={form.outputSchema} spellCheck={false} onChange={(event) => setForm({ ...form, outputSchema: event.target.value })} /></label>
+                  <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
+                  <SchemaBuilder label="Output schema" value={form.outputSchema} onChange={(outputSchema) => setForm({ ...form, outputSchema })} />
                 </>
               )}
 

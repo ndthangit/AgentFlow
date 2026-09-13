@@ -2,8 +2,8 @@
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import or_, select, update
+from fastapi import APIRouter, HTTPException, Response, status
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from api.dependencies import Claims, DatabaseSession
@@ -116,3 +116,27 @@ async def update_skill(
         raise HTTPException(status_code=409, detail="Skill version conflict")
     await session.commit()
     return skill
+
+
+@router.delete("/{skill_id}", status_code=204)
+async def delete_skill(
+    skill_id: uuid.UUID,
+    claims: Claims,
+    session: DatabaseSession,
+) -> Response:
+    skill = await session.scalar(
+        select(Skill).where(Skill.id == skill_id, visible_skill_filter(claims["sub"]))
+    )
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if skill.source != "user" or skill.owner_subject != claims["sub"]:
+        raise HTTPException(status_code=403, detail="System skills cannot be deleted")
+    await session.execute(
+        delete(Skill).where(
+            Skill.id == skill_id,
+            Skill.owner_subject == claims["sub"],
+            Skill.source == "user",
+        )
+    )
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -58,6 +58,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  deleteSkill: (skillId: string) =>
+    request<void>(`/v1/skills/${skillId}`, { method: "DELETE" }),
   listWorkflowSkills: (workflowId: string) =>
     request<Skill[]>(`/v1/workflows/${workflowId}/skills`),
   selectWorkflowSkills: (workflowId: string, skillIds: string[]) =>
@@ -87,6 +89,8 @@ export const api = {
     request<WorkflowVersion>(`/v1/workflows/${workflowId}/versions`, {
       method: "POST",
     }),
+  getCurrentWorkflowVersion: (workflowId: string) =>
+    request<WorkflowVersion | null>(`/v1/workflows/${workflowId}/versions/current`),
   createRun: (workflowId: string, versionId: string, input: Record<string, unknown>) =>
     request<FlowRun>(`/v1/workflows/${workflowId}/runs`, {
       method: "POST",

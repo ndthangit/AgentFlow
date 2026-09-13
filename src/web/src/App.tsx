@@ -223,6 +223,10 @@ export function App() {
     [selectedId, workflows],
   );
   const enabledSkills = useMemo(() => skills.filter((skill) => skill.enabled), [skills]);
+  const latestCompletedOutput = useMemo(
+    () => runs.find((item) => item.status === "succeeded" && item.output)?.output,
+    [runs],
+  );
 
   async function refreshWorkflows(select?: string) {
     const items = await api.listWorkflows();
@@ -267,20 +271,17 @@ export function App() {
       : isAgentPythonDemo
         ? JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2)
         : "{}");
-    api
-      .listWorkflowSkills(selected.id)
-      .then((items) => {
-        if (!cancelled) setSelectedSkillIds(items.map((skill) => skill.id));
-      })
-      .catch((error: Error) => {
-        if (!cancelled) setMessage(error.message);
-      });
-    api
-      .listWorkflowRuns(selected.id)
-      .then((items) => {
+    Promise.all([
+      api.listWorkflowSkills(selected.id),
+      api.listWorkflowRuns(selected.id),
+      api.getCurrentWorkflowVersion(selected.id),
+    ])
+      .then(([workflowSkills, items, currentVersion]) => {
         if (!cancelled) {
+          setSelectedSkillIds(workflowSkills.map((skill) => skill.id));
           setRuns(items);
           setRun(items[0]);
+          setVersion(currentVersion ?? undefined);
         }
       })
       .catch((error: Error) => {
@@ -496,7 +497,7 @@ export function App() {
           <>
             <section className="canvas-card">
               <div className="canvas-toolbar"><div><span className="pill">Draft</span><span>Revision {selected.revision}</span></div><span className="save-state">{message}</span></div>
-              <WorkflowEditor value={editor} onChange={setEditor} disabled={busy} />
+              <WorkflowEditor value={editor} onChange={setEditor} disabled={busy} skills={enabledSkills.filter((skill) => selectedSkillIds.includes(skill.id))} />
             </section>
 
             {selected && (
@@ -505,7 +506,7 @@ export function App() {
                 <textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} spellCheck={false} />
                 <div className="run-output">
                   <strong>Kết quả gần nhất</strong>
-                  <code>{run?.output ? JSON.stringify(run.output, null, 2) : "Chưa có kết quả"}</code>
+                  <code>{latestCompletedOutput ? JSON.stringify(latestCompletedOutput, null, 2) : "Chưa có kết quả hoàn tất"}</code>
                 </div>
               </section>
             )}
@@ -543,7 +544,7 @@ export function App() {
                       >
                         <span className={`run-status ${item.status}`}>{item.status}</span>
                         <span><strong>Run {item.id.slice(0, 8)}</strong><small>{new Date(item.created_at).toLocaleString("vi-VN")}</small></span>
-                        <code>{item.output ? JSON.stringify(item.output) : "Chưa có output"}</code>
+                        {item.status === "succeeded" && item.output && <code>{JSON.stringify(item.output)}</code>}
                         <b>Xem</b>
                       </button>
                     ))}
@@ -559,9 +560,14 @@ export function App() {
                         </div>
                         <div className="run-io-summary">
                           <div><strong>Workflow input</strong><pre>{JSON.stringify(run.input, null, 2)}</pre></div>
-                          <div><strong>Workflow output</strong><pre>{run.output ? JSON.stringify(run.output, null, 2) : "Chưa có output"}</pre></div>
+                          {run.status === "succeeded" && run.output && (
+                            <div><strong>Workflow output</strong><pre>{JSON.stringify(run.output, null, 2)}</pre></div>
+                          )}
                         </div>
-                        <div className="run-step-heading"><strong>Chi tiết từng bước</strong><span>{runSteps.length} bước</span></div>
+                        <div className="run-step-heading">
+                          <strong>Chi tiết từng bước</strong>
+                          <span>{runSteps.filter((step) => step.status === "succeeded").length}/{runSteps.length} bước hoàn tất</span>
+                        </div>
                         <div className="run-step-list">
                           {runSteps.map((step) => (
                             <details className="run-step" key={step.id} open={runSteps.length <= 3}>
@@ -570,10 +576,15 @@ export function App() {
                                 <span><strong>{step.node_name}</strong><small>{step.node_type} · {step.node_id}</small></span>
                                 <i className={`run-status ${step.status}`}>{step.status}</i>
                               </summary>
-                              <div className="run-step-io">
-                                <div><strong>Input</strong><pre>{step.input ? JSON.stringify(step.input, null, 2) : "Chưa có input thực thi"}</pre></div>
-                                <div><strong>Output</strong><pre>{step.output ? JSON.stringify(step.output, null, 2) : "Chưa có output"}</pre></div>
-                              </div>
+                              {step.status === "succeeded" && (
+                                <div className="run-step-io">
+                                  <div><strong>Input</strong><pre>{JSON.stringify(step.input, null, 2)}</pre></div>
+                                  <div><strong>Kết quả</strong><pre>{JSON.stringify(step.output, null, 2)}</pre></div>
+                                </div>
+                              )}
+                              {step.status === "failed" && step.input && (
+                                <div className="run-step-io"><div><strong>Input</strong><pre>{JSON.stringify(step.input, null, 2)}</pre></div></div>
+                              )}
                               {step.error && <div className="run-step-error"><strong>Error</strong><pre>{JSON.stringify(step.error, null, 2)}</pre></div>}
                             </details>
                           ))}
@@ -589,7 +600,7 @@ export function App() {
 
             {selected && (
               <section className="skills-card">
-                <div><p className="eyebrow">INSTALLED SKILLS</p><h2>Chọn skill cho workflow</h2><p>Chỉ các skill đang được bật trong Skill library mới xuất hiện tại đây.</p></div>
+                <div><p className="eyebrow">WORKFLOW SKILLS</p><h2>Kho skill của workflow</h2><p>Thêm skill vào đây, sau đó mở từng node Agent để chọn skill riêng cho Agent đó.</p></div>
                 <div className="skill-list">
                   {enabledSkills.length ? enabledSkills.map((skill) => {
                     const checked = selectedSkillIds.includes(skill.id);
@@ -601,8 +612,12 @@ export function App() {
                 </div>
                 <button disabled={busy} onClick={() => void perform(async () => {
                   const chosen = await api.selectWorkflowSkills(selected.id, selectedSkillIds);
+                  const currentVersion = await api.getCurrentWorkflowVersion(selected.id);
                   setSelectedSkillIds(chosen.map((skill) => skill.id));
-                  setMessage(`Đã gắn ${chosen.length} skill vào workflow`);
+                  setVersion(currentVersion ?? undefined);
+                  setMessage(currentVersion
+                    ? `Đã gắn ${chosen.length} skill · Published v${currentVersion.version}`
+                    : `Đã gắn ${chosen.length} skill · cần publish lại`);
                 })}>Lưu lựa chọn</button>
               </section>
             )}
@@ -620,7 +635,16 @@ export function App() {
                   <article className={skill.enabled ? "skill-library-card" : "skill-library-card disabled"} key={skill.id}>
                     <div className="skill-card-heading"><span className={`source-badge ${skill.source}`}>{skill.source === "builtin" ? "Hệ thống" : "Người dùng"}</span><code>v{skill.version}</code></div>
                     <h3>{skill.name}</h3><p>{skill.description || "Chưa có mô tả."}</p>
-                    <div className="skill-meta"><code>{skill.slug}</code><span>{skill.enabled ? "Đang bật" : "Đã tắt"}</span></div>
+                    <div className="skill-meta"><code>{skill.slug}</code>{skill.source === "user" ? <button className="delete-skill" disabled={busy} onClick={() => {
+                      if (!window.confirm(`Xóa skill “${skill.name}”? Skill sẽ được bỏ khỏi các workflow chưa publish.`)) return;
+                      void perform(async () => {
+                        await api.deleteSkill(skill.id);
+                        setSelectedSkillIds((ids) => ids.filter((id) => id !== skill.id));
+                        await refreshSkills();
+                        if (selected) setVersion((await api.getCurrentWorkflowVersion(selected.id)) ?? undefined);
+                        setMessage(`Đã xóa skill “${skill.name}”`);
+                      });
+                    }}>Xóa</button> : <span>Skill hệ thống</span>}</div>
                   </article>
                 ))}
                 {!skills.length && <div className="catalog-empty">Chưa có skill. Hãy tạo skill đầu tiên ở biểu mẫu bên cạnh.</div>}
@@ -660,8 +684,8 @@ export function App() {
             <div className="run-state">{run ? <><span className="run-dot" />Run <code>{run.id.slice(0, 8)}</code> · {run.status}</> : "Chưa có run trong phiên này"}</div>
             <div className="actions">
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const result = await api.validate(selected!.id); setMessage(result.valid ? "Graph hợp lệ" : result.errors.join(" · ")); })}>Kiểm tra</button>
-              <button disabled={!selected || busy} onClick={() => void perform(async () => { const saved = await api.updateDraft(selected!, parseDraft()); setWorkflows((items) => items.map((item) => item.id === saved.id ? saved : item)); setMessage(`Đã lưu revision ${saved.revision}`); })}>Lưu draft</button>
-              <button className="primary" disabled={!selected || busy} onClick={() => void perform(async () => { const published = await api.publish(selected!.id); setVersion(published); setMessage(`Đã publish version ${published.version}`); })}>Publish</button>
+              <button disabled={!selected || busy} onClick={() => void perform(async () => { const saved = await api.updateDraft(selected!, parseDraft()); const currentVersion = await api.getCurrentWorkflowVersion(saved.id); setWorkflows((items) => items.map((item) => item.id === saved.id ? saved : item)); setVersion(currentVersion ?? undefined); setMessage(currentVersion ? `Đã lưu revision ${saved.revision} · Published v${currentVersion.version}` : `Đã lưu revision ${saved.revision} · cần publish lại`); })}>Lưu draft</button>
+              <button className="primary" disabled={!selected || busy} onClick={() => void perform(async () => { const published = await api.publish(selected!.id); setVersion(published); setMessage(`Đã publish version ${published.version}`); })}>{version ? `Published v${version.version}` : "Publish"}</button>
               <button className="run-button" disabled={!selected || !version || busy} onClick={() => void perform(async () => { const created = await api.createRun(selected!.id, version!.id, parseRunInput()); setRun(created); setRuns((items) => [created, ...items.filter((item) => item.id !== created.id)]); setMessage(created.status === "succeeded" ? `Đã chạy xong workflow: ${JSON.stringify(created.output)}` : `Run đang ở trạng thái ${created.status}`); })}>▶ Chạy</button>
             </div>
           </footer>

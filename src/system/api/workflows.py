@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import Claims, DatabaseSession, get_owned_workflow
 from api.skills import visible_skill_filter
@@ -28,6 +29,31 @@ from domain.validation import validate_graph
 from services.skills import SkillView, WorkflowSkillSelection
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
+
+
+async def _version_snapshot(
+    workflow: Workflow, session: AsyncSession
+) -> tuple[dict, str]:
+    selected_skills = await session.scalars(
+        select(Skill)
+        .join(WorkflowSkill, WorkflowSkill.skill_id == Skill.id)
+        .where(WorkflowSkill.workflow_id == workflow.id)
+        .order_by(WorkflowSkill.position)
+    )
+    graph = deepcopy(workflow.draft)
+    graph["skills"] = [
+        {
+            "id": str(skill.id),
+            "slug": skill.slug,
+            "name": skill.name,
+            "version": skill.version,
+            "content_hash": skill.content_hash,
+            "instructions": skill.instructions,
+        }
+        for skill in selected_skills
+    ]
+    canonical = json.dumps(graph, sort_keys=True, separators=(",", ":"))
+    return graph, hashlib.sha256(canonical.encode()).hexdigest()
 
 
 @router.post("", response_model=WorkflowView, status_code=201)
@@ -209,32 +235,34 @@ async def publish_workflow(
             WorkflowVersion.workflow_id == workflow.id
         )
     )
-    selected_skills = await session.scalars(
-        select(Skill)
-        .join(WorkflowSkill, WorkflowSkill.skill_id == Skill.id)
-        .where(WorkflowSkill.workflow_id == workflow.id)
-        .order_by(WorkflowSkill.position)
-    )
-    graph = deepcopy(workflow.draft)
-    graph["skills"] = [
-        {
-            "id": str(skill.id),
-            "slug": skill.slug,
-            "name": skill.name,
-            "version": skill.version,
-            "content_hash": skill.content_hash,
-            "instructions": skill.instructions,
-        }
-        for skill in selected_skills
-    ]
-    canonical = json.dumps(graph, sort_keys=True, separators=(",", ":"))
+    graph, content_hash = await _version_snapshot(workflow, session)
     version = WorkflowVersion(
         workflow_id=workflow.id,
         version=(latest or 0) + 1,
         graph=graph,
-        content_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+        content_hash=content_hash,
     )
     session.add(version)
     await session.commit()
     await session.refresh(version)
     return version
+
+
+@router.get("/{workflow_id}/versions/current", response_model=VersionView | None)
+async def get_current_workflow_version(
+    workflow_id: uuid.UUID,
+    claims: Claims,
+    session: DatabaseSession,
+):
+    """Return the newest published version matching the current draft and skills."""
+    workflow = await get_owned_workflow(workflow_id, claims["sub"], session)
+    _graph, content_hash = await _version_snapshot(workflow, session)
+    return await session.scalar(
+        select(WorkflowVersion)
+        .where(
+            WorkflowVersion.workflow_id == workflow.id,
+            WorkflowVersion.content_hash == content_hash,
+        )
+        .order_by(WorkflowVersion.version.desc())
+        .limit(1)
+    )

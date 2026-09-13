@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from agent.auth import KeycloakTokenVerifier, OidcSettings
 from agent.contracts import AgentRunError, RunRequest, RunResult
-from agent.runtime import run_agent
+from agent.runtime import AgentRuntime
 
 
 def create_app(*, demo: bool | None = None) -> FastAPI:
@@ -20,6 +20,7 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
     verifier = KeycloakTokenVerifier(OidcSettings.from_env()) if auth_enabled else None
     bearer = HTTPBearer(auto_error=False)
     app = FastAPI(title="AgentFlow Agent Integration", version="0.1.0")
+    runtime = AgentRuntime(demo=use_demo)
 
     async def authorize(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -54,7 +55,7 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
         request: RunRequest, _claims: Annotated[dict, Depends(authorize)]
     ):
         try:
-            return await run_agent(request, demo=use_demo)
+            return await runtime.run(request)
         except AgentRunError as exc:
             response_status = {
                 "CONFIGURATION_ERROR": 503,

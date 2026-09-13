@@ -14,7 +14,7 @@ from agent.api import create_app
 from agent.contracts import AgentRunError, AgentSkill, RunRequest
 from agent.demo import DemoModel
 from agent.graph import build_agent, build_configured_model
-from agent.runtime import run_agent
+from agent.runtime import AgentRuntime, run_agent
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
@@ -72,6 +72,57 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         prompt = factory.call_args.kwargs["skill_instructions"]
         self.assertIn("Review Output", prompt)
         self.assertIn(skill.instructions, prompt)
+
+    async def test_shared_runtime_isolates_skills_between_sessions(self):
+        first_skill = AgentSkill(
+            id="skill-1",
+            slug="research",
+            name="Research",
+            version=1,
+            content_hash="a" * 64,
+            instructions="Use primary sources.",
+        )
+        second_skill = AgentSkill(
+            id="skill-2",
+            slug="writer",
+            name="Writer",
+            version=1,
+            content_hash="b" * 64,
+            instructions="Write a concise answer.",
+        )
+        response = {
+            "structured_response": {
+                "summary": "done",
+                "steps": [
+                    {
+                        "node_type": "end",
+                        "label": "Done",
+                        "instructions": "Return result",
+                    }
+                ],
+                "notes": [],
+            }
+        }
+
+        with patch("agent.runtime.build_agent") as factory:
+            factory.side_effect = [
+                AsyncMock(ainvoke=AsyncMock(return_value=response)),
+                AsyncMock(ainvoke=AsyncMock(return_value=response)),
+            ]
+            runtime = AgentRuntime(demo=True)
+            await asyncio.gather(
+                runtime.run(RunRequest(task="research", skills=[first_skill])),
+                runtime.run(RunRequest(task="write", skills=[second_skill])),
+            )
+
+        first_call, second_call = factory.call_args_list
+        self.assertIs(first_call.args[0], second_call.args[0])
+        first_prompt = first_call.kwargs["skill_instructions"]
+        second_prompt = second_call.kwargs["skill_instructions"]
+        self.assertIn(first_skill.instructions, first_prompt)
+        self.assertNotIn(second_skill.instructions, first_prompt)
+        self.assertIn(second_skill.instructions, second_prompt)
+        self.assertNotIn(first_skill.instructions, second_prompt)
 
     async def test_missing_credentials_fail_without_provider_call(self):
         with (

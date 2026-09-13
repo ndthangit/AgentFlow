@@ -6,6 +6,7 @@ from domain.errors import WorkflowExecutionError
 from domain.examples import sum_workflow_draft
 from domain.schemas import WorkflowCreate
 from domain.validation import validate_graph
+from runtime.agent_executor import skill_instructions_for_node
 from runtime.builtin import (
     execute_builtin_workflow,
     execute_builtin_workflow_detailed,
@@ -14,6 +15,33 @@ from services.skills import WorkflowSkillSelection, content_hash
 
 
 class WorkflowValidationTests(unittest.TestCase):
+    def test_agent_receives_only_its_assigned_skills(self):
+        graph = {
+            "skills": [
+                {"id": "research", "instructions": "Research first"},
+                {"id": "writer", "instructions": "Write clearly"},
+            ]
+        }
+
+        self.assertEqual(
+            skill_instructions_for_node(graph, {"skillIds": ["writer"]}),
+            ["Write clearly"],
+        )
+        self.assertEqual(skill_instructions_for_node(graph, {"skillIds": []}), [])
+
+    def test_legacy_agent_inherits_all_workflow_skills(self):
+        graph = {
+            "skills": [
+                {"id": "research", "instructions": "Research first"},
+                {"id": "writer", "instructions": "Write clearly"},
+            ]
+        }
+
+        self.assertEqual(
+            skill_instructions_for_node(graph, {}),
+            ["Research first", "Write clearly"],
+        )
+
     def test_accepts_dag(self):
         graph = {
             "nodes": [{"id": "start"}, {"id": "done"}],
@@ -27,6 +55,27 @@ class WorkflowValidationTests(unittest.TestCase):
             "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "a"}],
         }
         self.assertIn("workflow graph must be acyclic", validate_graph(graph))
+
+    def test_rejects_invalid_agent_skill_ids(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {
+                        "inputSchema": {},
+                        "outputSchema": {},
+                        "skillIds": ["same", "same"],
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        self.assertIn(
+            "agent node agent skillIds must be unique non-empty strings",
+            validate_graph(graph),
+        )
 
     def test_new_workflow_has_editable_input_agent_and_output_nodes(self):
         draft = WorkflowCreate(name="Example").draft

@@ -155,6 +155,36 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.steps[0].error["message"], "provider unavailable")
         self.assertEqual(result.steps[1].status, "skipped")
 
+    async def test_reports_each_step_while_the_workflow_is_running(self):
+        graph = {
+            "nodes": [
+                {"id": "input", "type": "input.schema", "schema": {}},
+                {"id": "output", "type": "output.schema", "schema": {}},
+            ],
+            "edges": [{"from": "input", "to": "output"}],
+        }
+        updates = []
+
+        async def unused_agent(_node, _inputs):
+            raise AssertionError("agent should not be called")
+
+        async def capture_update(step):
+            updates.append((step.node_id, step.status, step.output))
+
+        await execute_workflow(
+            graph, {"value": 1}, unused_agent, on_step_update=capture_update
+        )
+
+        self.assertEqual(
+            updates,
+            [
+                ("input", "running", None),
+                ("input", "succeeded", {"value": 1}),
+                ("output", "running", None),
+                ("output", "succeeded", {"value": 1}),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

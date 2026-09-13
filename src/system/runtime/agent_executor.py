@@ -35,6 +35,26 @@ def parse_agent_output(content: str) -> dict[str, Any]:
     return value
 
 
+def skill_instructions_for_node(
+    graph: dict[str, Any], config: dict[str, Any]
+) -> list[str]:
+    """Select this Agent's skills; old nodes without skillIds inherit all skills."""
+    configured_skill_ids = config.get("skillIds")
+    assigned_skill_ids = (
+        {skill_id for skill_id in configured_skill_ids if isinstance(skill_id, str)}
+        if isinstance(configured_skill_ids, list)
+        else None
+    )
+    return [
+        skill["instructions"]
+        for skill in graph.get("skills", [])
+        if isinstance(skill, dict)
+        and isinstance(skill.get("instructions"), str)
+        and skill["instructions"]
+        and (assigned_skill_ids is None or str(skill.get("id")) in assigned_skill_ids)
+    ]
+
+
 def create_agent_executor(
     graph: dict[str, Any],
     providers: Iterable[LlmProvider],
@@ -75,11 +95,7 @@ def create_agent_executor(
                 f"Provider {provider.name} has no default model; select one in Models"
             )
         output_schema = config.get("outputSchema", {})
-        skill_instructions = [
-            skill.get("instructions", "")
-            for skill in graph.get("skills", [])
-            if isinstance(skill, dict) and skill.get("instructions")
-        ]
+        skill_instructions = skill_instructions_for_node(graph, config)
         system_parts = [
             config.get("instructions", "") or "Complete the requested transformation.",
             *skill_instructions,

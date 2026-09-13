@@ -13,7 +13,7 @@ from core.database import SessionFactory
 from domain.models import FlowRun, LlmProvider, RunStep, WorkflowVersion
 from providers.secrets import ProviderSecretStore
 from runtime.agent_executor import create_agent_executor
-from runtime.engine import WorkflowExecution, execute_workflow
+from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
 from runtime.queue import RedisRunQueue, RunQueueMessage
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -64,7 +64,31 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
     execute_agent = create_agent_executor(
         graph, providers, ProviderSecretStore.from_config()
     )
-    return await execute_workflow(graph, run_input, execute_agent)
+
+    async def persist_progress(step: ExecutionStep) -> None:
+        await persist_step(run_id, step)
+
+    return await execute_workflow(
+        graph, run_input, execute_agent, on_step_update=persist_progress
+    )
+
+
+async def persist_step(run_id: uuid.UUID, step: ExecutionStep) -> None:
+    """Commit one node transition so the run viewer can show live progress."""
+    async with SessionFactory() as session:
+        await session.execute(
+            update(RunStep)
+            .where(RunStep.run_id == run_id, RunStep.sequence == step.sequence)
+            .values(
+                status=step.status,
+                input=step.input,
+                output=step.output,
+                error=step.error,
+                started_at=step.started_at,
+                completed_at=step.completed_at,
+            )
+        )
+        await session.commit()
 
 
 async def persist_execution(run_id: uuid.UUID, execution: WorkflowExecution) -> None:
