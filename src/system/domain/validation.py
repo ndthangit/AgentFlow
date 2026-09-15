@@ -2,6 +2,17 @@
 
 from typing import Any
 
+IF_OPERATORS = {
+    "equals",
+    "notEquals",
+    "greaterThan",
+    "greaterThanOrEqual",
+    "lessThan",
+    "lessThanOrEqual",
+    "truthy",
+    "falsy",
+}
+
 
 def validate_graph(graph: dict[str, Any]) -> list[str]:
     nodes = graph.get("nodes")
@@ -22,6 +33,9 @@ def validate_graph(graph: dict[str, Any]) -> list[str]:
         _validate_node(node, errors)
 
     adjacency = {node_id: [] for node_id in ids}
+    nodes_by_id = {node["id"]: node for node in nodes}
+    outgoing_ports: dict[str, list[str]] = {node_id: [] for node_id in ids}
+    seen_edges: set[tuple[str, str, str]] = set()
     for edge in edges:
         if (
             not isinstance(edge, dict)
@@ -30,10 +44,43 @@ def validate_graph(graph: dict[str, Any]) -> list[str]:
         ):
             errors.append("every edge must reference existing nodes")
             continue
-        adjacency[edge["from"]].append(edge["to"])
+        source = edge["from"]
+        target = edge["to"]
+        port = edge.get("port", "success")
+        if not isinstance(port, str) or not port:
+            errors.append(f"edge {source} -> {target} must define a non-empty port")
+            continue
+        edge_key = (source, target, port)
+        if edge_key in seen_edges:
+            errors.append(f"duplicate edge {source} ({port}) -> {target}")
+            continue
+        seen_edges.add(edge_key)
+        adjacency[source].append(target)
+        outgoing_ports[source].append(port)
+        if nodes_by_id[source].get("type") == "if" and port not in {"true", "false"}:
+            errors.append(f"if node {source} edges must use true or false ports")
+        if nodes_by_id[source].get("type") == "parallel" and port != "parallel":
+            errors.append(f"parallel node {source} edges must use parallel ports")
 
     if _contains_cycle(adjacency):
         errors.append("workflow graph must be acyclic")
+    for node_id, node in nodes_by_id.items():
+        ports = outgoing_ports[node_id]
+        if node.get("type") == "if" and set(ports) != {"true", "false"}:
+            errors.append(f"if node {node_id} must have true and false branches")
+        if node.get("type") == "parallel" and len(ports) < 2:
+            errors.append(f"parallel node {node_id} must have at least two branches")
+    settings = graph.get("settings")
+    if settings is not None and not isinstance(settings, dict):
+        errors.append("settings must be an object")
+    elif isinstance(settings, dict) and "maxParallelNodes" in settings:
+        max_parallel = settings["maxParallelNodes"]
+        if (
+            not isinstance(max_parallel, int)
+            or isinstance(max_parallel, bool)
+            or not 1 <= max_parallel <= 32
+        ):
+            errors.append("settings.maxParallelNodes must be an integer from 1 to 32")
     return errors
 
 
@@ -70,6 +117,8 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
         _validate_configured_node(node, errors, require_language=True)
     elif node_type == "math.add":
         _validate_math_node(node, errors)
+    elif node_type == "if":
+        _validate_if_node(node, errors)
 
 
 def _validate_configured_node(
@@ -103,6 +152,26 @@ def _validate_math_node(node: dict[str, Any], errors: list[str]) -> None:
         binding = inputs.get(field)
         if not isinstance(binding, dict) or not isinstance(binding.get("from"), str):
             errors.append(f"math.add node {node_id} must bind {field} with from")
+
+
+def _validate_if_node(node: dict[str, Any], errors: list[str]) -> None:
+    node_id = node["id"]
+    inputs = node.get("inputs")
+    value_binding = inputs.get("value") if isinstance(inputs, dict) else None
+    if not isinstance(value_binding, dict) or not isinstance(
+        value_binding.get("from"), str
+    ):
+        errors.append(f"if node {node_id} must bind value with from")
+    config = node.get("config")
+    operator = config.get("operator") if isinstance(config, dict) else None
+    if operator not in IF_OPERATORS:
+        errors.append(f"if node {node_id} has an unsupported operator")
+    if (
+        operator not in {"truthy", "falsy", None}
+        and isinstance(config, dict)
+        and "expected" not in config
+    ):
+        errors.append(f"if node {node_id} must define expected")
 
 
 def _contains_cycle(adjacency: dict[str, list[str]]) -> bool:

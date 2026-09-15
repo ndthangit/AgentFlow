@@ -43,6 +43,7 @@ const starterDraft = {
 };
 
 const agentPythonWorkflowDraft = {
+  settings: { maxParallelNodes: 2 },
   nodes: [
     {
       id: "research_agent",
@@ -67,11 +68,17 @@ const agentPythonWorkflowDraft = {
       },
     },
     {
+      id: "parallel_split",
+      type: "parallel",
+      name: "Chạy xử lý song song",
+      note: "Truyền cùng bản nháp cho Python chuẩn hóa và Agent phản biện.",
+    },
+    {
       id: "python_formatter",
       type: "code.python",
       name: "Python chuẩn hóa",
       note: "Chuẩn hóa khoảng trắng và thống kê số từ trong bản nháp.",
-      inputs: { draft: { from: "$nodes.research_agent.output.draft" } },
+      inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
       config: {
         language: "python",
         code: [
@@ -102,21 +109,45 @@ const agentPythonWorkflowDraft = {
     {
       id: "review_agent",
       type: "agent",
-      name: "Agent biên tập",
-      note: "Biên tập bản nháp đã chuẩn hóa thành câu trả lời cuối cùng.",
+      name: "Agent phản biện",
+      note: "Đánh giá bản nháp độc lập trong lúc Python đang chuẩn hóa.",
+      inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
+      config: {
+        instructions: "Đánh giá draft, chỉ ra điểm cần cải thiện ngắn gọn và trả về trường review.",
+        inputSchema: {
+          type: "object",
+          properties: { draft: { type: "string" } },
+          required: ["draft"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: { review: { type: "string" } },
+          required: ["review"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      id: "final_agent",
+      type: "agent",
+      name: "Agent tổng hợp",
+      note: "Đợi hai nhánh hoàn tất rồi tạo câu trả lời cuối cùng.",
       inputs: {
         content: { from: "$nodes.python_formatter.output.cleaned_text" },
         word_count: { from: "$nodes.python_formatter.output.word_count" },
+        review: { from: "$nodes.review_agent.output.review" },
       },
       config: {
-        instructions: "Biên tập content thành câu trả lời hoàn chỉnh bằng tiếng Việt. Giữ thông tin chính xác, dễ đọc và trả về trường final_answer.",
+        instructions: "Kết hợp content đã chuẩn hóa với review để tạo câu trả lời hoàn chỉnh bằng tiếng Việt. Trả về trường final_answer.",
         inputSchema: {
           type: "object",
           properties: {
             content: { type: "string" },
             word_count: { type: "integer" },
+            review: { type: "string" },
           },
-          required: ["content", "word_count"],
+          required: ["content", "word_count", "review"],
           additionalProperties: false,
         },
         outputSchema: {
@@ -129,8 +160,11 @@ const agentPythonWorkflowDraft = {
     },
   ],
   edges: [
-    { from: "research_agent", to: "python_formatter", port: "success" },
-    { from: "python_formatter", to: "review_agent", port: "success" },
+    { from: "research_agent", to: "parallel_split", port: "success" },
+    { from: "parallel_split", to: "python_formatter", port: "parallel" },
+    { from: "parallel_split", to: "review_agent", port: "parallel" },
+    { from: "python_formatter", to: "final_agent", port: "success" },
+    { from: "review_agent", to: "final_agent", port: "success" },
   ],
 };
 
@@ -195,6 +229,8 @@ function workflowNodeLabel(type: string) {
     "input.schema": "Input",
     "output.schema": "Output",
     "math.add": "Math",
+    if: "If / Else",
+    parallel: "Parallel",
   };
   return labels[type] ?? type;
 }
@@ -416,11 +452,11 @@ export function App() {
               <button disabled={busy || !name.trim()}>Tạo mới</button>
             </form>
             <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
-              const created = await api.createWorkflow("Demo Agent → Python → Agent", agentPythonWorkflowDraft);
+              const created = await api.createWorkflow("Demo Agent → Parallel → Join", agentPythonWorkflowDraft);
               await refreshWorkflows(created.id);
               setRunInput(JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2));
-              setMessage("Đã tạo workflow demo gồm 2 Agent và 1 Python node");
-            })}>＋ Tạo demo 2 Agent + Python</button>
+              setMessage("Đã tạo demo có 2 nhánh chạy song song và Agent tổng hợp kết quả");
+            })}>＋ Tạo demo Parallel + Join</button>
             <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
               const created = await api.createWorkflow("Tính tổng hai số", sumWorkflowDraft);
               await refreshWorkflows(created.id);

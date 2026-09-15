@@ -1,5 +1,6 @@
-"""Sequential workflow runtime for built-in, Agent, and restricted Python nodes."""
+"""DAG workflow runtime with conditional and parallel branch support."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,6 +34,18 @@ class WorkflowExecution:
 
 
 StepObserver = Callable[[ExecutionStep], Awaitable[None]]
+
+TERMINAL_NODE_STATES = {"succeeded", "failed", "skipped"}
+IF_OPERATORS = {
+    "equals",
+    "notEquals",
+    "greaterThan",
+    "greaterThanOrEqual",
+    "lessThan",
+    "lessThanOrEqual",
+    "truthy",
+    "falsy",
+}
 
 
 def schema_errors(
@@ -145,25 +158,106 @@ def _node_input(
     return dict(run_input)
 
 
+def _evaluate_condition(value: Any, config: dict[str, Any]) -> bool:
+    operator = config.get("operator", "truthy")
+    expected = config.get("expected")
+    if operator == "truthy":
+        return bool(value)
+    if operator == "falsy":
+        return not bool(value)
+    if operator == "equals":
+        return value == expected
+    if operator == "notEquals":
+        return value != expected
+    try:
+        if operator == "greaterThan":
+            return value > expected
+        if operator == "greaterThanOrEqual":
+            return value >= expected
+        if operator == "lessThan":
+            return value < expected
+        if operator == "lessThanOrEqual":
+            return value <= expected
+    except TypeError as exc:
+        raise WorkflowExecutionError(
+            f"if values cannot be compared with operator {operator}"
+        ) from exc
+    raise WorkflowExecutionError(f"unsupported if operator: {operator}")
+
+
+def _outgoing_port(node: dict[str, Any], node_output: dict[str, Any]) -> str | None:
+    if node.get("type") != "if":
+        return None
+    return "true" if node_output.get("condition") is True else "false"
+
+
 async def execute_workflow(
     graph: dict[str, Any],
     run_input: dict[str, Any],
     execute_agent: AgentExecutor,
     on_step_update: StepObserver | None = None,
 ) -> WorkflowExecution:
-    """Execute every node in topological order and retain success/failure details."""
+    """Execute a DAG, scheduling every simultaneously-ready node concurrently."""
     ordered, parents = ordered_nodes(graph)
-    outputs: dict[str, dict[str, Any]] = {}
-    steps: list[ExecutionStep] = []
-    workflow_output: dict[str, Any] | None = None
+    by_id = {node["id"]: node for node in ordered}
+    sequence_by_id = {
+        node["id"]: sequence for sequence, node in enumerate(ordered, start=1)
+    }
+    incoming: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in by_id}
+    outgoing: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in by_id}
+    for edge in graph.get("edges", []):
+        incoming[edge["to"]].append(edge)
+        outgoing[edge["from"]].append(edge)
 
-    for sequence, node in enumerate(ordered, start=1):
+    outputs: dict[str, dict[str, Any]] = {}
+    selected_ports: dict[str, str | None] = {}
+    states = {node_id: "pending" for node_id in by_id}
+    steps_by_id: dict[str, ExecutionStep] = {}
+    max_parallel = graph.get("settings", {}).get("maxParallelNodes", 4)
+    if not isinstance(max_parallel, int) or isinstance(max_parallel, bool):
+        max_parallel = 4
+    semaphore = asyncio.Semaphore(max(1, min(max_parallel, 32)))
+
+    def edge_is_active(edge: dict[str, Any]) -> bool:
+        source = edge["from"]
+        if states[source] != "succeeded":
+            return False
+        if by_id[source].get("type") == "if":
+            return edge.get("port") == selected_ports.get(source)
+        return True
+
+    async def observe(step: ExecutionStep) -> None:
+        if on_step_update is not None:
+            await on_step_update(step)
+
+    async def skip_node(node_id: str, code: str, message: str) -> None:
+        node = by_id[node_id]
+        step = ExecutionStep(
+            sequence=sequence_by_id[node_id],
+            node_id=node_id,
+            node_type=node.get("type", "unknown"),
+            node_name=node.get("name", node_id),
+            status="skipped",
+            input=None,
+            output=None,
+            error={"code": code, "message": message},
+            started_at=None,
+            completed_at=None,
+        )
+        states[node_id] = "skipped"
+        steps_by_id[node_id] = step
+        await observe(step)
+
+    async def execute_node(node_id: str) -> tuple[str, dict[str, Any] | None]:
+        node = by_id[node_id]
+        sequence = sequence_by_id[node_id]
         node_id = node["id"]
         node_type = node.get("type", "unknown")
-        started_at = datetime.now(UTC)
-        node_input: dict[str, Any] | None = None
-        if on_step_update is not None:
-            await on_step_update(
+        async with semaphore:
+            started_at = datetime.now(UTC)
+            node_input: dict[str, Any] | None = None
+            states[node_id] = "running"
+            await observe(
                 ExecutionStep(
                     sequence=sequence,
                     node_id=node_id,
@@ -177,119 +271,180 @@ async def execute_workflow(
                     completed_at=None,
                 )
             )
-        try:
-            if node_type == "input.schema":
-                node_input = dict(run_input)
-                errors = schema_errors(run_input, node.get("schema", {}))
-                if errors:
-                    raise WorkflowExecutionError("; ".join(errors))
-                node_output = dict(run_input)
-            else:
-                node_input = _node_input(node, parents[node_id], run_input, outputs)
-                if node_type == "math.add":
-                    left, right = node_input.get("left"), node_input.get("right")
-                    if (
-                        not isinstance(left, (int, float))
-                        or isinstance(left, bool)
-                        or not isinstance(right, (int, float))
-                        or isinstance(right, bool)
-                    ):
-                        raise WorkflowExecutionError("math.add inputs must be numbers")
-                    config = node.get("config", {})
-                    output_key = config.get("outputKey", "sum")
-                    node_output = {output_key: left + right}
-                elif node_type == "agent":
-                    config = node.get("config", {})
-                    errors = schema_errors(node_input, config.get("inputSchema", {}))
+            try:
+                if node_type == "input.schema":
+                    node_input = dict(run_input)
+                    errors = schema_errors(run_input, node.get("schema", {}))
                     if errors:
                         raise WorkflowExecutionError("; ".join(errors))
-                    node_output = await execute_agent(node, node_input)
-                    errors = schema_errors(
-                        node_output, config.get("outputSchema", {}), "$output"
-                    )
-                    if errors:
-                        raise WorkflowExecutionError("; ".join(errors))
-                elif node_type == "code.python":
-                    config = node.get("config", {})
-                    errors = schema_errors(node_input, config.get("inputSchema", {}))
-                    if errors:
-                        raise WorkflowExecutionError("; ".join(errors))
-                    node_output = execute_restricted_python(
-                        config.get("code", ""), node_input
-                    )
-                    errors = schema_errors(
-                        node_output, config.get("outputSchema", {}), "$output"
-                    )
-                    if errors:
-                        raise WorkflowExecutionError("; ".join(errors))
-                elif node_type == "output.schema":
-                    node_output = dict(node_input)
-                    errors = schema_errors(
-                        node_output, node.get("schema", {}), "$output"
-                    )
-                    if errors:
-                        raise WorkflowExecutionError("; ".join(errors))
+                    node_output = dict(run_input)
                 else:
-                    raise WorkflowExecutionError(f"unsupported node type: {node_type}")
+                    node_input = _node_input(node, parents[node_id], run_input, outputs)
+                    if node_type == "math.add":
+                        left, right = node_input.get("left"), node_input.get("right")
+                        if (
+                            not isinstance(left, (int, float))
+                            or isinstance(left, bool)
+                            or not isinstance(right, (int, float))
+                            or isinstance(right, bool)
+                        ):
+                            raise WorkflowExecutionError(
+                                "math.add inputs must be numbers"
+                            )
+                        config = node.get("config", {})
+                        node_output = {config.get("outputKey", "sum"): left + right}
+                    elif node_type == "agent":
+                        config = node.get("config", {})
+                        errors = schema_errors(
+                            node_input, config.get("inputSchema", {})
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                        node_output = await execute_agent(node, node_input)
+                        errors = schema_errors(
+                            node_output, config.get("outputSchema", {}), "$output"
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                    elif node_type == "code.python":
+                        config = node.get("config", {})
+                        errors = schema_errors(
+                            node_input, config.get("inputSchema", {})
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                        node_output = execute_restricted_python(
+                            config.get("code", ""), node_input
+                        )
+                        errors = schema_errors(
+                            node_output, config.get("outputSchema", {}), "$output"
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                    elif node_type == "if":
+                        condition = _evaluate_condition(
+                            node_input.get("value"), node.get("config", {})
+                        )
+                        node_output = {**node_input, "condition": condition}
+                    elif node_type == "parallel":
+                        node_output = dict(node_input)
+                    elif node_type == "output.schema":
+                        node_output = dict(node_input)
+                        errors = schema_errors(
+                            node_output, node.get("schema", {}), "$output"
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                    else:
+                        raise WorkflowExecutionError(
+                            f"unsupported node type: {node_type}"
+                        )
 
-            outputs[node_id] = node_output
-            workflow_output = node_output
-            completed_at = datetime.now(UTC)
-            completed_step = ExecutionStep(
-                sequence=sequence,
-                node_id=node_id,
-                node_type=node_type,
-                node_name=node.get("name", node_id),
-                status="succeeded",
-                input=node_input,
-                output=node_output,
-                error=None,
-                started_at=started_at,
-                completed_at=completed_at,
-            )
-            steps.append(completed_step)
-            if on_step_update is not None:
-                await on_step_update(completed_step)
-        except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
-            # Provider adapters and parsers surface ordinary Exceptions. Persist the
-            # concise message on the failed step so a run never remains silently pending.
-            completed_at = datetime.now(UTC)
-            failed_step = ExecutionStep(
-                sequence=sequence,
-                node_id=node_id,
-                node_type=node_type,
-                node_name=node.get("name", node_id),
-                status="failed",
-                input=node_input,
-                output=None,
-                error={"code": "STEP_EXECUTION_FAILED", "message": str(exc)},
-                started_at=started_at,
-                completed_at=completed_at,
-            )
-            steps.append(failed_step)
-            if on_step_update is not None:
-                await on_step_update(failed_step)
-            for skipped_sequence, skipped in enumerate(
-                ordered[sequence:], start=sequence + 1
-            ):
-                skipped_step = ExecutionStep(
-                    sequence=skipped_sequence,
-                    node_id=skipped["id"],
-                    node_type=skipped.get("type", "unknown"),
-                    node_name=skipped.get("name", skipped["id"]),
-                    status="skipped",
-                    input=None,
-                    output=None,
-                    error={
-                        "code": "UPSTREAM_STEP_FAILED",
-                        "message": f"Skipped because node {node_id} failed",
-                    },
-                    started_at=None,
-                    completed_at=None,
+                outputs[node_id] = node_output
+                selected_ports[node_id] = _outgoing_port(node, node_output)
+                states[node_id] = "succeeded"
+                completed_step = ExecutionStep(
+                    sequence=sequence,
+                    node_id=node_id,
+                    node_type=node_type,
+                    node_name=node.get("name", node_id),
+                    status="succeeded",
+                    input=node_input,
+                    output=node_output,
+                    error=None,
+                    started_at=started_at,
+                    completed_at=datetime.now(UTC),
                 )
-                steps.append(skipped_step)
-                if on_step_update is not None:
-                    await on_step_update(skipped_step)
-            return WorkflowExecution(status="failed", output=None, steps=steps)
+                steps_by_id[node_id] = completed_step
+                await observe(completed_step)
+                return node_id, node_output
+            except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
+                states[node_id] = "failed"
+                failed_step = ExecutionStep(
+                    sequence=sequence,
+                    node_id=node_id,
+                    node_type=node_type,
+                    node_name=node.get("name", node_id),
+                    status="failed",
+                    input=node_input,
+                    output=None,
+                    error={"code": "STEP_EXECUTION_FAILED", "message": str(exc)},
+                    started_at=started_at,
+                    completed_at=datetime.now(UTC),
+                )
+                steps_by_id[node_id] = failed_step
+                await observe(failed_step)
+                return node_id, None
 
-    return WorkflowExecution(status="succeeded", output=workflow_output, steps=steps)
+    while any(state == "pending" for state in states.values()):
+        progressed = False
+        for node_id in sequence_by_id:
+            if states[node_id] != "pending" or not incoming[node_id]:
+                continue
+            if not all(
+                states[edge["from"]] in TERMINAL_NODE_STATES
+                for edge in incoming[node_id]
+            ):
+                continue
+            if not any(edge_is_active(edge) for edge in incoming[node_id]):
+                await skip_node(
+                    node_id,
+                    "BRANCH_NOT_SELECTED",
+                    "Skipped because no incoming branch was selected",
+                )
+                progressed = True
+
+        ready = [
+            node_id
+            for node_id in sequence_by_id
+            if states[node_id] == "pending"
+            and (
+                not incoming[node_id]
+                or (
+                    all(
+                        states[edge["from"]] in TERMINAL_NODE_STATES
+                        for edge in incoming[node_id]
+                    )
+                    and any(edge_is_active(edge) for edge in incoming[node_id])
+                )
+            )
+        ]
+        if ready:
+            await asyncio.gather(*(execute_node(node_id) for node_id in ready))
+            progressed = True
+
+        failed_ids = [node_id for node_id, state in states.items() if state == "failed"]
+        if failed_ids:
+            failed_id = failed_ids[0]
+            for node_id in sequence_by_id:
+                if states[node_id] == "pending":
+                    await skip_node(
+                        node_id,
+                        "UPSTREAM_STEP_FAILED",
+                        f"Skipped because node {failed_id} failed",
+                    )
+            return WorkflowExecution(
+                status="failed",
+                output=None,
+                steps=sorted(steps_by_id.values(), key=lambda step: step.sequence),
+            )
+        if not progressed:
+            raise WorkflowExecutionError("workflow scheduler reached a deadlock")
+
+    active_terminals = [
+        node_id
+        for node_id in sequence_by_id
+        if states[node_id] == "succeeded"
+        and not any(edge_is_active(edge) for edge in outgoing[node_id])
+    ]
+    if len(active_terminals) == 1:
+        workflow_output = outputs[active_terminals[0]]
+    else:
+        workflow_output = {
+            "branches": {node_id: outputs[node_id] for node_id in active_terminals}
+        }
+    return WorkflowExecution(
+        status="succeeded",
+        output=workflow_output,
+        steps=sorted(steps_by_id.values(), key=lambda step: step.sequence),
+    )

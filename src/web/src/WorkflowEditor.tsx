@@ -17,6 +17,7 @@ type GraphNode = Record<string, unknown> & {
 type GraphEdge = Record<string, unknown> & {
   from: string;
   to: string;
+  port?: string;
 };
 
 type Graph = Record<string, unknown> & {
@@ -24,8 +25,9 @@ type Graph = Record<string, unknown> & {
   edges: GraphEdge[];
 };
 
-type EditableNodeType = "input.schema" | "agent" | "code.python" | "output.schema";
+type EditableNodeType = "input.schema" | "agent" | "code.python" | "if" | "parallel" | "output.schema";
 type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array";
+type IfOperator = "equals" | "notEquals" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "truthy" | "falsy";
 
 type NodeForm = {
   id: string;
@@ -38,6 +40,9 @@ type NodeForm = {
   outputSchema: string;
   skillIds: string[];
   inheritsWorkflowSkills: boolean;
+  conditionFrom: string;
+  operator: IfOperator;
+  expected: string;
 };
 
 const emptyObjectSchema = {
@@ -51,6 +56,8 @@ const nodeMetadata: Record<string, { label: string; className: string }> = {
   agent: { label: "AI AGENT", className: "agent-node" },
   "code.python": { label: "PYTHON", className: "code-node" },
   "math.add": { label: "MATH", className: "math-node" },
+  if: { label: "IF / ELSE", className: "if-node" },
+  parallel: { label: "PARALLEL", className: "parallel-node" },
   "output.schema": { label: "OUTPUT SCHEMA", className: "output-node" },
   "trigger.manual": { label: "TRIGGER", className: "trigger" },
   end: { label: "OUTPUT", className: "end" },
@@ -78,6 +85,87 @@ function parseGraph(value: string): { graph?: Graph; error?: string } {
   }
 }
 
+function graphLayers(graph: Graph): GraphNode[][] {
+  const order = new Map(graph.nodes.map((node, index) => [node.id, index]));
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const indegree = new Map(graph.nodes.map((node) => [node.id, 0]));
+  const children = new Map(graph.nodes.map((node) => [node.id, [] as string[]]));
+  const level = new Map(graph.nodes.map((node) => [node.id, 0]));
+
+  for (const edge of graph.edges) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    children.get(edge.from)?.push(edge.to);
+    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
+  }
+
+  const ready = graph.nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
+  const visited: string[] = [];
+  while (ready.length) {
+    ready.sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
+    const nodeId = ready.shift()!;
+    visited.push(nodeId);
+    for (const childId of children.get(nodeId) ?? []) {
+      level.set(childId, Math.max(level.get(childId) ?? 0, (level.get(nodeId) ?? 0) + 1));
+      const nextIndegree = (indegree.get(childId) ?? 0) - 1;
+      indegree.set(childId, nextIndegree);
+      if (nextIndegree === 0) ready.push(childId);
+    }
+  }
+
+  if (visited.length !== graph.nodes.length) return graph.nodes.map((node) => [node]);
+  const layers: GraphNode[][] = [];
+  for (const nodeId of visited) {
+    const node = byId.get(nodeId)!;
+    const nodeLevel = level.get(nodeId) ?? 0;
+    (layers[nodeLevel] ??= []).push(node);
+  }
+  return layers;
+}
+
+function LayerConnections({
+  graph,
+  sourceLayer,
+  targetLayer,
+}: {
+  graph: Graph;
+  sourceLayer: GraphNode[];
+  targetLayer: GraphNode[];
+}) {
+  const sourceIds = new Set(sourceLayer.map((node) => node.id));
+  const targetIds = new Set(targetLayer.map((node) => node.id));
+  const edges = graph.edges.filter((edge) => sourceIds.has(edge.from) && targetIds.has(edge.to));
+  const visualEdges = edges.map((edge, index) => {
+    const sourceIndex = sourceLayer.findIndex((node) => node.id === edge.from);
+    const targetIndex = targetLayer.findIndex((node) => node.id === edge.to);
+    const sourceX = ((sourceIndex + 0.5) * 1000) / sourceLayer.length;
+    const targetX = ((targetIndex + 0.5) * 1000) / targetLayer.length;
+    const port = edge.port ?? "success";
+    return {
+      key: `${edge.from}-${edge.to}-${port}-${index}`,
+      sourceX,
+      targetX,
+      labelX: (sourceX + targetX) / 20,
+      port,
+      label: port === "parallel" ? "PARALLEL" : port.toUpperCase(),
+    };
+  });
+
+  return (
+    <div className="layer-connections" aria-label="Liên kết giữa các node">
+      <svg viewBox="0 0 1000 112" preserveAspectRatio="none" role="img">
+        {visualEdges.map((edge) => (
+            <g className={`visual-edge edge-${edge.port}`} key={edge.key}>
+              <path d={`M ${edge.sourceX} 2 C ${edge.sourceX} 45, ${edge.targetX} 67, ${edge.targetX} 110`} />
+              <circle cx={edge.sourceX} cy="3" r="4" />
+              <circle cx={edge.targetX} cy="109" r="4" />
+            </g>
+        ))}
+      </svg>
+      {visualEdges.map((edge) => <span className={`visual-edge-label edge-${edge.port}`} style={{ left: `${edge.labelX}%` }} key={`${edge.key}-label`}>{edge.label}</span>)}
+    </div>
+  );
+}
+
 function schemaText(value: unknown) {
   return JSON.stringify(isRecord(value) ? value : emptyObjectSchema, null, 2);
 }
@@ -97,6 +185,11 @@ function formFromNode(node: GraphNode): NodeForm {
       ? config.skillIds.filter((item): item is string => typeof item === "string")
       : [],
     inheritsWorkflowSkills: !Array.isArray(config.skillIds),
+    conditionFrom: isRecord(node.inputs) && isRecord(node.inputs.value) && typeof node.inputs.value.from === "string"
+      ? node.inputs.value.from
+      : "$input.condition",
+    operator: typeof config.operator === "string" ? config.operator as IfOperator : "truthy",
+    expected: JSON.stringify(config.expected ?? true),
   };
 }
 
@@ -249,7 +342,11 @@ function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
       ? "output"
       : type === "code.python"
         ? "python"
-        : "agent";
+        : type === "if"
+          ? "decision"
+          : type === "parallel"
+            ? "parallel"
+            : "agent";
   let candidate = base;
   let suffix = 2;
   while (nodes.some((node) => node.id === candidate)) candidate = `${base}_${suffix++}`;
@@ -257,6 +354,24 @@ function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
 }
 
 function newNode(type: EditableNodeType, id: string): GraphNode {
+  if (type === "if") {
+    return {
+      id,
+      type,
+      name: "Điều kiện If / Else",
+      note: "Chỉ chạy nhánh true hoặc false theo điều kiện.",
+      inputs: { value: { from: "$input.condition" } },
+      config: { operator: "truthy" },
+    };
+  }
+  if (type === "parallel") {
+    return {
+      id,
+      type,
+      name: "Rẽ nhánh song song",
+      note: "Chạy đồng thời tất cả nhánh con và truyền output cha cho từng nhánh.",
+    };
+  }
   if (type === "agent") {
     return {
       id,
@@ -300,7 +415,7 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
     const firstNonInput = nodes.findIndex((node) => node.type !== "input.schema");
     return firstNonInput < 0 ? nodes.length : firstNonInput;
   }
-  if (type === "agent" || type === "code.python") {
+  if (type === "agent" || type === "code.python" || type === "if" || type === "parallel") {
     const firstOutput = nodes.findIndex((node) => node.type === "output.schema" || node.type === "end");
     return firstOutput < 0 ? nodes.length : firstOutput;
   }
@@ -310,10 +425,12 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
 export function WorkflowEditor({ value, onChange, disabled = false, skills = [] }: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
+  const layers = useMemo(() => graph ? graphLayers(graph) : [], [graph]);
   const [selectedId, setSelectedId] = useState<string>();
   const selectedNode = graph?.nodes.find((node) => node.id === selectedId);
   const [form, setForm] = useState<NodeForm>();
   const [formError, setFormError] = useState("");
+  const [edgeDraft, setEdgeDraft] = useState({ from: "", to: "", port: "success" });
   const agentSkillIds = form?.inheritsWorkflowSkills
     ? skills.map((skill) => skill.id)
     : form?.skillIds ?? [];
@@ -332,6 +449,27 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
     onChange(JSON.stringify(next, null, 2));
   }
 
+  function portsForNode(nodeId: string) {
+    const type = graph?.nodes.find((node) => node.id === nodeId)?.type;
+    if (type === "if") return ["true", "false"];
+    if (type === "parallel") return ["parallel"];
+    return ["success"];
+  }
+
+  function addEdge() {
+    if (!graph || !edgeDraft.from || !edgeDraft.to || edgeDraft.from === edgeDraft.to) return;
+    const port = portsForNode(edgeDraft.from).includes(edgeDraft.port)
+      ? edgeDraft.port
+      : portsForNode(edgeDraft.from)[0];
+    if (graph.edges.some((edge) => edge.from === edgeDraft.from && edge.to === edgeDraft.to && (edge.port ?? "success") === port)) return;
+    commit({ ...graph, edges: [...graph.edges, { from: edgeDraft.from, to: edgeDraft.to, port }] });
+  }
+
+  function removeEdge(index: number) {
+    if (!graph) return;
+    commit({ ...graph, edges: graph.edges.filter((_, edgeIndex) => edgeIndex !== index) });
+  }
+
   function addNode(type: EditableNodeType) {
     if (!graph) return;
     const id = uniqueNodeId(graph.nodes, type);
@@ -344,9 +482,11 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
       const directEdge = edges.find((edge) => edge.from === previous.id && edge.to === next.id);
       if (directEdge) {
         edges = edges.filter((edge) => edge !== directEdge);
-        edges.push({ ...directEdge, to: id }, { ...directEdge, from: id });
+        const port = type === "if" ? "true" : type === "parallel" ? "parallel" : "success";
+        edges.push({ ...directEdge, to: id }, { from: id, to: next.id, port });
       } else {
-        edges.push({ from: previous.id, to: id, port: "success" }, { from: id, to: next.id, port: "success" });
+        const port = type === "if" ? "true" : type === "parallel" ? "parallel" : "success";
+        edges.push({ from: previous.id, to: id, port: "success" }, { from: id, to: next.id, port });
       }
     } else if (previous) {
       edges.push({ from: previous.id, to: id, port: "success" });
@@ -420,6 +560,23 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
           outputSchema: parseSchema(form.outputSchema, "Output schema"),
         };
       }
+      if (selectedNode.type === "if") {
+        if (!form.conditionFrom.trim()) throw new Error("Nguồn dữ liệu điều kiện không được để trống.");
+        const config = isRecord(selectedNode.config) ? selectedNode.config : {};
+        const inputs = isRecord(selectedNode.inputs) ? selectedNode.inputs : {};
+        const nextConfig: Record<string, unknown> = { ...config, operator: form.operator };
+        if (form.operator === "truthy" || form.operator === "falsy") {
+          delete nextConfig.expected;
+        } else {
+          try {
+            nextConfig.expected = JSON.parse(form.expected);
+          } catch {
+            throw new Error("Giá trị so sánh phải là JSON hợp lệ, ví dụ true, 10 hoặc \"done\".");
+          }
+        }
+        updated.inputs = { ...inputs, value: { from: form.conditionFrom.trim() } };
+        updated.config = nextConfig;
+      }
       const edges = graph.edges.map((edge) => ({
         ...edge,
         from: edge.from === selectedNode.id ? id : edge.from,
@@ -448,39 +605,43 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
           <button disabled={disabled || !graph} onClick={() => addNode("input.schema")}>+ Input schema</button>
           <button disabled={disabled || !graph} onClick={() => addNode("agent")}>+ Agent</button>
           <button disabled={disabled || !graph} onClick={() => addNode("code.python")}>+ Python</button>
+          <button disabled={disabled || !graph} onClick={() => addNode("if")}>+ If / Else</button>
+          <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>
           <button disabled={disabled || !graph} onClick={() => addNode("output.schema")}>+ Output schema</button>
         </div>
       </div>
 
       <div className="builder-grid">
         <section className="flow-preview" aria-label="Danh sách node">
-          {graph?.nodes.length ? graph.nodes.map((node, index) => {
-            const metadata = nodeMetadata[node.type ?? ""] ?? { label: (node.type ?? "NODE").toUpperCase(), className: "" };
-            const directEdges = index < graph.nodes.length - 1
-              ? graph.edges.filter((edge) => edge.from === node.id && edge.to === graph.nodes[index + 1].id)
-              : [];
+          {layers.length ? layers.map((layer, layerIndex) => {
+            const nextLayer = layers[layerIndex + 1];
             return (
-              <div className="flow-node-item" key={node.id}>
-                <div className="flow-node-row">
-                  <button
-                    className={`node ${metadata.className}${selectedId === node.id ? " selected" : ""}`}
-                    onClick={() => setSelectedId(node.id)}
-                  >
-                    <small>{metadata.label}</small>
-                    <strong>{typeof node.name === "string" ? node.name : node.id}</strong>
-                    <span>{typeof node.note === "string" && node.note ? node.note : `ID: ${node.id}`}</span>
-                  </button>
-                  <div className="node-row-actions">
-                    <button title="Sửa node" onClick={() => setSelectedId(node.id)}>Sửa</button>
-                    <button className="danger" title="Xóa node" disabled={disabled} onClick={() => deleteNode(node)}>Xóa</button>
-                  </div>
-                </div>
-                {index < graph.nodes.length - 1 && (
-                  <div className={directEdges.length ? "connector connected" : "connector"}>
-                    <i /><b>{directEdges.length || "·"}</b><i />
-                  </div>
-                )}
+            <div className="flow-level-group" key={layerIndex}>
+              <div className="flow-level" style={{ gridTemplateColumns: `repeat(${layer.length}, minmax(285px, 1fr))` }}>
+                {layer.map((node) => {
+                  const metadata = nodeMetadata[node.type ?? ""] ?? { label: (node.type ?? "NODE").toUpperCase(), className: "" };
+                  return (
+                    <div className="flow-node-item" key={node.id}>
+                      <div className="flow-node-row">
+                        <button
+                          className={`node ${metadata.className}${selectedId === node.id ? " selected" : ""}`}
+                          onClick={() => setSelectedId(node.id)}
+                        >
+                          <small>{metadata.label}</small>
+                          <strong>{typeof node.name === "string" ? node.name : node.id}</strong>
+                          <span>{typeof node.note === "string" && node.note ? node.note : `ID: ${node.id}`}</span>
+                        </button>
+                        <div className="node-row-actions">
+                          <button title="Sửa node" onClick={() => setSelectedId(node.id)}>Sửa</button>
+                          <button className="danger" title="Xóa node" disabled={disabled} onClick={() => deleteNode(node)}>Xóa</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
+              {nextLayer && <LayerConnections graph={graph!} sourceLayer={layer} targetLayer={nextLayer} />}
+            </div>
             );
           }) : (
             <div className="nodes-empty">
@@ -531,6 +692,30 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
                 </>
               )}
 
+              {selectedNode.type === "if" && (
+                <section className="branch-config">
+                  <div><strong>Điều kiện rẽ nhánh</strong><span>Đúng chạy cổng true, sai chạy cổng false.</span></div>
+                  <label>Nguồn dữ liệu<input value={form.conditionFrom} placeholder="$input.approved" onChange={(event) => setForm({ ...form, conditionFrom: event.target.value })} /></label>
+                  <label>Phép so sánh<select value={form.operator} onChange={(event) => setForm({ ...form, operator: event.target.value as IfOperator })}>
+                    <option value="truthy">Có giá trị / true</option>
+                    <option value="falsy">Không có giá trị / false</option>
+                    <option value="equals">Bằng</option>
+                    <option value="notEquals">Khác</option>
+                    <option value="greaterThan">Lớn hơn</option>
+                    <option value="greaterThanOrEqual">Lớn hơn hoặc bằng</option>
+                    <option value="lessThan">Nhỏ hơn</option>
+                    <option value="lessThanOrEqual">Nhỏ hơn hoặc bằng</option>
+                  </select></label>
+                  {form.operator !== "truthy" && form.operator !== "falsy" && <label>Giá trị so sánh (JSON)<input value={form.expected} placeholder="true" onChange={(event) => setForm({ ...form, expected: event.target.value })} /></label>}
+                </section>
+              )}
+
+              {selectedNode.type === "parallel" && (
+                <section className="branch-config">
+                  <div><strong>Rẽ nhánh song song</strong><span>Tạo ít nhất hai kết nối cổng parallel. Mỗi nhánh nhận cùng output của node này.</span></div>
+                </section>
+              )}
+
               {selectedNode.type === "code.python" && (
                 <>
                   <label>Python code<textarea className="code-textarea" value={form.code} spellCheck={false} onChange={(event) => setForm({ ...form, code: event.target.value })} /></label>
@@ -548,6 +733,27 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
           )}
         </aside>
       </div>
+
+      {graph && (
+        <section className="connection-editor">
+          <div className="connection-heading">
+            <div><strong>Kết nối và nhánh</strong><span>If dùng cổng true/false; Parallel dùng cổng parallel.</span></div>
+            <div className="connection-form">
+              <select value={edgeDraft.from} onChange={(event) => {
+                const from = event.target.value;
+                setEdgeDraft({ ...edgeDraft, from, port: portsForNode(from)[0] });
+              }}><option value="">Node nguồn…</option>{graph.nodes.map((node) => <option value={node.id} key={node.id}>{node.id}</option>)}</select>
+              <select value={edgeDraft.port} disabled={!edgeDraft.from} onChange={(event) => setEdgeDraft({ ...edgeDraft, port: event.target.value })}>{portsForNode(edgeDraft.from).map((port) => <option value={port} key={port}>{port}</option>)}</select>
+              <select value={edgeDraft.to} onChange={(event) => setEdgeDraft({ ...edgeDraft, to: event.target.value })}><option value="">Node đích…</option>{graph.nodes.filter((node) => node.id !== edgeDraft.from).map((node) => <option value={node.id} key={node.id}>{node.id}</option>)}</select>
+              <button type="button" disabled={disabled || !edgeDraft.from || !edgeDraft.to} onClick={addEdge}>+ Kết nối</button>
+            </div>
+          </div>
+          <div className="connection-list">
+            {graph.edges.map((edge, index) => <div className="connection-row" key={`${edge.from}-${edge.to}-${edge.port ?? "success"}-${index}`}><code>{edge.from}</code><b>{edge.port ?? "success"}</b><span>→</span><code>{edge.to}</code><button type="button" disabled={disabled} onClick={() => removeEdge(index)}>Xóa</button></div>)}
+            {!graph.edges.length && <p>Chưa có kết nối. Thêm edge để xác định thứ tự và nhánh chạy.</p>}
+          </div>
+        </section>
+      )}
 
       <details className="raw-json">
         <summary>JSON nâng cao</summary>

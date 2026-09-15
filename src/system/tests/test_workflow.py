@@ -56,6 +56,56 @@ class WorkflowValidationTests(unittest.TestCase):
         }
         self.assertIn("workflow graph must be acyclic", validate_graph(graph))
 
+    def test_accepts_if_else_and_parallel_branches(self):
+        graph = {
+            "settings": {"maxParallelNodes": 4},
+            "nodes": [
+                {
+                    "id": "decision",
+                    "type": "if",
+                    "inputs": {"value": {"from": "$input.enabled"}},
+                    "config": {"operator": "equals", "expected": True},
+                },
+                {"id": "split", "type": "parallel"},
+                {"id": "disabled"},
+                {"id": "left"},
+                {"id": "right"},
+            ],
+            "edges": [
+                {"from": "decision", "port": "true", "to": "split"},
+                {"from": "decision", "port": "false", "to": "disabled"},
+                {"from": "split", "port": "parallel", "to": "left"},
+                {"from": "split", "port": "parallel", "to": "right"},
+            ],
+        }
+
+        self.assertEqual(validate_graph(graph), [])
+
+    def test_rejects_incomplete_branch_configuration(self):
+        graph = {
+            "settings": {"maxParallelNodes": 0},
+            "nodes": [
+                {"id": "decision", "type": "if", "config": {"operator": "equals"}},
+                {"id": "split", "type": "parallel"},
+                {"id": "done"},
+            ],
+            "edges": [
+                {"from": "decision", "port": "success", "to": "split"},
+                {"from": "split", "port": "parallel", "to": "done"},
+            ],
+        }
+
+        errors = validate_graph(graph)
+
+        self.assertIn("if node decision must bind value with from", errors)
+        self.assertIn("if node decision must define expected", errors)
+        self.assertIn("if node decision edges must use true or false ports", errors)
+        self.assertIn("if node decision must have true and false branches", errors)
+        self.assertIn("parallel node split must have at least two branches", errors)
+        self.assertIn(
+            "settings.maxParallelNodes must be an integer from 1 to 32", errors
+        )
+
     def test_rejects_invalid_agent_skill_ids(self):
         graph = {
             "nodes": [

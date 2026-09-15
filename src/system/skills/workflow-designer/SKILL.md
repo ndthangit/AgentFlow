@@ -7,3 +7,6 @@ Khi thiết kế workflow:
 3. Chèn approval trước hành động có tác động ra hệ thống bên ngoài khi yêu cầu cần người duyệt.
 4. Không tạo cycle hoặc fan-out không giới hạn.
 5. Kết thúc mọi nhánh hoạt động bằng một node `end`.
+6. Dùng node `if` với edge `true`/`false` cho nhánh điều kiện; nhánh không được chọn sẽ bị skip.
+7. Dùng node `parallel` với ít nhất hai edge cổng `parallel` khi các nhánh độc lập có thể chạy đồng thời.
+8. Các node con có thể nhận output của node rẽ trực tiếp hoặc tham chiếu rõ bằng `$nodes.<id>.output.<field>`.

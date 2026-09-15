@@ -1,6 +1,6 @@
 # Đặc tả workflow và API dự kiến
 
-Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện lưu draft/version/run, kiểm tra graph và thực thi đồng bộ các node MVP gồm schema, math, Agent qua LLM provider và Python giới hạn. Durable worker, branch/join và validator JSON Schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
+Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện lưu draft/version/run; worker thực thi DAG gồm schema, math, Agent, Python giới hạn, `if`/`else` và fan-out song song. Durable retry theo từng node và validator JSON Schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
 
 ## 1. Workflow được xuất bản như thế nào?
 
@@ -16,6 +16,7 @@ Editor lưu draft với optimistic revision. Khi publish, server validate graph,
 | HTTP Request | Request config → status, headers, body | Timeout, credentialRef, response size limit, policy network |
 | Transform | JSON → JSON | Mapping giới hạn, không chạy JavaScript tùy ý |
 | If/Switch | JSON → port được chọn | Điều kiện deterministic, port `true`/`false` hoặc route cụ thể |
+| Parallel | JSON → mọi nhánh con | Truyền cùng output cha và kích hoạt đồng thời tất cả edge `parallel` |
 | Agent | Prompt + input refs → JSON + artifact refs | Adapter Codex/OpenCode, timeout/budget/policy |
 | Test | Snapshot → passed, exitCode, reportRef | Lệnh từ cấu hình được quản lý, chạy trong sandbox |
 | Approval | Action/artifact hash → decision | Chờ bền vững, có reviewer scope và deadline |
@@ -29,6 +30,8 @@ MVP dùng một object JSON cho mỗi invocation, không mặc định tự lặ
 Control edge xác định điều kiện kích hoạt. Input mapping xác định dữ liệu truyền vào node; không tự truyền toàn bộ dữ liệu/secret của run.
 
 - DAG trong MVP; phát hiện cycle lúc publish, không cho nối vòng tự do trên canvas.
+- Node `if` nhận `inputs.value`, dùng operator deterministic và chỉ mở cổng `true` hoặc `false`.
+- Node `parallel` phải có ít nhất hai edge cổng `parallel`; các node đủ dependency được scheduler chạy đồng thời, giới hạn bởi `settings.maxParallelNodes` (1–32, mặc định 4).
 - Node bình thường chỉ chạy một lần khi các dependency cần thiết thành công và control edge đã kích hoạt.
 - Switch chỉ mở port được chọn. Các đường không được chọn được đánh dấu inactive và lan truyền để node không mắc kẹt ở pending.
 - Join `all` đợi tất cả nhánh đã kích hoạt thành công; nhánh inactive không phải nhánh lỗi. Tất cả nhánh inactive thì join bị skipped.

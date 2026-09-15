@@ -155,11 +155,11 @@ Một chu kỳ xử lý đề xuất:
 1. API tạo `run`, `StartRun command` và outbox event trong **một transaction**. Chỉ trả `202` sau commit.
 2. Dispatcher claim outbox bằng lease và gửi run tới workflow worker. Gửi lại phải dùng cùng operation key.
 3. Worker tải `workflow_versions.graph`, xác minh `content_hash`, tạo trạng thái execution từ snapshot và input.
-4. Graph interpreter tìm node đủ dependency, đánh dấu `READY`, sau đó cấp lease để chạy với giới hạn song song.
+4. Graph interpreter tìm tất cả node đủ dependency rồi chạy đồng thời tới giới hạn `settings.maxParallelNodes` (mặc định 4, tối đa 32).
 5. Executor resolve input mapping từ `$input` và output node trước; secret chỉ được resolve ngay trước lúc gọi connector/agent.
 6. Node thuần như transform/if chạy trong worker. Node agent gọi service `agent:8001`; HTTP request, test, approval và connector dùng adapter riêng.
 7. Kết quả được kiểm tra output schema trước khi node chuyển `SUCCEEDED`. Output lớn được lưu thành artifact và database chỉ giữ reference/checksum.
-8. Worker chọn edge tiếp theo, đánh dấu nhánh không được chọn là `SKIPPED`, rồi tiếp tục cho đến khi không còn node khả dụng.
+8. Node `if` chỉ kích hoạt edge `true` hoặc `false`; node `parallel` kích hoạt mọi edge `parallel`. Worker lan truyền `SKIPPED` cho nhánh không được chọn để join không bị treo.
 9. Mỗi lần đổi trạng thái ghi projection và domain event/outbox trong cùng transaction. UI đọc projection và có thể nhận event qua SSE.
 10. Khi mọi nhánh kết thúc, worker ghi trạng thái terminal và output tổng hợp của run.
 
