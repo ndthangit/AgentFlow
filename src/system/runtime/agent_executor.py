@@ -94,6 +94,11 @@ def create_agent_executor(
             raise WorkflowExecutionError(
                 f"Provider {provider.name} has no default model; select one in Models"
             )
+        selected_models = provider.settings.get("selected_models") or []
+        if selected_models and model not in selected_models:
+            raise WorkflowExecutionError(
+                f"Model {model} is not enabled for provider {provider.name}"
+            )
         output_schema = config.get("outputSchema", {})
         skill_instructions = skill_instructions_for_node(graph, config)
         system_parts = [

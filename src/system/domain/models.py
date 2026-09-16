@@ -157,7 +157,7 @@ class Skill(Base):
     instructions: Mapped[str] = mapped_column(Text)
     version: Mapped[int] = mapped_column(Integer, default=1)
     content_hash: Mapped[str] = mapped_column(String(64))
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(20), default="user")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

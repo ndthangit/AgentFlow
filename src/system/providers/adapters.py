@@ -2,11 +2,12 @@
 
 import uuid
 from abc import ABC, abstractmethod
+from asyncio import sleep
 from datetime import datetime
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -36,23 +37,33 @@ class ProviderModel(BaseModel):
     id: str
     name: str
     context_length: int | None = None
-    pricing: dict[str, str] = Field(default_factory=dict)
+    pricing: dict[str, Any] = Field(default_factory=dict)
 
 
 class OpenRouterSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     default_model: str | None = Field(default=None, max_length=200)
+    selected_models: list[str] = Field(default_factory=list, max_length=100)
     site_url: HttpUrl | None = None
     app_title: str = Field(default="AgentFlow", min_length=1, max_length=120)
+
+    @field_validator("selected_models")
+    @classmethod
+    def normalize_selected_models(cls, models: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for model in models:
+            model_id = model.strip()
+            if not model_id or len(model_id) > 200:
+                raise ValueError("Selected model IDs must contain 1-200 characters")
+            if model_id not in normalized:
+                normalized.append(model_id)
+        return normalized
 
 
 class LlmProviderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    name: str = Field(min_length=1, max_length=160)
-    kind: Literal["openrouter"]
     api_key: SecretStr = Field(min_length=1, max_length=1000)
-    settings: OpenRouterSettings = Field(default_factory=OpenRouterSettings)
 
 
 class LlmProviderUpdate(BaseModel):
@@ -75,6 +86,18 @@ class LlmProviderView(BaseModel):
     revision: int
     created_at: datetime
     updated_at: datetime
+
+
+class ProviderModelTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model: str = Field(min_length=1, max_length=200)
+
+
+class ProviderModelTestResult(BaseModel):
+    model: str
+    ok: bool
+    latency_ms: int
+    response: str
 
 
 class CredentialResolver(ABC):
@@ -107,6 +130,14 @@ class ProviderRequestError(ProviderError):
 
 class ProviderAuthenticationError(ProviderRequestError):
     pass
+
+
+class ProviderUpstreamError(ProviderRequestError):
+    """A provider-side failure with a safe status code for API error mapping."""
+
+    def __init__(self, status_code: int | None = None) -> None:
+        self.status_code = status_code
+        super().__init__("OpenRouter upstream request failed")
 
 
 class LlmProviderAdapter(ABC):
@@ -163,7 +194,7 @@ class OpenRouterAdapter(LlmProviderAdapter):
                 raise ProviderAuthenticationError(
                     "OpenRouter rejected the API key"
                 ) from exc
-            raise ProviderRequestError("OpenRouter request failed") from exc
+            raise ProviderUpstreamError(exc.response.status_code) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderRequestError("OpenRouter request failed") from exc
         finally:
@@ -184,7 +215,11 @@ class OpenRouterAdapter(LlmProviderAdapter):
                 id=item["id"],
                 name=item.get("name", item["id"]),
                 context_length=item.get("context_length"),
-                pricing=item.get("pricing") or {},
+                pricing=(
+                    item.get("pricing")
+                    if isinstance(item.get("pricing"), dict)
+                    else {}
+                ),
             )
             for item in payload.get("data", [])
         ]
@@ -197,13 +232,30 @@ class OpenRouterAdapter(LlmProviderAdapter):
         body["model"] = model
         body["messages"] = [message.model_dump() for message in request.messages]
         invalid_reason = "invalid response envelope"
-        for _attempt in range(2):
-            payload = await self._request("POST", "/chat/completions", json=body)
+        transient_statuses = {408, 429, 500, 502, 503, 529}
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                payload = await self._request("POST", "/chat/completions", json=body)
+            except ProviderUpstreamError as exc:
+                if attempt < max_attempts - 1 and exc.status_code in transient_statuses:
+                    await sleep(0.5 * (attempt + 1))
+                    continue
+                raise
             error = payload.get("error")
-            if isinstance(error, dict) and isinstance(error.get("message"), str):
-                raise ProviderRequestError(
-                    f"OpenRouter completion failed: {error['message']}"
+            if isinstance(error, dict):
+                raw_code = error.get("code")
+                status_code = (
+                    raw_code
+                    if isinstance(raw_code, int)
+                    else int(raw_code)
+                    if isinstance(raw_code, str) and raw_code.isdigit()
+                    else None
                 )
+                if attempt < max_attempts - 1 and status_code in transient_statuses:
+                    await sleep(0.5 * (attempt + 1))
+                    continue
+                raise ProviderUpstreamError(status_code)
             choices = payload.get("choices")
             if not isinstance(choices, list) or not choices:
                 invalid_reason = "response contained no completion choices"
@@ -224,7 +276,9 @@ class OpenRouterAdapter(LlmProviderAdapter):
                 else {},
                 raw=payload,
             )
-        raise ProviderRequestError(f"OpenRouter {invalid_reason} after retry")
+        raise ProviderRequestError(
+            f"OpenRouter {invalid_reason} after {max_attempts} attempts"
+        )
 
 
 def create_provider_adapter(

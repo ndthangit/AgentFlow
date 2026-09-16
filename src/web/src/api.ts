@@ -4,6 +4,7 @@ import type {
   LlmProvider,
   OpenRouterSettings,
   ProviderModel,
+  ProviderModelTestResult,
   RunStep,
   Skill,
   Workflow,
@@ -38,8 +39,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   listLlmProviders: () => request<LlmProvider[]>("/v1/llm-providers"),
-  createLlmProvider: (input: { name: string; kind: "openrouter"; api_key: string; settings: OpenRouterSettings }) =>
+  createLlmProvider: (input: { api_key: string }) =>
     request<LlmProvider>("/v1/llm-providers", { method: "POST", body: JSON.stringify(input) }),
+  deleteLlmProvider: (providerId: string) =>
+    request<void>(`/v1/llm-providers/${providerId}`, { method: "DELETE" }),
   updateLlmProvider: (provider: LlmProvider, input: { name: string; settings: OpenRouterSettings; enabled: boolean; api_key?: string }) =>
     request<LlmProvider>(`/v1/llm-providers/${provider.id}`, {
       method: "PUT",
@@ -47,6 +50,11 @@ export const api = {
     }),
   listProviderModels: (providerId: string) =>
     request<ProviderModel[]>(`/v1/llm-providers/${providerId}/models`),
+  testProviderModel: (providerId: string, model: string) =>
+    request<ProviderModelTestResult>(`/v1/llm-providers/${providerId}/models/test`, {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    }),
   listSkills: () => request<Skill[]>("/v1/skills"),
   createSkill: (input: {
     slug: string;

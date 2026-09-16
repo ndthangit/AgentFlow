@@ -58,6 +58,7 @@ export type Skill = {
 
 export type OpenRouterSettings = {
   default_model: string | null;
+  selected_models: string[];
   site_url: string | null;
   app_title: string;
 };
@@ -78,5 +79,12 @@ export type ProviderModel = {
   id: string;
   name: string;
   context_length: number | null;
-  pricing: Record<string, string>;
+  pricing: Record<string, unknown>;
+};
+
+export type ProviderModelTestResult = {
+  model: string;
+  ok: boolean;
+  latency_ms: number;
+  response: string;
 };
