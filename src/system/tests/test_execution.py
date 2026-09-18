@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock
 
 from runtime.engine import execute_workflow
 from runtime.restricted_python import (
@@ -36,6 +37,73 @@ class RestrictedPythonTests(unittest.TestCase):
 
 
 class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_call_uses_direct_executor_exactly_once(self):
+        node = {
+            "id": "summarize",
+            "type": "llm.call",
+            "inputs": {"text": {"from": "$input.text"}},
+            "config": {
+                "prompt": "Summarize the text",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+                "outputSchema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                },
+            },
+        }
+        graph = {"nodes": [node], "edges": []}
+        execute_agent = AsyncMock()
+        execute_llm = AsyncMock(return_value={"summary": "Short"})
+
+        result = await execute_workflow(
+            graph,
+            {"text": "A long text"},
+            execute_agent,
+            execute_llm=execute_llm,
+        )
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(result.output, {"summary": "Short"})
+        execute_llm.assert_awaited_once_with(node, {"text": "A long text"})
+        execute_agent.assert_not_awaited()
+
+    async def test_llm_call_receives_the_previous_node_output(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "draft",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+                {
+                    "id": "summarize",
+                    "type": "llm.call",
+                    "config": {
+                        "prompt": "Summarize {{input.draft}}",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                },
+            ],
+            "edges": [{"from": "draft", "to": "summarize"}],
+        }
+        execute_agent = AsyncMock(return_value={"draft": "Previous output"})
+        execute_llm = AsyncMock(return_value={"summary": "Short"})
+
+        result = await execute_workflow(
+            graph, {}, execute_agent, execute_llm=execute_llm
+        )
+
+        self.assertEqual(result.output, {"summary": "Short"})
+        execute_llm.assert_awaited_once_with(
+            graph["nodes"][1], {"draft": "Previous output"}
+        )
+
     async def test_parallel_branches_run_concurrently_and_receive_split_output(self):
         graph = {
             "settings": {"maxParallelNodes": 2},

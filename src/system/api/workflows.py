@@ -13,6 +13,7 @@ from api.dependencies import Claims, DatabaseSession, get_owned_workflow
 from api.skills import visible_skill_filter
 from domain.models import (
     FlowRun,
+    LlmProvider,
     Skill,
     Workflow,
     WorkflowSkill,
@@ -25,10 +26,25 @@ from domain.schemas import (
     WorkflowCreate,
     WorkflowView,
 )
-from domain.validation import validate_graph
+from domain.validation import validate_agent_model_selections, validate_graph
 from services.skills import SkillView, WorkflowSkillSelection
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
+
+
+async def _workflow_validation_errors(
+    workflow: Workflow, session: AsyncSession
+) -> list[str]:
+    result = await session.scalars(
+        select(LlmProvider).where(
+            LlmProvider.owner_subject == workflow.owner_subject,
+            LlmProvider.enabled.is_(True),
+        )
+    )
+    return [
+        *validate_graph(workflow.draft),
+        *validate_agent_model_selections(workflow.draft, result),
+    ]
 
 
 async def _version_snapshot(
@@ -213,7 +229,7 @@ async def validate_workflow(
     session: DatabaseSession,
 ):
     workflow = await get_owned_workflow(workflow_id, claims["sub"], session)
-    errors = validate_graph(workflow.draft)
+    errors = await _workflow_validation_errors(workflow, session)
     return ValidationResult(valid=not errors, errors=errors)
 
 
@@ -224,7 +240,7 @@ async def publish_workflow(
     session: DatabaseSession,
 ):
     workflow = await get_owned_workflow(workflow_id, claims["sub"], session)
-    errors = validate_graph(workflow.draft)
+    errors = await _workflow_validation_errors(workflow, session)
     if errors:
         raise HTTPException(
             status_code=422,

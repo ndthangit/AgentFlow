@@ -10,6 +10,7 @@ from domain.errors import WorkflowExecutionError
 from runtime.restricted_python import execute_restricted_python
 
 AgentExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
+LlmExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ async def execute_workflow(
     run_input: dict[str, Any],
     execute_agent: AgentExecutor,
     on_step_update: StepObserver | None = None,
+    execute_llm: LlmExecutor | None = None,
 ) -> WorkflowExecution:
     """Execute a DAG, scheduling every simultaneously-ready node concurrently."""
     ordered, parents = ordered_nodes(graph)
@@ -301,6 +303,23 @@ async def execute_workflow(
                         if errors:
                             raise WorkflowExecutionError("; ".join(errors))
                         node_output = await execute_agent(node, node_input)
+                        errors = schema_errors(
+                            node_output, config.get("outputSchema", {}), "$output"
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                    elif node_type == "llm.call":
+                        config = node.get("config", {})
+                        errors = schema_errors(
+                            node_input, config.get("inputSchema", {})
+                        )
+                        if errors:
+                            raise WorkflowExecutionError("; ".join(errors))
+                        if execute_llm is None:
+                            raise WorkflowExecutionError(
+                                "LLM Call executor is not configured"
+                            )
+                        node_output = await execute_llm(node, node_input)
                         errors = schema_errors(
                             node_output, config.get("outputSchema", {}), "$output"
                         )

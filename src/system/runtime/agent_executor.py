@@ -1,6 +1,7 @@
 """LLM-backed Agent node execution shared by API-independent workers."""
 
 import json
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -12,7 +13,38 @@ from providers.adapters import (
     create_provider_adapter,
 )
 from providers.secrets import ProviderSecretStore
-from runtime.engine import AgentExecutor
+from runtime.engine import AgentExecutor, LlmExecutor
+
+PROMPT_INPUT_REFERENCE = re.compile(
+    r"\{\{\s*input((?:\.[A-Za-z0-9_-]+)*)\s*\}\}"
+)
+
+
+def render_prompt(template: str, node_input: dict[str, Any]) -> str:
+    """Resolve {{input.path}} references against this node's resolved input."""
+
+    def replace(match: re.Match[str]) -> str:
+        value: Any = node_input
+        path = match.group(1)
+        for field in path.removeprefix(".").split(".") if path else []:
+            if isinstance(value, dict) and field in value:
+                value = value[field]
+            elif isinstance(value, list) and field.isdigit() and int(field) < len(value):
+                value = value[int(field)]
+            else:
+                raise WorkflowExecutionError(
+                    f"Prompt input reference is not available: {match.group(0)}"
+                )
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    rendered = PROMPT_INPUT_REFERENCE.sub(replace, template)
+    if "{{input" in rendered or "{{ input" in rendered:
+        raise WorkflowExecutionError(
+            "Invalid prompt input reference; use {{input}} or {{input.field}}"
+        )
+    return rendered
 
 
 def parse_agent_output(content: str) -> dict[str, Any]:
@@ -55,14 +87,18 @@ def skill_instructions_for_node(
     ]
 
 
-def create_agent_executor(
+def _create_completion_executor(
     graph: dict[str, Any],
     providers: Iterable[LlmProvider],
     secret_store: ProviderSecretStore,
+    *,
+    node_label: str,
+    prompt_field: str,
+    include_skills: bool,
 ) -> AgentExecutor:
     available = list(providers)
 
-    async def execute_agent(
+    async def execute_completion(
         node: dict[str, Any], node_input: dict[str, Any]
     ) -> dict[str, Any]:
         config = node.get("config", {})
@@ -78,7 +114,7 @@ def create_agent_executor(
             )
             if provider is None:
                 raise WorkflowExecutionError(
-                    "The Agent node's LLM provider is missing or disabled"
+                    f"The {node_label} node's LLM provider is missing or disabled"
                 )
         else:
             provider = next(
@@ -100,9 +136,17 @@ def create_agent_executor(
                 f"Model {model} is not enabled for provider {provider.name}"
             )
         output_schema = config.get("outputSchema", {})
-        skill_instructions = skill_instructions_for_node(graph, config)
+        skill_instructions = (
+            skill_instructions_for_node(graph, config) if include_skills else []
+        )
+        configured_prompt = config.get(prompt_field)
+        prompt_template = (
+            configured_prompt
+            if isinstance(configured_prompt, str) and configured_prompt.strip()
+            else "Complete the requested transformation."
+        )
         system_parts = [
-            config.get("instructions", "") or "Complete the requested transformation.",
+            render_prompt(prompt_template, node_input),
             *skill_instructions,
             "Return only one valid JSON object. Do not use Markdown fences.",
             f"The JSON must match this schema: {json.dumps(output_schema, ensure_ascii=False)}",
@@ -127,4 +171,35 @@ def create_agent_executor(
         )
         return parse_agent_output(result.message.content)
 
-    return execute_agent
+    return execute_completion
+
+
+def create_agent_executor(
+    graph: dict[str, Any],
+    providers: Iterable[LlmProvider],
+    secret_store: ProviderSecretStore,
+) -> AgentExecutor:
+    return _create_completion_executor(
+        graph,
+        providers,
+        secret_store,
+        node_label="Agent",
+        prompt_field="instructions",
+        include_skills=True,
+    )
+
+
+def create_llm_executor(
+    graph: dict[str, Any],
+    providers: Iterable[LlmProvider],
+    secret_store: ProviderSecretStore,
+) -> LlmExecutor:
+    """Create a direct, single-completion executor without Agent skills/tools."""
+    return _create_completion_executor(
+        graph,
+        providers,
+        secret_store,
+        node_label="LLM Call",
+        prompt_field="prompt",
+        include_skills=False,
+    )

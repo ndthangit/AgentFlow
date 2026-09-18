@@ -125,12 +125,14 @@ Các bước cụ thể:
 3. `POST /v1/workflows/{id}/validate` hiện kiểm tra cấu trúc `nodes`/`edges`, ID rỗng hoặc trùng, edge tham chiếu node không tồn tại và cycle.
 4. `POST /v1/workflows/{id}/versions` chỉ publish graph hợp lệ, đánh số version tiếp theo và lưu hash.
 5. `POST /v1/workflows/{id}/runs` xác minh version rồi tạo run, step và outbox atomically. API trả HTTP `202` ngay với trạng thái `pending`; nó không gọi LLM hoặc chạy Python.
-6. Orchestrator loop chạy trong chính lifecycle FastAPI gửi outbox vào Redis Stream. Worker trong consumer group claim job bằng phép cập nhật `pending -> running`, tải immutable graph rồi thực thi tuần tự `input.schema`, `math.add`, `agent`, `code.python` và `output.schema`. Agent dùng provider/model của chủ run.
+6. Orchestrator loop chạy trong chính lifecycle FastAPI gửi outbox vào Redis Stream. Worker trong consumer group claim job bằng phép cập nhật `pending -> running`, tải immutable graph rồi thực thi `input.schema`, `math.add`, `llm.call`, `agent`, `code.python` và `output.schema` theo dependency. `llm.call` gửi đúng một Chat Completions request, không nạp skill; Agent có thể nhận skill. Cả hai dùng provider/model của chủ run.
 7. `GET /v1/runs/{run_id}` và `/steps` trả projection đang được worker cập nhật. UI poll mỗi giây khi run là `pending/running`. Nếu một bước lỗi, bước đó là `failed`, các bước sau là `skipped`, và run kết thúc `failed`.
 8. Worker chỉ `XACK` sau khi kết quả được commit. Message chưa ack quá thời gian cấu hình được worker khỏe mạnh nhận lại bằng `XAUTOCLAIM`.
 9. `GET /v1/workflows/{id}/runs` trả tối đa 100 lần chạy gần nhất của workflow, mới nhất trước và chỉ trong phạm vi người dùng hiện tại.
 
 `code.python` hiện dùng evaluator AST cho một tập Python giới hạn phục vụ biến đổi JSON (`main(inputs)`, biến cục bộ, dict/list, `len`, `split`, `join`). Nó không dùng `exec`, không cho phép import, vòng lặp hoặc truy cập tùy ý vào filesystem/network. Một runner cô lập đầy đủ vẫn thuộc runtime mục tiêu.
+
+Prompt của `llm.call` và instructions của `agent` hỗ trợ template theo input đã được resolve của chính node. Dùng `{{input.field}}` cho một trường, `{{input.nested.field}}` cho đường dẫn lồng nhau hoặc `{{input}}` cho toàn bộ JSON. Khi node chỉ có một parent và không khai báo `inputs`, output của parent tự động trở thành input của node; tham chiếu không tồn tại làm step thất bại với lỗi rõ ràng.
 
 ## 4. Runtime bền vững mục tiêu
 

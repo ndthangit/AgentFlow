@@ -225,6 +225,7 @@ function workflowNodeTypes(workflow: Workflow) {
 function workflowNodeLabel(type: string) {
   const labels: Record<string, string> = {
     agent: "Agent",
+    "llm.call": "LLM Call",
     "code.python": "Python",
     "input.schema": "Input",
     "output.schema": "Output",
@@ -533,7 +534,13 @@ export function App() {
           <>
             <section className="canvas-card">
               <div className="canvas-toolbar"><div><span className="pill">Draft</span><span>Revision {selected.revision}</span></div><span className="save-state">{message}</span></div>
-              <WorkflowEditor value={editor} onChange={setEditor} disabled={busy} skills={enabledSkills.filter((skill) => selectedSkillIds.includes(skill.id))} />
+              <WorkflowEditor
+                value={editor}
+                onChange={setEditor}
+                disabled={busy}
+                skills={enabledSkills.filter((skill) => selectedSkillIds.includes(skill.id))}
+                providers={providers}
+              />
             </section>
 
             {selected && (

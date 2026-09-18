@@ -1,11 +1,13 @@
 import unittest
+import uuid
+from types import SimpleNamespace
 
 from pydantic import ValidationError
 
 from domain.errors import WorkflowExecutionError
 from domain.examples import sum_workflow_draft
 from domain.schemas import WorkflowCreate
-from domain.validation import validate_graph
+from domain.validation import validate_agent_model_selections, validate_graph
 from runtime.agent_executor import skill_instructions_for_node
 from runtime.builtin import (
     execute_builtin_workflow,
@@ -125,6 +127,116 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertIn(
             "agent node agent skillIds must be unique non-empty strings",
             validate_graph(graph),
+        )
+
+    def test_agent_provider_and_model_must_be_selected_together(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {
+                        "providerId": "provider-1",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        self.assertIn(
+            "agent node agent must define a non-empty model", validate_graph(graph)
+        )
+
+    def test_llm_call_requires_prompt_and_structured_schemas(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "summarize",
+                    "type": "llm.call",
+                    "config": {
+                        "prompt": " ",
+                        "skillIds": ["writer"],
+                        "inputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        errors = validate_graph(graph)
+
+        self.assertIn(
+            "llm.call node summarize must define a non-empty prompt", errors
+        )
+        self.assertIn("llm.call node summarize cannot define skillIds", errors)
+        self.assertIn(
+            "llm.call node summarize must define outputSchema as an object", errors
+        )
+
+    def test_llm_call_model_selection_uses_an_enabled_registered_model(self):
+        provider_id = uuid.uuid4()
+        graph = {
+            "nodes": [
+                {
+                    "id": "summarize",
+                    "type": "llm.call",
+                    "config": {
+                        "prompt": "Summarize",
+                        "providerId": str(provider_id),
+                        "model": "openai/gpt-test",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+        provider = SimpleNamespace(
+            id=provider_id,
+            name="OpenRouter",
+            settings={"selected_models": ["openai/gpt-test"]},
+        )
+
+        self.assertEqual(validate_agent_model_selections(graph, [provider]), [])
+        self.assertIn(
+            "llm.call node summarize references an unavailable LLM provider",
+            validate_agent_model_selections(graph, []),
+        )
+
+    def test_agent_model_selection_uses_an_enabled_registered_model(self):
+        provider_id = uuid.uuid4()
+        graph = {
+            "nodes": [
+                {
+                    "id": "writer",
+                    "type": "agent",
+                    "config": {
+                        "providerId": str(provider_id),
+                        "model": "openai/gpt-test",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+        provider = SimpleNamespace(
+            id=provider_id,
+            name="OpenRouter",
+            settings={"selected_models": ["openai/gpt-test"]},
+        )
+
+        self.assertEqual(validate_agent_model_selections(graph, [provider]), [])
+        provider.settings = {"selected_models": ["anthropic/claude-test"]}
+        self.assertIn(
+            "agent node writer model openai/gpt-test is not enabled for provider OpenRouter",
+            validate_agent_model_selections(graph, [provider]),
+        )
+        self.assertIn(
+            "agent node writer references an unavailable LLM provider",
+            validate_agent_model_selections(graph, []),
         )
 
     def test_new_workflow_has_editable_input_agent_and_output_nodes(self):

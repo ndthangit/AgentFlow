@@ -1,11 +1,17 @@
 import unittest
 import uuid
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from redis.exceptions import ResponseError
 
 from domain.models import RunDispatch
-from runtime.agent_executor import parse_agent_output
+from providers.adapters import ChatCompletionResult, ChatMessage
+from runtime.agent_executor import (
+    create_llm_executor,
+    parse_agent_output,
+    render_prompt,
+)
 from runtime.orchestrator import dispatch_batch
 from runtime.queue import RedisRunQueue
 
@@ -80,6 +86,73 @@ class AgentOutputTests(unittest.TestCase):
         self.assertEqual(
             parse_agent_output('```json\n{"answer": 1}\n```'), {"answer": 1}
         )
+
+    def test_renders_nested_prompt_input_references(self):
+        self.assertEqual(
+            render_prompt(
+                "Title: {{ input.article.title }}; tags: {{input.tags}}",
+                {"article": {"title": "AgentFlow"}, "tags": ["ai", "flow"]},
+            ),
+            'Title: AgentFlow; tags: ["ai", "flow"]',
+        )
+
+    def test_rejects_missing_prompt_input_reference(self):
+        with self.assertRaisesRegex(
+            ValueError, "Prompt input reference is not available"
+        ):
+            render_prompt("Summarize {{input.missing}}", {"text": "content"})
+
+
+class LlmCallExecutorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_performs_one_completion_without_workflow_skills(self):
+        provider_id = uuid.uuid4()
+        provider = SimpleNamespace(
+            id=provider_id,
+            name="OpenRouter",
+            kind="openrouter",
+            settings={
+                "default_model": "openai/test-model",
+                "selected_models": ["openai/test-model"],
+            },
+            api_key_encrypted="encrypted",
+        )
+        adapter = AsyncMock()
+        adapter.complete.return_value = ChatCompletionResult(
+            id="completion-1",
+            model="openai/test-model",
+            message=ChatMessage(role="assistant", content='{"summary": "Short"}'),
+        )
+        secret_store = Mock()
+        secret_store.decrypt.return_value = "secret"
+        graph = {
+            "skills": [
+                {"id": "writer", "instructions": "THIS SKILL MUST NOT BE LOADED"}
+            ]
+        }
+        node = {
+            "id": "summarize",
+            "type": "llm.call",
+            "config": {
+                "prompt": "Summarize the input: {{input.text}}",
+                "providerId": str(provider_id),
+                "model": "openai/test-model",
+                "outputSchema": {"type": "object"},
+            },
+        }
+
+        with patch(
+            "runtime.agent_executor.create_provider_adapter", return_value=adapter
+        ):
+            execute_llm = create_llm_executor(graph, [provider], secret_store)
+            result = await execute_llm(node, {"text": "Long text"})
+
+        self.assertEqual(result, {"summary": "Short"})
+        adapter.complete.assert_awaited_once()
+        request = adapter.complete.await_args.args[0]
+        self.assertIn("Summarize the input", request.messages[0].content)
+        self.assertIn("Long text", request.messages[0].content)
+        self.assertNotIn("{{input.text}}", request.messages[0].content)
+        self.assertNotIn("THIS SKILL MUST NOT BE LOADED", request.messages[0].content)
 
 
 if __name__ == "__main__":

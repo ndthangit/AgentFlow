@@ -1,5 +1,6 @@
 """Deterministic validation for workflow graph drafts."""
 
+from collections.abc import Iterable
 from typing import Any
 
 IF_OPERATORS = {
@@ -97,10 +98,43 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
         node.get("schema"), dict
     ):
         errors.append(f"node {node_id} must define schema as an object")
-    if node_type == "agent":
+    if node_type in {"agent", "llm.call"}:
         _validate_configured_node(node, errors, require_language=False)
         config = node.get("config")
-        if isinstance(config, dict) and "skillIds" in config:
+        if (
+            node_type == "llm.call"
+            and isinstance(config, dict)
+            and (
+                not isinstance(config.get("prompt"), str)
+                or not config["prompt"].strip()
+            )
+        ):
+            errors.append(f"llm.call node {node_id} must define a non-empty prompt")
+        if (
+            node_type == "llm.call"
+            and isinstance(config, dict)
+            and "skillIds" in config
+        ):
+            errors.append(f"llm.call node {node_id} cannot define skillIds")
+        if isinstance(config, dict):
+            has_provider = "providerId" in config
+            has_model = "model" in config
+            if has_provider or has_model:
+                if (
+                    not isinstance(config.get("providerId"), str)
+                    or not config["providerId"].strip()
+                ):
+                    errors.append(
+                        f"{node_type} node {node_id} must define a non-empty providerId"
+                    )
+                if (
+                    not isinstance(config.get("model"), str)
+                    or not config["model"].strip()
+                ):
+                    errors.append(
+                        f"{node_type} node {node_id} must define a non-empty model"
+                    )
+        if node_type == "agent" and isinstance(config, dict) and "skillIds" in config:
             skill_ids = config["skillIds"]
             if (
                 not isinstance(skill_ids, list)
@@ -190,3 +224,45 @@ def _contains_cycle(adjacency: dict[str, list[str]]) -> bool:
         return cyclic
 
     return any(visit(node_id) for node_id in adjacency if node_id not in visited)
+
+
+def validate_agent_model_selections(
+    graph: dict[str, Any], providers: Iterable[Any]
+) -> list[str]:
+    """Validate explicit Agent and LLM Call model selections."""
+    providers_by_id = {str(provider.id): provider for provider in providers}
+    errors: list[str] = []
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return errors
+
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") not in {
+            "agent",
+            "llm.call",
+        }:
+            continue
+        config = node.get("config")
+        if not isinstance(config, dict):
+            continue
+        provider_id = config.get("providerId")
+        model = config.get("model")
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            continue
+        if not isinstance(model, str) or not model.strip():
+            continue
+        provider = providers_by_id.get(provider_id)
+        node_id = node.get("id", "unknown")
+        node_type = node.get("type", "agent")
+        if provider is None:
+            errors.append(
+                f"{node_type} node {node_id} references an unavailable LLM provider"
+            )
+            continue
+        settings = provider.settings if isinstance(provider.settings, dict) else {}
+        selected_models = settings.get("selected_models")
+        if not isinstance(selected_models, list) or model not in selected_models:
+            errors.append(
+                f"{node_type} node {node_id} model {model} is not enabled for provider {provider.name}"
+            )
+    return errors

@@ -1,6 +1,6 @@
 # Đặc tả workflow và API dự kiến
 
-Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện lưu draft/version/run; worker thực thi DAG gồm schema, math, Agent, Python giới hạn, `if`/`else` và fan-out song song. Durable retry theo từng node và validator JSON Schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
+Trạng thái: **DSL/API v0.1 đang triển khai từng phần**. FastAPI hiện lưu draft/version/run; worker thực thi DAG gồm schema, math, LLM Call, Agent, Python giới hạn, `if`/`else` và fan-out song song. Durable retry theo từng node và validator JSON Schema đầy đủ chưa được triển khai. Xem [lưu trữ và xử lý workflow](workflow-execution.md).
 
 ## 1. Workflow được xuất bản như thế nào?
 
@@ -17,6 +17,7 @@ Editor lưu draft với optimistic revision. Khi publish, server validate graph,
 | Transform | JSON → JSON | Mapping giới hạn, không chạy JavaScript tùy ý |
 | If/Switch | JSON → port được chọn | Điều kiện deterministic, port `true`/`false` hoặc route cụ thể |
 | Parallel | JSON → mọi nhánh con | Truyền cùng output cha và kích hoạt đồng thời tất cả edge `parallel` |
+| LLM Call | Prompt + input refs → JSON | Gọi model đúng một completion, không nạp skill hoặc chạy vòng lặp Agent |
 | Agent | Prompt + input refs → JSON + artifact refs | Adapter Codex/OpenCode, timeout/budget/policy |
 | Test | Snapshot → passed, exitCode, reportRef | Lệnh từ cấu hình được quản lý, chạy trong sandbox |
 | Approval | Action/artifact hash → decision | Chờ bền vững, có reviewer scope và deadline |

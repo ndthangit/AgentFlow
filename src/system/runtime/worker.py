@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from core.database import SessionFactory
 from domain.models import FlowRun, LlmProvider, RunStep, WorkflowVersion
 from providers.secrets import ProviderSecretStore
-from runtime.agent_executor import create_agent_executor
+from runtime.agent_executor import create_agent_executor, create_llm_executor
 from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
 from runtime.queue import RedisRunQueue, RunQueueMessage
 
@@ -61,15 +61,19 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
         graph = version.graph
         run_input = flow_run.input
 
-    execute_agent = create_agent_executor(
-        graph, providers, ProviderSecretStore.from_config()
-    )
+    secret_store = ProviderSecretStore.from_config()
+    execute_agent = create_agent_executor(graph, providers, secret_store)
+    execute_llm = create_llm_executor(graph, providers, secret_store)
 
     async def persist_progress(step: ExecutionStep) -> None:
         await persist_step(run_id, step)
 
     return await execute_workflow(
-        graph, run_input, execute_agent, on_step_update=persist_progress
+        graph,
+        run_input,
+        execute_agent,
+        on_step_update=persist_progress,
+        execute_llm=execute_llm,
     )
 
 

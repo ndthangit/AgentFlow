@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { Skill } from "./types";
+import type { LlmProvider, Skill } from "./types";
 
 type WorkflowEditorProps = {
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
   skills?: Skill[];
+  providers?: LlmProvider[];
 };
 
 type GraphNode = Record<string, unknown> & {
@@ -25,7 +26,7 @@ type Graph = Record<string, unknown> & {
   edges: GraphEdge[];
 };
 
-type EditableNodeType = "input.schema" | "agent" | "code.python" | "if" | "parallel" | "output.schema";
+type EditableNodeType = "input.schema" | "agent" | "llm.call" | "code.python" | "if" | "parallel" | "output.schema";
 type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array";
 type IfOperator = "equals" | "notEquals" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "truthy" | "falsy";
 
@@ -35,6 +36,8 @@ type NodeForm = {
   note: string;
   schema: string;
   instructions: string;
+  providerId: string;
+  model: string;
   code: string;
   inputSchema: string;
   outputSchema: string;
@@ -54,6 +57,7 @@ const emptyObjectSchema = {
 const nodeMetadata: Record<string, { label: string; className: string }> = {
   "input.schema": { label: "INPUT SCHEMA", className: "input-node" },
   agent: { label: "AI AGENT", className: "agent-node" },
+  "llm.call": { label: "LLM CALL", className: "llm-node" },
   "code.python": { label: "PYTHON", className: "code-node" },
   "math.add": { label: "MATH", className: "math-node" },
   if: { label: "IF / ELSE", className: "if-node" },
@@ -177,7 +181,13 @@ function formFromNode(node: GraphNode): NodeForm {
     name: typeof node.name === "string" ? node.name : node.id,
     note: typeof node.note === "string" ? node.note : "",
     schema: schemaText(node.schema),
-    instructions: typeof config.instructions === "string" ? config.instructions : "",
+    instructions: typeof config.instructions === "string"
+      ? config.instructions
+      : typeof config.prompt === "string"
+        ? config.prompt
+        : "",
+    providerId: typeof config.providerId === "string" ? config.providerId : "",
+    model: typeof config.model === "string" ? config.model : "",
     code: typeof config.code === "string" ? config.code : "",
     inputSchema: schemaText(config.inputSchema),
     outputSchema: schemaText(config.outputSchema),
@@ -202,6 +212,16 @@ function parseSchema(value: string, label: string): Record<string, unknown> {
   }
   if (!isRecord(parsed)) throw new Error(`${label} phải là một JSON object.`);
   return parsed;
+}
+
+function inputSchemaFields(value: string): string[] {
+  try {
+    const schema: unknown = JSON.parse(value);
+    if (!isRecord(schema) || !isRecord(schema.properties)) return [];
+    return Object.keys(schema.properties);
+  } catch {
+    return [];
+  }
 }
 
 const schemaTypes: { value: SchemaType; label: string }[] = [
@@ -342,6 +362,8 @@ function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
       ? "output"
       : type === "code.python"
         ? "python"
+        : type === "llm.call"
+          ? "llm"
         : type === "if"
           ? "decision"
           : type === "parallel"
@@ -386,6 +408,19 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
       },
     };
   }
+  if (type === "llm.call") {
+    return {
+      id,
+      type,
+      name: "LLM Call",
+      note: "Gọi model đúng một lần, không dùng skill hay vòng lặp Agent.",
+      config: {
+        prompt: "Xử lý dữ liệu đầu vào và trả về kết quả theo output schema.",
+        inputSchema: emptyObjectSchema,
+        outputSchema: emptyObjectSchema,
+      },
+    };
+  }
   if (type === "code.python") {
     return {
       id,
@@ -415,14 +450,14 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
     const firstNonInput = nodes.findIndex((node) => node.type !== "input.schema");
     return firstNonInput < 0 ? nodes.length : firstNonInput;
   }
-  if (type === "agent" || type === "code.python" || type === "if" || type === "parallel") {
+  if (type === "agent" || type === "llm.call" || type === "code.python" || type === "if" || type === "parallel") {
     const firstOutput = nodes.findIndex((node) => node.type === "output.schema" || node.type === "end");
     return firstOutput < 0 ? nodes.length : firstOutput;
   }
   return nodes.length;
 }
 
-export function WorkflowEditor({ value, onChange, disabled = false, skills = [] }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, onChange, disabled = false, skills = [], providers = [] }: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
   const layers = useMemo(() => graph ? graphLayers(graph) : [], [graph]);
@@ -434,6 +469,10 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
   const agentSkillIds = form?.inheritsWorkflowSkills
     ? skills.map((skill) => skill.id)
     : form?.skillIds ?? [];
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  const selectedProvider = enabledProviders.find((provider) => provider.id === form?.providerId);
+  const selectedProviderModels = selectedProvider?.settings.selected_models ?? [];
+  const promptInputFields = form ? inputSchemaFields(form.inputSchema) : [];
 
   useEffect(() => {
     if (selectedNode) return;
@@ -539,15 +578,35 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
       if (selectedNode.type === "input.schema" || selectedNode.type === "output.schema") {
         updated.schema = parseSchema(form.schema, "Schema");
       }
-      if (selectedNode.type === "agent") {
+      if (selectedNode.type === "agent" || selectedNode.type === "llm.call") {
+        const isAgent = selectedNode.type === "agent";
         const config = isRecord(selectedNode.config) ? selectedNode.config : {};
-        updated.config = {
+        const nextConfig: Record<string, unknown> = {
           ...config,
-          instructions: form.instructions.trim(),
-          skillIds: agentSkillIds.filter((skillId) => skills.some((skill) => skill.id === skillId)),
           inputSchema: parseSchema(form.inputSchema, "Input schema"),
           outputSchema: parseSchema(form.outputSchema, "Output schema"),
         };
+        if (isAgent) {
+          nextConfig.instructions = form.instructions.trim();
+          nextConfig.skillIds = agentSkillIds.filter((skillId) => skills.some((skill) => skill.id === skillId));
+        } else {
+          if (!form.instructions.trim()) throw new Error("Prompt của LLM Call không được để trống.");
+          nextConfig.prompt = form.instructions.trim();
+          delete nextConfig.instructions;
+          delete nextConfig.skillIds;
+        }
+        if (form.providerId || form.model) {
+          if (!selectedProvider) throw new Error("Hãy chọn một provider đang hoạt động.");
+          if (!selectedProviderModels.includes(form.model)) {
+            throw new Error("Hãy chọn một model đã đăng ký của provider.");
+          }
+          nextConfig.providerId = selectedProvider.id;
+          nextConfig.model = form.model;
+        } else {
+          delete nextConfig.providerId;
+          delete nextConfig.model;
+        }
+        updated.config = nextConfig;
       }
       if (selectedNode.type === "code.python") {
         const config = isRecord(selectedNode.config) ? selectedNode.config : {};
@@ -604,6 +663,7 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
         <div className="node-add-actions">
           <button disabled={disabled || !graph} onClick={() => addNode("input.schema")}>+ Input schema</button>
           <button disabled={disabled || !graph} onClick={() => addNode("agent")}>+ Agent</button>
+          <button disabled={disabled || !graph} onClick={() => addNode("llm.call")}>+ LLM Call</button>
           <button disabled={disabled || !graph} onClick={() => addNode("code.python")}>+ Python</button>
           <button disabled={disabled || !graph} onClick={() => addNode("if")}>+ If / Else</button>
           <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>
@@ -646,7 +706,7 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
           }) : (
             <div className="nodes-empty">
               <strong>Workflow chưa có node</strong>
-              <span>Hãy bắt đầu bằng Input schema, Agent, Python hoặc Output schema.</span>
+              <span>Hãy bắt đầu bằng Input schema, LLM Call, Agent, Python hoặc Output schema.</span>
             </div>
           )}
           {parsed.error && <p className="builder-error">{parsed.error}</p>}
@@ -664,10 +724,56 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
                 <SchemaBuilder label={selectedNode.type === "input.schema" ? "Input schema" : "Output schema"} value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
               )}
 
-              {selectedNode.type === "agent" && (
+              {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
                 <>
-                  <label>Instructions<textarea className="compact-textarea instructions" value={form.instructions} placeholder="Agent cần thực hiện điều gì?" onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
-                  <section className="agent-skill-picker">
+                  <section className="agent-model-picker">
+                    <div><strong>{selectedNode.type === "agent" ? "Model của Agent" : "Model của LLM Call"}</strong><span>Chọn model từ các provider đang hoạt động đã đăng ký.</span></div>
+                    <label>Provider<select
+                      value={form.providerId}
+                      onChange={(event) => {
+                        const providerId = event.target.value;
+                        const provider = enabledProviders.find((item) => item.id === providerId);
+                        const models = provider?.settings.selected_models ?? [];
+                        const model = provider?.settings.default_model && models.includes(provider.settings.default_model)
+                          ? provider.settings.default_model
+                          : models[0] ?? "";
+                        setForm({ ...form, providerId, model });
+                      }}
+                    >
+                      <option value="">Tự động dùng provider/model mặc định</option>
+                      {enabledProviders.map((provider) => (
+                        <option value={provider.id} key={provider.id}>{provider.name} ({provider.kind})</option>
+                      ))}
+                    </select></label>
+                    <label>Model<select
+                      value={form.model}
+                      disabled={!selectedProvider}
+                      onChange={(event) => setForm({ ...form, model: event.target.value })}
+                    >
+                      <option value="">{selectedProvider ? "Chọn model…" : "Chọn provider trước"}</option>
+                      {selectedProviderModels.map((model) => <option value={model} key={model}>{model}</option>)}
+                    </select></label>
+                    {!enabledProviders.length && <p>Chưa có provider đang hoạt động. Hãy đăng ký provider và chọn model trong trang Models.</p>}
+                    {form.providerId && !selectedProvider && <p>Provider đã lưu không còn hoạt động. Hãy chọn provider khác.</p>}
+                    {selectedProvider && !selectedProviderModels.length && <p>Provider này chưa có model đã đăng ký.</p>}
+                    {selectedProvider && form.model && !selectedProviderModels.includes(form.model) && <p>Model đã lưu không còn được bật cho provider này. Hãy chọn model khác.</p>}
+                  </section>
+                  <label>{selectedNode.type === "agent" ? "Instructions" : "Prompt"}<textarea className="compact-textarea instructions" value={form.instructions} placeholder={selectedNode.type === "agent" ? "Agent cần thực hiện điều gì?" : "Model cần xử lý dữ liệu đầu vào như thế nào?"} onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
+                  <section className="prompt-variable-picker">
+                    <div><strong>Input trong prompt</strong><span>Output của node trước trở thành input của node này. Chèn biến để dùng trực tiếp trong prompt.</span></div>
+                    <div className="prompt-variable-list">
+                      {["input", ...promptInputFields.map((field) => `input.${field}`)].map((path) => {
+                        const reference = `{{${path}}}`;
+                        return <button type="button" key={path} onClick={() => {
+                          const separator = form.instructions && !form.instructions.endsWith(" ") ? " " : "";
+                          setForm({ ...form, instructions: `${form.instructions}${separator}${reference}` });
+                        }}><code>{reference}</code></button>;
+                      })}
+                    </div>
+                    <p>Dùng <code>{"{{input.field}}"}</code> cho một trường, hoặc <code>{"{{input}}"}</code> cho toàn bộ JSON. Có thể dùng đường dẫn lồng nhau như <code>{"{{input.article.title}}"}</code>.</p>
+                  </section>
+                  {selectedNode.type === "llm.call" && <p className="node-form-hint">Node này gửi một request duy nhất tới model, không nạp skill và không chạy vòng lặp Agent.</p>}
+                  {selectedNode.type === "agent" && <section className="agent-skill-picker">
                     <div><strong>Skills của Agent</strong><span>Mỗi Agent chỉ nhận các skill được chọn tại đây.</span></div>
                     <select
                       value=""
@@ -686,7 +792,7 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [] 
                       })}
                       {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>Chưa gắn skill. Hãy thêm skill vào kho workflow trước.</p>}
                     </div>
-                  </section>
+                  </section>}
                   <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
                   <SchemaBuilder label="Output schema" value={form.outputSchema} onChange={(outputSchema) => setForm({ ...form, outputSchema })} />
                 </>

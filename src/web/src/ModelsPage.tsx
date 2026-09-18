@@ -13,6 +13,24 @@ type ModelTestState = {
   detail?: string;
 };
 
+const providerOptions: Array<{
+  kind: LlmProvider["kind"];
+  name: string;
+  initials: string;
+  description: string;
+  keyLabel: string;
+  keyPlaceholder: string;
+}> = [
+  {
+    kind: "openrouter",
+    name: "OpenRouter",
+    initials: "OR",
+    description: "Kết nối một API key để sử dụng catalog model của OpenRouter.",
+    keyLabel: "OpenRouter API key",
+    keyPlaceholder: "sk-or-v1-…",
+  },
+];
+
 function selectedModels(provider: LlmProvider) {
   return provider.settings.selected_models ?? [];
 }
@@ -30,6 +48,8 @@ function settingsWithModels(provider: LlmProvider, modelIds: string[]): OpenRout
 
 export function ModelsPage({ providers, refresh }: Props) {
   const [apiKey, setApiKey] = useState("");
+  const [isAddingProvider, setIsAddingProvider] = useState(false);
+  const [selectedProviderKind, setSelectedProviderKind] = useState<LlmProvider["kind"] | "">("");
   const [replacementKeys, setReplacementKeys] = useState<Record<string, string>>({});
   const [catalogs, setCatalogs] = useState<Record<string, ProviderModel[]>>({});
   const [draftSelections, setDraftSelections] = useState<Record<string, string[]>>({});
@@ -38,6 +58,15 @@ export function ModelsPage({ providers, refresh }: Props) {
   const [busyAction, setBusyAction] = useState<string>();
   const [modelTests, setModelTests] = useState<Record<string, ModelTestState>>({});
   const [message, setMessage] = useState("Sẵn sàng cấu hình provider");
+
+  const selectedProviderOption = providerOptions.find((option) => option.kind === selectedProviderKind);
+
+  function closeProviderForm() {
+    if (busyAction === "create") return;
+    setIsAddingProvider(false);
+    setSelectedProviderKind("");
+    setApiKey("");
+  }
 
   async function run(actionId: string, action: () => Promise<void>) {
     setBusyAction(actionId);
@@ -87,8 +116,17 @@ export function ModelsPage({ providers, refresh }: Props) {
           <h2>Model providers</h2>
           <p>Thêm API key, kích hoạt provider bằng cách chọn model, rồi kiểm tra từng model trước khi sử dụng.</p>
         </div>
-        <span className="library-count"><strong>{providers.filter((item) => item.enabled).length}</strong> đang hoạt động</span>
+        <div className="library-summary-actions">
+          <span className="library-count"><strong>{providers.filter((item) => item.enabled).length}</strong> đang hoạt động</span>
+          <button
+            className="add-provider-button"
+            type="button"
+            onClick={() => setIsAddingProvider(true)}
+          >+ Thêm provider</button>
+        </div>
       </div>
+
+      <div className="provider-feedback" role="status">{message}</div>
 
       <div className="models-layout">
         <div className="provider-list">
@@ -103,7 +141,7 @@ export function ModelsPage({ providers, refresh }: Props) {
             const isConfiguring = configuringId === provider.id;
 
             return (
-              <article className="provider-card" key={provider.id}>
+              <article className={isConfiguring ? "provider-card configuring" : "provider-card"} key={provider.id}>
                 <div className="provider-heading">
                   <div>
                     <span className="provider-logo">OR</span>
@@ -262,39 +300,82 @@ export function ModelsPage({ providers, refresh }: Props) {
           })}
           {!providers.length && <div className="catalog-empty">Chưa có provider. Hãy thêm API key OpenRouter để bắt đầu.</div>}
         </div>
-
-        <form className="provider-form" onSubmit={(event) => {
-          event.preventDefault();
-          if (!apiKey.trim()) return;
-          void run("create", async () => {
-            await api.createLlmProvider({ api_key: apiKey.trim() });
-            setApiKey("");
-            await refresh();
-            setMessage("Đã lưu OpenRouter ở trạng thái Inactive. Hãy chọn model để kích hoạt.");
-          });
-        }}>
-          <div>
-            <p className="eyebrow">ADD PROVIDER</p>
-            <h2>Thêm OpenRouter</h2>
-            <p>Chỉ cần nhập API key. Provider mới luôn ở trạng thái Inactive và key chỉ được lưu dưới dạng mã hóa.</p>
-          </div>
-          <label>OpenRouter API key
-            <input
-              required
-              type="password"
-              autoComplete="new-password"
-              maxLength={1000}
-              placeholder="sk-or-v1-…"
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-            />
-          </label>
-          <button className="install-button" disabled={Boolean(busyAction) || !apiKey.trim()}>
-            {busyAction === "create" ? "Đang lưu…" : "Thêm provider"}
-          </button>
-          <span className="form-message">{message}</span>
-        </form>
       </div>
+
+      {isAddingProvider && (
+        <div
+          className="provider-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeProviderForm();
+          }}
+        >
+          <div className="provider-modal" role="dialog" aria-modal="true" aria-labelledby="add-provider-title">
+            <div className="provider-modal-heading">
+              <div>
+                <p className="eyebrow">ADD PROVIDER</p>
+                <h2 id="add-provider-title">Thêm provider</h2>
+                <p>Chọn dịch vụ bạn muốn kết nối để mở đúng form cấu hình.</p>
+              </div>
+              <button type="button" aria-label="Đóng form thêm provider" onClick={closeProviderForm}>×</button>
+            </div>
+
+            <div className="provider-choice-list" aria-label="Chọn loại provider">
+              {providerOptions.map((option) => (
+                <button
+                  className={selectedProviderKind === option.kind ? "provider-choice selected" : "provider-choice"}
+                  type="button"
+                  key={option.kind}
+                  onClick={() => setSelectedProviderKind(option.kind)}
+                >
+                  <span className="provider-logo">{option.initials}</span>
+                  <span><strong>{option.name}</strong><small>{option.description}</small></span>
+                  <b aria-hidden="true">{selectedProviderKind === option.kind ? "✓" : "›"}</b>
+                </button>
+              ))}
+            </div>
+
+            {selectedProviderOption && (
+              <form className="provider-form provider-modal-form" onSubmit={(event) => {
+                event.preventDefault();
+                if (!apiKey.trim()) return;
+                void run("create", async () => {
+                  await api.createLlmProvider({ api_key: apiKey.trim() });
+                  await refresh();
+                  setMessage(`Đã lưu ${selectedProviderOption.name} ở trạng thái Inactive. Hãy chọn model để kích hoạt.`);
+                  setIsAddingProvider(false);
+                  setSelectedProviderKind("");
+                  setApiKey("");
+                });
+              }}>
+                <div className="provider-config-heading">
+                  <span className="provider-logo">{selectedProviderOption.initials}</span>
+                  <span><strong>Cấu hình {selectedProviderOption.name}</strong><small>API key được mã hóa trước khi lưu.</small></span>
+                </div>
+                <label>{selectedProviderOption.keyLabel}
+                  <input
+                    autoFocus
+                    required
+                    type="password"
+                    autoComplete="new-password"
+                    maxLength={1000}
+                    placeholder={selectedProviderOption.keyPlaceholder}
+                    value={apiKey}
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </label>
+                <div className="provider-form-actions">
+                  <button type="button" onClick={closeProviderForm} disabled={busyAction === "create"}>Hủy</button>
+                  <button className="install-button" disabled={Boolean(busyAction) || !apiKey.trim()}>
+                    {busyAction === "create" ? "Đang lưu…" : `Thêm ${selectedProviderOption.name}`}
+                  </button>
+                </div>
+                <span className="form-message" role="status">{message}</span>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
