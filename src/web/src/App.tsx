@@ -11,10 +11,10 @@ type AppTab = "workflows" | "skills" | "models";
 const starterDraft = {
   nodes: [
     {
-      id: "input",
+      id: "start",
       type: "input.schema",
-      name: "Dữ liệu đầu vào",
-      note: "Định nghĩa dữ liệu workflow tiếp nhận.",
+      name: "Bắt đầu",
+      note: "Định nghĩa các biến đầu vào ban đầu của workflow.",
       schema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
@@ -29,22 +29,35 @@ const starterDraft = {
       },
     },
     {
-      id: "output",
+      id: "end",
       type: "output.schema",
-      name: "Dữ liệu đầu ra",
-      note: "Định nghĩa kết quả workflow trả về.",
+      name: "Kết thúc",
+      note: "Định nghĩa các biến workflow trả về.",
+      inputs: {},
       schema: { type: "object", properties: {}, additionalProperties: false },
     },
   ],
   edges: [
-    { from: "input", to: "agent", port: "success" },
-    { from: "agent", to: "output", port: "success" },
+    { from: "start", to: "agent", port: "success" },
+    { from: "agent", to: "end", port: "success" },
   ],
 };
 
 const agentPythonWorkflowDraft = {
   settings: { maxParallelNodes: 2 },
   nodes: [
+    {
+      id: "start",
+      type: "input.schema",
+      name: "Bắt đầu",
+      note: "Nhận chủ đề ban đầu từ người dùng.",
+      schema: {
+        type: "object",
+        properties: { topic: { type: "string" } },
+        required: ["topic"],
+        additionalProperties: false,
+      },
+    },
     {
       id: "research_agent",
       type: "agent",
@@ -158,13 +171,28 @@ const agentPythonWorkflowDraft = {
         },
       },
     },
+    {
+      id: "end",
+      type: "output.schema",
+      name: "Kết thúc",
+      note: "Trả về câu trả lời hoàn chỉnh.",
+      inputs: { final_answer: { from: "$nodes.final_agent.output.final_answer" } },
+      schema: {
+        type: "object",
+        properties: { final_answer: { type: "string" } },
+        required: ["final_answer"],
+        additionalProperties: false,
+      },
+    },
   ],
   edges: [
+    { from: "start", to: "research_agent", port: "success" },
     { from: "research_agent", to: "parallel_split", port: "success" },
     { from: "parallel_split", to: "python_formatter", port: "parallel" },
     { from: "parallel_split", to: "review_agent", port: "parallel" },
     { from: "python_formatter", to: "final_agent", port: "success" },
     { from: "review_agent", to: "final_agent", port: "success" },
+    { from: "final_agent", to: "end", port: "success" },
   ],
 };
 
@@ -227,8 +255,8 @@ function workflowNodeLabel(type: string) {
     agent: "Agent",
     "llm.call": "LLM Call",
     "code.python": "Python",
-    "input.schema": "Input",
-    "output.schema": "Output",
+    "input.schema": "Start",
+    "output.schema": "End",
     "math.add": "Math",
     if: "If / Else",
     parallel: "Parallel",
@@ -249,17 +277,26 @@ export function App() {
   const [runs, setRuns] = useState<FlowRun[]>([]);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runStepsLoading, setRunStepsLoading] = useState(false);
+  const [isRunHistoryOpen, setIsRunHistoryOpen] = useState(false);
+  const [runHistoryLoading, setRunHistoryLoading] = useState(false);
+  const [runDetailsRefreshKey, setRunDetailsRefreshKey] = useState(0);
   const [runInput, setRunInput] = useState("{}");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [providers, setProviders] = useState<LlmProvider[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [skillForm, setSkillForm] = useState(emptySkill);
+  const [isAddingSkill, setIsAddingSkill] = useState(false);
+  const [editingSkill, setEditingSkill] = useState<Skill>();
 
   const selected = useMemo(
     () => workflows.find((workflow) => workflow.id === selectedId),
     [selectedId, workflows],
   );
   const enabledSkills = useMemo(() => skills.filter((skill) => skill.enabled), [skills]);
+  const workflowEditorSkills = useMemo(
+    () => enabledSkills.filter((skill) => selectedSkillIds.includes(skill.id)),
+    [enabledSkills, selectedSkillIds],
+  );
   const latestCompletedOutput = useMemo(
     () => runs.find((item) => item.status === "succeeded" && item.output)?.output,
     [runs],
@@ -296,6 +333,7 @@ export function App() {
     setVersion(undefined);
     setRun(undefined);
     setRuns([]);
+    setIsRunHistoryOpen(false);
     const nodes = selected.draft.nodes;
     const isSumWorkflow = Array.isArray(nodes) && nodes.some((node) => (
       node && typeof node === "object" && "type" in node && node.type === "math.add"
@@ -310,14 +348,11 @@ export function App() {
         : "{}");
     Promise.all([
       api.listWorkflowSkills(selected.id),
-      api.listWorkflowRuns(selected.id),
       api.getCurrentWorkflowVersion(selected.id),
     ])
-      .then(([workflowSkills, items, currentVersion]) => {
+      .then(([workflowSkills, currentVersion]) => {
         if (!cancelled) {
           setSelectedSkillIds(workflowSkills.map((skill) => skill.id));
-          setRuns(items);
-          setRun(items[0]);
           setVersion(currentVersion ?? undefined);
         }
       })
@@ -336,34 +371,78 @@ export function App() {
       return;
     }
     let cancelled = false;
+    let polling: number | undefined;
     const runId = run.id;
-    const loadRun = () => {
+    let previousStatus = run.status;
+    const showInitialStepLoading = isRunHistoryOpen;
+    if (showInitialStepLoading) {
+      setRunSteps([]);
       setRunStepsLoading(true);
-      Promise.all([api.getRun(runId), api.listRunSteps(runId)])
-        .then(([latest, steps]) => {
-          if (cancelled) return;
-          setRun(latest);
-          setRuns((items) => items.map((item) => item.id === latest.id ? latest : item));
-          setRunSteps(steps);
-          if (latest.status === "succeeded") setMessage("Worker đã chạy xong workflow");
-          if (latest.status === "failed") setMessage("Workflow thất bại — xem lỗi từng bước bên dưới");
-        })
-        .catch((error: Error) => {
-          if (!cancelled) setMessage(error.message);
-        })
-        .finally(() => {
-          if (!cancelled) setRunStepsLoading(false);
+    } else {
+      setRunStepsLoading(false);
+    }
+
+    const loadRun = async (initial: boolean) => {
+      try {
+        const [latest, steps] = await Promise.all([
+          api.getRun(runId),
+          isRunHistoryOpen ? api.listRunSteps(runId) : Promise.resolve(undefined),
+        ]);
+        if (cancelled) return;
+
+        setRun((current) => current
+          && current.id === latest.id
+          && current.status === latest.status
+          && current.updated_at === latest.updated_at
+          ? current
+          : latest);
+        setRuns((items) => {
+          let changed = false;
+          const next = items.map((item) => {
+            if (item.id !== latest.id) return item;
+            if (item.status === latest.status && item.updated_at === latest.updated_at) return item;
+            changed = true;
+            return latest;
+          });
+          return changed ? next : items;
         });
+        if (steps) {
+          setRunSteps((current) => JSON.stringify(current) === JSON.stringify(steps) ? current : steps);
+        }
+
+        if (latest.status !== previousStatus) {
+          if (latest.status === "succeeded") setMessage("Worker đã chạy xong workflow");
+          if (latest.status === "failed") setMessage("Workflow thất bại — mở lịch sử chạy để xem lỗi từng bước");
+          previousStatus = latest.status;
+        }
+        if (latest.status === "pending" || latest.status === "running") {
+          polling = window.setTimeout(() => void loadRun(false), 1200);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setMessage(error instanceof Error ? error.message : "Không thể cập nhật trạng thái run");
+        if (previousStatus === "pending" || previousStatus === "running") {
+          polling = window.setTimeout(() => void loadRun(false), 2500);
+        }
+      } finally {
+        if (!cancelled && initial && showInitialStepLoading) setRunStepsLoading(false);
+      }
     };
-    loadRun();
-    const polling = run.status === "pending" || run.status === "running"
-      ? window.setInterval(loadRun, 1000)
-      : undefined;
+    void loadRun(true);
     return () => {
       cancelled = true;
-      if (polling !== undefined) window.clearInterval(polling);
+      if (polling !== undefined) window.clearTimeout(polling);
     };
-  }, [run?.id, run?.status]);
+  }, [run?.id, isRunHistoryOpen, runDetailsRefreshKey]);
+
+  useEffect(() => {
+    if (!isRunHistoryOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsRunHistoryOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isRunHistoryOpen]);
 
   async function perform(action: () => Promise<void>) {
     setBusy(true);
@@ -400,6 +479,57 @@ export function App() {
   function showWorkflowList() {
     setSelectedId(undefined);
     setActiveTab("workflows");
+    setIsRunHistoryOpen(false);
+  }
+
+  function openRunHistory() {
+    if (!selected) return;
+    setIsRunHistoryOpen(true);
+    void perform(async () => {
+      await loadRunHistory();
+    });
+  }
+
+  async function loadRunHistory(isRefresh = false) {
+    if (!selected) return;
+    setRunHistoryLoading(true);
+    try {
+      const items = await api.listWorkflowRuns(selected.id);
+      setRuns(items);
+      setRun((current) => current ? items.find((item) => item.id === current.id) ?? items[0] : items[0]);
+      if (isRefresh) setRunDetailsRefreshKey((current) => current + 1);
+      setMessage(items.length
+        ? isRefresh ? "Đã tải lại lịch sử chạy" : `Đã tải ${items.length} lần chạy gần nhất`
+        : "Workflow chưa có lịch sử chạy");
+    } finally {
+      setRunHistoryLoading(false);
+    }
+  }
+
+  function closeSkillForm() {
+    if (busy) return;
+    setIsAddingSkill(false);
+    setEditingSkill(undefined);
+    setSkillForm(emptySkill);
+  }
+
+  function openNewSkillForm() {
+    setEditingSkill(undefined);
+    setSkillForm(emptySkill);
+    setIsAddingSkill(true);
+    setMessage("Điền thông tin để tạo skill mới");
+  }
+
+  function openEditSkillForm(skill: Skill) {
+    setIsAddingSkill(false);
+    setEditingSkill(skill);
+    setSkillForm({
+      slug: skill.slug,
+      name: skill.name,
+      description: skill.description,
+      instructions: skill.instructions,
+    });
+    setMessage(`Đang chỉnh sửa “${skill.name}”`);
   }
 
   function removeWorkflow(workflow: Workflow) {
@@ -535,10 +665,11 @@ export function App() {
             <section className="canvas-card">
               <div className="canvas-toolbar"><div><span className="pill">Draft</span><span>Revision {selected.revision}</span></div><span className="save-state">{message}</span></div>
               <WorkflowEditor
+                key={selected.id}
                 value={editor}
                 onChange={setEditor}
                 disabled={busy}
-                skills={enabledSkills.filter((skill) => selectedSkillIds.includes(skill.id))}
+                skills={workflowEditorSkills}
                 providers={providers}
               />
             </section>
@@ -548,30 +679,34 @@ export function App() {
                 <div><p className="eyebrow">RUN DATA</p><h2>Input chạy thử</h2><p>Nhập JSON đúng với Input schema. Demo Agent/Python dùng topic; mẫu tính tổng dùng num1 và num2.</p></div>
                 <textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} spellCheck={false} />
                 <div className="run-output">
-                  <strong>Kết quả gần nhất</strong>
-                  <code>{latestCompletedOutput ? JSON.stringify(latestCompletedOutput, null, 2) : "Chưa có kết quả hoàn tất"}</code>
+                  <strong>Kết quả trong phiên</strong>
+                  <code>{latestCompletedOutput ? JSON.stringify(latestCompletedOutput, null, 2) : "Chưa có kết quả trong phiên này"}</code>
                 </div>
               </section>
             )}
 
-            {selected && (
-              <section className="run-history-card">
+            {selected && isRunHistoryOpen && (
+              <div
+                className="workflow-modal-backdrop"
+                role="presentation"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) setIsRunHistoryOpen(false);
+                }}
+              >
+              <section className="run-history-card run-history-modal" role="dialog" aria-modal="true" aria-labelledby="run-history-title">
                 <div className="run-history-heading">
                   <div>
                     <p className="eyebrow">RUN HISTORY</p>
-                    <h2>Lịch sử chạy</h2>
+                    <h2 id="run-history-title">Lịch sử chạy</h2>
                     <p>Mỗi lần bấm Chạy được lưu thành một bản ghi riêng.</p>
                   </div>
-                  <div className="run-history-summary">
-                    <strong>{runs.length}</strong>
-                    <span>lần chạy gần nhất</span>
-                    <button disabled={busy} onClick={() => void perform(async () => {
-                      const items = await api.listWorkflowRuns(selected.id);
-                      setRuns(items);
-                      if (run) setRun(items.find((item) => item.id === run.id) ?? items[0]);
-                      else setRun(items[0]);
-                      setMessage("Đã tải lại lịch sử chạy");
-                    })}>Tải lại</button>
+                  <div className="run-history-heading-actions">
+                    <div className="run-history-summary">
+                      <strong>{runs.length}</strong>
+                      <span>lần chạy gần nhất</span>
+                      <button disabled={busy || runHistoryLoading} onClick={() => void perform(async () => loadRunHistory(true))}>{runHistoryLoading ? "Đang tải…" : "Tải lại"}</button>
+                    </div>
+                    <button className="workflow-modal-close" type="button" aria-label="Đóng lịch sử chạy" onClick={() => setIsRunHistoryOpen(false)}>×</button>
                   </div>
                 </div>
                 <div className="run-history-body">
@@ -591,7 +726,7 @@ export function App() {
                         <b>Xem</b>
                       </button>
                     ))}
-                    {!runs.length && <div className="run-history-empty">Chưa có lịch sử. Publish workflow rồi bấm Chạy để tạo lần chạy đầu tiên.</div>}
+                    {!runs.length && <div className="run-history-empty">{runHistoryLoading ? "Đang tải lịch sử chạy…" : "Chưa có lịch sử. Publish workflow rồi bấm Chạy để tạo lần chạy đầu tiên."}</div>}
                   </div>
 
                   <aside className="run-detail-panel">
@@ -639,6 +774,7 @@ export function App() {
                   </aside>
                 </div>
               </section>
+              </div>
             )}
 
             {selected && (
@@ -669,54 +805,113 @@ export function App() {
           <section className="skills-page">
             <div className="library-intro">
               <div><p className="eyebrow">AVAILABLE TO AGENTS</p><h2>Skill đã cài</h2><p>Quản lý hướng dẫn dùng chung. Khi publish workflow, nội dung của các skill được chọn sẽ được snapshot vào version.</p></div>
-              <span className="library-count"><strong>{enabledSkills.length}</strong> đang bật</span>
-            </div>
-
-            <div className="skills-layout">
-              <div className="skill-catalog">
-                {skills.map((skill) => (
-                  <article className={skill.enabled ? "skill-library-card" : "skill-library-card disabled"} key={skill.id}>
-                    <div className="skill-card-heading"><span className={`source-badge ${skill.source}`}>{skill.source === "builtin" ? "Hệ thống" : "Người dùng"}</span><code>v{skill.version}</code></div>
-                    <h3>{skill.name}</h3><p>{skill.description || "Chưa có mô tả."}</p>
-                    <div className="skill-meta"><code>{skill.slug}</code>{skill.source === "user" ? <button className="delete-skill" disabled={busy} onClick={() => {
-                      if (!window.confirm(`Xóa skill “${skill.name}”? Skill sẽ được bỏ khỏi các workflow chưa publish.`)) return;
-                      void perform(async () => {
-                        await api.deleteSkill(skill.id);
-                        setSelectedSkillIds((ids) => ids.filter((id) => id !== skill.id));
-                        await refreshSkills();
-                        if (selected) setVersion((await api.getCurrentWorkflowVersion(selected.id)) ?? undefined);
-                        setMessage(`Đã xóa skill “${skill.name}”`);
-                      });
-                    }}>Xóa</button> : <span>Skill hệ thống</span>}</div>
-                  </article>
-                ))}
-                {!skills.length && <div className="catalog-empty">Chưa có skill. Hãy tạo skill đầu tiên ở biểu mẫu bên cạnh.</div>}
+              <div className="library-summary-actions">
+                <span className="library-count"><strong>{enabledSkills.length}</strong> đang hoạt động</span>
+                <button className="add-provider-button" type="button" onClick={openNewSkillForm}>+ Thêm skill</button>
               </div>
-
-              <form className="skill-form" onSubmit={(event) => {
-                event.preventDefault();
-                if (!skillForm.slug.trim() || !skillForm.name.trim() || !skillForm.instructions.trim()) return;
-                void perform(async () => {
-                  await api.createSkill({
-                    slug: skillForm.slug.trim(),
-                    name: skillForm.name.trim(),
-                    description: skillForm.description.trim(),
-                    instructions: skillForm.instructions.trim(),
-                  });
-                  setSkillForm(emptySkill);
-                  await refreshSkills();
-                  setMessage("Đã cài skill mới");
-                });
-              }}>
-                <div><p className="eyebrow">INSTALL A SKILL</p><h2>Tạo skill mới</h2><p>Skill sau khi tạo sẽ sẵn sàng để chọn trong workflow.</p></div>
-                <label>Slug<input required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="research-assistant" value={skillForm.slug} onChange={(event) => setSkillForm({ ...skillForm, slug: event.target.value.toLowerCase() })} /></label>
-                <label>Tên skill<input required maxLength={160} placeholder="Research assistant" value={skillForm.name} onChange={(event) => setSkillForm({ ...skillForm, name: event.target.value })} /></label>
-                <label>Mô tả<input maxLength={500} placeholder="Skill này giúp agent làm gì?" value={skillForm.description} onChange={(event) => setSkillForm({ ...skillForm, description: event.target.value })} /></label>
-                <label>Instructions<textarea required placeholder="Viết các chỉ dẫn mà agent phải tuân theo…" value={skillForm.instructions} onChange={(event) => setSkillForm({ ...skillForm, instructions: event.target.value })} /></label>
-                <button className="install-button" disabled={busy || !skillForm.slug.trim() || !skillForm.name.trim() || !skillForm.instructions.trim()}>Cài skill</button>
-                <span className="form-message">{message}</span>
-              </form>
             </div>
+
+            <div className="provider-feedback" role="status">{message}</div>
+
+            <div className="skill-catalog">
+              {skills.map((skill) => (
+                <article className={skill.enabled ? "skill-library-card" : "skill-library-card disabled"} key={skill.id}>
+                  <div className="provider-heading">
+                    <div>
+                      <span className={skill.source === "builtin" ? "provider-logo" : "provider-logo user-skill-logo"}>{skill.source === "builtin" ? "AF" : "US"}</span>
+                      <span><strong>{skill.name}</strong><small>{skill.slug} · version {skill.version}</small></span>
+                    </div>
+                    <span className={skill.enabled ? "provider-status enabled" : "provider-status"}>{skill.enabled ? "Active" : "Inactive"}</span>
+                  </div>
+
+                  <dl className="provider-details skill-details">
+                    <div><dt>Nguồn</dt><dd>{skill.source === "builtin" ? "AgentFlow (hệ thống)" : "Người dùng"}</dd></div>
+                    <div><dt>Cập nhật</dt><dd>{new Date(skill.updated_at).toLocaleString("vi-VN")}</dd></div>
+                  </dl>
+
+                  <p className="skill-description">{skill.description || "Chưa có mô tả cho skill này."}</p>
+
+                  <div className="provider-actions skill-actions">
+                    {skill.source === "user" ? <>
+                      <button className="danger" type="button" disabled={busy} onClick={() => {
+                        if (!window.confirm(`Xóa skill “${skill.name}”? Skill sẽ được bỏ khỏi các workflow chưa publish.`)) return;
+                        void perform(async () => {
+                          await api.deleteSkill(skill.id);
+                          setSelectedSkillIds((ids) => ids.filter((id) => id !== skill.id));
+                          await refreshSkills();
+                          if (selected) setVersion((await api.getCurrentWorkflowVersion(selected.id)) ?? undefined);
+                          setMessage(`Đã xóa skill “${skill.name}”`);
+                        });
+                      }}>Xóa</button>
+                      <button className="primary" type="button" disabled={busy} onClick={() => openEditSkillForm(skill)}>Chỉnh sửa</button>
+                    </> : <span className="managed-skill-note">Được quản lý bởi hệ thống</span>}
+                  </div>
+                </article>
+              ))}
+              {!skills.length && <div className="catalog-empty">Chưa có skill. Hãy chọn “Thêm skill” để tạo skill đầu tiên.</div>}
+            </div>
+
+            {(isAddingSkill || editingSkill) && (
+              <div
+                className="provider-modal-backdrop"
+                role="presentation"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) closeSkillForm();
+                }}
+              >
+                <div className="provider-modal skill-modal" role="dialog" aria-modal="true" aria-labelledby="skill-form-title">
+                  <div className="provider-modal-heading">
+                    <div>
+                      <p className="eyebrow">{editingSkill ? "EDIT SKILL" : "INSTALL A SKILL"}</p>
+                      <h2 id="skill-form-title">{editingSkill ? "Chỉnh sửa skill" : "Thêm skill"}</h2>
+                      <p>{editingSkill ? "Cập nhật nội dung dùng chung. Các workflow đã publish vẫn giữ snapshot cũ cho đến lần publish tiếp theo." : "Tạo bộ hướng dẫn dùng chung để gắn vào workflow và từng Agent."}</p>
+                    </div>
+                    <button type="button" aria-label="Đóng form skill" onClick={closeSkillForm}>×</button>
+                  </div>
+
+                  <form className="skill-form skill-modal-form" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!skillForm.slug.trim() || !skillForm.name.trim() || !skillForm.instructions.trim()) return;
+                    void perform(async () => {
+                      if (editingSkill) {
+                        await api.updateSkill(editingSkill, {
+                          name: skillForm.name.trim(),
+                          description: skillForm.description.trim(),
+                          instructions: skillForm.instructions.trim(),
+                          enabled: editingSkill.enabled,
+                        });
+                      } else {
+                        await api.createSkill({
+                          slug: skillForm.slug.trim(),
+                          name: skillForm.name.trim(),
+                          description: skillForm.description.trim(),
+                          instructions: skillForm.instructions.trim(),
+                        });
+                      }
+                      setSkillForm(emptySkill);
+                      await refreshSkills();
+                      setIsAddingSkill(false);
+                      setEditingSkill(undefined);
+                      setMessage(editingSkill ? `Đã cập nhật skill “${skillForm.name.trim()}”` : "Đã cài skill mới");
+                    });
+                  }}>
+                    <div className="provider-config-heading">
+                      <span className="provider-logo user-skill-logo">US</span>
+                      <span><strong>{editingSkill ? `Phiên bản hiện tại: v${editingSkill.version}` : "Cấu hình skill người dùng"}</strong><small>{editingSkill ? "Lưu thay đổi sẽ tạo phiên bản skill mới." : "Skill sẽ sẵn sàng trong bộ chọn của workflow sau khi lưu."}</small></span>
+                    </div>
+                    <label>Slug<input autoFocus={!editingSkill} required disabled={Boolean(editingSkill)} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxLength={80} placeholder="research-assistant" value={skillForm.slug} onChange={(event) => setSkillForm({ ...skillForm, slug: event.target.value.toLowerCase() })} /></label>
+                    <label>Tên skill<input autoFocus={Boolean(editingSkill)} required maxLength={160} placeholder="Research assistant" value={skillForm.name} onChange={(event) => setSkillForm({ ...skillForm, name: event.target.value })} /></label>
+                    <label>Mô tả<input maxLength={500} placeholder="Skill này giúp agent làm gì?" value={skillForm.description} onChange={(event) => setSkillForm({ ...skillForm, description: event.target.value })} /></label>
+                    <label>Instructions<textarea required maxLength={100000} placeholder="Viết các chỉ dẫn mà agent phải tuân theo…" value={skillForm.instructions} onChange={(event) => setSkillForm({ ...skillForm, instructions: event.target.value })} /></label>
+                    <div className="provider-form-actions">
+                      <button type="button" onClick={closeSkillForm} disabled={busy}>Hủy</button>
+                      <button className="install-button" disabled={busy || !skillForm.slug.trim() || !skillForm.name.trim() || !skillForm.instructions.trim()}>{busy ? "Đang lưu…" : editingSkill ? "Lưu thay đổi" : "Thêm skill"}</button>
+                    </div>
+                    <span className="form-message" role="status">{message}</span>
+                  </form>
+                </div>
+              </div>
+            )}
           </section>
         ) : (
           <ModelsPage providers={providers} refresh={refreshProviders} />
@@ -726,6 +921,7 @@ export function App() {
           <footer className="action-bar">
             <div className="run-state">{run ? <><span className="run-dot" />Run <code>{run.id.slice(0, 8)}</code> · {run.status}</> : "Chưa có run trong phiên này"}</div>
             <div className="actions">
+              <button disabled={!selected || busy} onClick={openRunHistory}>Lịch sử chạy</button>
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const result = await api.validate(selected!.id); setMessage(result.valid ? "Graph hợp lệ" : result.errors.join(" · ")); })}>Kiểm tra</button>
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const saved = await api.updateDraft(selected!, parseDraft()); const currentVersion = await api.getCurrentWorkflowVersion(saved.id); setWorkflows((items) => items.map((item) => item.id === saved.id ? saved : item)); setVersion(currentVersion ?? undefined); setMessage(currentVersion ? `Đã lưu revision ${saved.revision} · Published v${currentVersion.version}` : `Đã lưu revision ${saved.revision} · cần publish lại`); })}>Lưu draft</button>
               <button className="primary" disabled={!selected || busy} onClick={() => void perform(async () => { const published = await api.publish(selected!.id); setVersion(published); setMessage(`Đã publish version ${published.version}`); })}>{version ? `Published v${version.version}` : "Publish"}</button>

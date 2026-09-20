@@ -66,6 +66,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateSkill: (skill: Skill, input: {
+    name: string;
+    description: string;
+    instructions: string;
+    enabled: boolean;
+  }) =>
+    request<Skill>(`/v1/skills/${skill.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ expected_version: skill.version, ...input }),
+    }),
   deleteSkill: (skillId: string) =>
     request<void>(`/v1/skills/${skillId}`, { method: "DELETE" }),
   listWorkflowSkills: (workflowId: string) =>

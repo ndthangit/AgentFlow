@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, type DragEvent } from "react";
 
 import type { LlmProvider, Skill } from "./types";
 
@@ -46,6 +46,7 @@ type NodeForm = {
   conditionFrom: string;
   operator: IfOperator;
   expected: string;
+  outputBindings: Record<string, string>;
 };
 
 const emptyObjectSchema = {
@@ -55,14 +56,14 @@ const emptyObjectSchema = {
 };
 
 const nodeMetadata: Record<string, { label: string; className: string }> = {
-  "input.schema": { label: "INPUT SCHEMA", className: "input-node" },
+  "input.schema": { label: "START", className: "input-node" },
   agent: { label: "AI AGENT", className: "agent-node" },
   "llm.call": { label: "LLM CALL", className: "llm-node" },
   "code.python": { label: "PYTHON", className: "code-node" },
   "math.add": { label: "MATH", className: "math-node" },
   if: { label: "IF / ELSE", className: "if-node" },
   parallel: { label: "PARALLEL", className: "parallel-node" },
-  "output.schema": { label: "OUTPUT SCHEMA", className: "output-node" },
+  "output.schema": { label: "END", className: "output-node" },
   "trigger.manual": { label: "TRIGGER", className: "trigger" },
   end: { label: "OUTPUT", className: "end" },
 };
@@ -126,6 +127,25 @@ function graphLayers(graph: Graph): GraphNode[][] {
   return layers;
 }
 
+function createsCycle(graph: Graph, from: string, to: string) {
+  const children = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    const targets = children.get(edge.from) ?? [];
+    targets.push(edge.to);
+    children.set(edge.from, targets);
+  }
+  const pending = [to];
+  const visited = new Set<string>();
+  while (pending.length) {
+    const nodeId = pending.pop()!;
+    if (nodeId === from) return true;
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    pending.push(...(children.get(nodeId) ?? []));
+  }
+  return false;
+}
+
 function LayerConnections({
   graph,
   sourceLayer,
@@ -176,6 +196,7 @@ function schemaText(value: unknown) {
 
 function formFromNode(node: GraphNode): NodeForm {
   const config = isRecord(node.config) ? node.config : {};
+  const inputs = isRecord(node.inputs) ? node.inputs : {};
   return {
     id: node.id,
     name: typeof node.name === "string" ? node.name : node.id,
@@ -200,6 +221,11 @@ function formFromNode(node: GraphNode): NodeForm {
       : "$input.condition",
     operator: typeof config.operator === "string" ? config.operator as IfOperator : "truthy",
     expected: JSON.stringify(config.expected ?? true),
+    outputBindings: Object.fromEntries(
+      Object.entries(inputs).flatMap(([field, binding]) => (
+        isRecord(binding) && typeof binding.from === "string" ? [[field, binding.from]] : []
+      )),
+    ),
   };
 }
 
@@ -222,6 +248,27 @@ function inputSchemaFields(value: string): string[] {
   } catch {
     return [];
   }
+}
+
+function outputReferenceOptions(graph: Graph, selectedNodeId: string) {
+  const references: string[] = [];
+  for (const node of graph.nodes) {
+    if (node.id === selectedNodeId) continue;
+    if (node.type === "input.schema") {
+      for (const field of inputSchemaFields(schemaText(node.schema))) references.push(`$input.${field}`);
+      continue;
+    }
+    const config = isRecord(node.config) ? node.config : {};
+    const outputSchema = node.type === "output.schema" ? node.schema : config.outputSchema;
+    const fields = inputSchemaFields(schemaText(outputSchema));
+    if (node.type === "math.add") {
+      const outputKey = typeof config.outputKey === "string" ? config.outputKey : "sum";
+      fields.push(outputKey);
+    }
+    references.push(`$nodes.${node.id}.output`);
+    for (const field of new Set(fields)) references.push(`$nodes.${node.id}.output.${field}`);
+  }
+  return [...new Set(references)];
 }
 
 const schemaTypes: { value: SchemaType; label: string }[] = [
@@ -357,9 +404,9 @@ function SchemaBuilder({
 
 function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
   const base = type === "input.schema"
-    ? "input"
+    ? "start"
     : type === "output.schema"
-      ? "output"
+      ? "end"
       : type === "code.python"
         ? "python"
         : type === "llm.call"
@@ -439,9 +486,10 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
   return {
     id,
     type,
-    name: input ? "Dữ liệu đầu vào" : "Dữ liệu đầu ra",
-    note: input ? "Định nghĩa dữ liệu workflow tiếp nhận." : "Định nghĩa kết quả workflow trả về.",
+    name: input ? "Bắt đầu" : "Kết thúc",
+    note: input ? "Định nghĩa các biến đầu vào ban đầu của workflow." : "Định nghĩa các biến workflow trả về.",
     schema: emptyObjectSchema,
+    ...(input ? {} : { inputs: {} }),
   };
 }
 
@@ -457,7 +505,7 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
   return nodes.length;
 }
 
-export function WorkflowEditor({ value, onChange, disabled = false, skills = [], providers = [] }: WorkflowEditorProps) {
+function WorkflowEditorView({ value, onChange, disabled = false, skills = [], providers = [] }: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
   const layers = useMemo(() => graph ? graphLayers(graph) : [], [graph]);
@@ -466,6 +514,9 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
   const [form, setForm] = useState<NodeForm>();
   const [formError, setFormError] = useState("");
   const [edgeDraft, setEdgeDraft] = useState({ from: "", to: "", port: "success" });
+  const [connectionSource, setConnectionSource] = useState<{ from: string; port: string }>();
+  const [dropTargetId, setDropTargetId] = useState<string>();
+  const [connectionMessage, setConnectionMessage] = useState("Kéo tay nắm từ node nguồn và thả vào node đích.");
   const agentSkillIds = form?.inheritsWorkflowSkills
     ? skills.map((skill) => skill.id)
     : form?.skillIds ?? [];
@@ -473,16 +524,29 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
   const selectedProvider = enabledProviders.find((provider) => provider.id === form?.providerId);
   const selectedProviderModels = selectedProvider?.settings.selected_models ?? [];
   const promptInputFields = form ? inputSchemaFields(form.inputSchema) : [];
-
-  useEffect(() => {
-    if (selectedNode) return;
-    setSelectedId(graph?.nodes[0]?.id);
-  }, [graph, selectedNode]);
+  const outputReferences = useMemo(
+    () => graph && selectedNode ? outputReferenceOptions(graph, selectedNode.id) : [],
+    [graph, selectedNode],
+  );
 
   useEffect(() => {
     setForm(selectedNode ? formFromNode(selectedNode) : undefined);
     setFormError("");
   }, [selectedNode]);
+
+  useEffect(() => {
+    if (!selectedNode) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeNodeInspector();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedNode]);
+
+  function closeNodeInspector() {
+    setSelectedId(undefined);
+    setFormError("");
+  }
 
   function commit(next: Graph) {
     onChange(JSON.stringify(next, null, 2));
@@ -495,13 +559,65 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
     return ["success"];
   }
 
+  function connectNodes(from: string, to: string, requestedPort: string) {
+    if (!graph || disabled) return false;
+    if (!from || !to || from === to) {
+      setConnectionMessage("Node nguồn và node đích phải khác nhau.");
+      return false;
+    }
+    const port = portsForNode(from).includes(requestedPort) ? requestedPort : portsForNode(from)[0];
+    if (graph.edges.some((edge) => edge.from === from && edge.to === to && (edge.port ?? "success") === port)) {
+      setConnectionMessage(`Liên kết ${from} → ${to} qua cổng ${port} đã tồn tại.`);
+      return false;
+    }
+    if (createsCycle(graph, from, to)) {
+      setConnectionMessage("Không thể tạo liên kết vì sẽ hình thành vòng lặp trong workflow.");
+      return false;
+    }
+    commit({ ...graph, edges: [...graph.edges, { from, to, port }] });
+    setEdgeDraft({ from: "", to: "", port: "success" });
+    setConnectionMessage(`Đã nối ${from} → ${to} qua cổng ${port}.`);
+    return true;
+  }
+
   function addEdge() {
-    if (!graph || !edgeDraft.from || !edgeDraft.to || edgeDraft.from === edgeDraft.to) return;
-    const port = portsForNode(edgeDraft.from).includes(edgeDraft.port)
-      ? edgeDraft.port
-      : portsForNode(edgeDraft.from)[0];
-    if (graph.edges.some((edge) => edge.from === edgeDraft.from && edge.to === edgeDraft.to && (edge.port ?? "success") === port)) return;
-    commit({ ...graph, edges: [...graph.edges, { from: edgeDraft.from, to: edgeDraft.to, port }] });
+    connectNodes(edgeDraft.from, edgeDraft.to, edgeDraft.port);
+  }
+
+  function startConnectionDrag(event: DragEvent<HTMLButtonElement>, from: string, port: string) {
+    const source = { from, port };
+    event.dataTransfer.effectAllowed = "link";
+    event.dataTransfer.setData("application/x-agentflow-edge", JSON.stringify(source));
+    setConnectionSource(source);
+    setConnectionMessage(`Đang nối từ ${from} qua cổng ${port}…`);
+  }
+
+  function dropConnection(event: DragEvent<HTMLDivElement>, to: string) {
+    event.preventDefault();
+    let source = connectionSource;
+    const payload = event.dataTransfer.getData("application/x-agentflow-edge");
+    if (payload) {
+      try {
+        source = JSON.parse(payload) as { from: string; port: string };
+      } catch {
+        source = undefined;
+      }
+    }
+    if (source) connectNodes(source.from, to, source.port);
+    setConnectionSource(undefined);
+    setDropTargetId(undefined);
+  }
+
+  function openNode(nodeId: string) {
+    if (connectionSource && connectionSource.from !== nodeId) {
+      connectNodes(connectionSource.from, nodeId, connectionSource.port);
+      setConnectionSource(undefined);
+      setDropTargetId(undefined);
+      return;
+    }
+    setConnectionSource(undefined);
+    setDropTargetId(undefined);
+    setSelectedId(nodeId);
   }
 
   function removeEdge(index: number) {
@@ -511,6 +627,13 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
 
   function addNode(type: EditableNodeType) {
     if (!graph) return;
+    if (type === "input.schema" || type === "output.schema") {
+      const existing = graph.nodes.find((node) => node.type === type);
+      if (existing) {
+        setSelectedId(existing.id);
+        return;
+      }
+    }
     const id = uniqueNodeId(graph.nodes, type);
     const index = nodeInsertIndex(graph.nodes, type);
     const previous = graph.nodes[index - 1];
@@ -540,6 +663,7 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
   }
 
   function deleteNode(node: GraphNode) {
+    if (node.type === "input.schema" || node.type === "output.schema") return;
     if (!graph || !window.confirm(`Xóa node “${typeof node.name === "string" ? node.name : node.id}”?`)) return;
     const incoming = graph.edges.filter((edge) => edge.to === node.id);
     const outgoing = graph.edges.filter((edge) => edge.from === node.id);
@@ -576,7 +700,18 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
         note: form.note.trim(),
       };
       if (selectedNode.type === "input.schema" || selectedNode.type === "output.schema") {
-        updated.schema = parseSchema(form.schema, "Schema");
+        const schema = parseSchema(form.schema, "Schema");
+        updated.schema = schema;
+        if (selectedNode.type === "output.schema") {
+          const properties = isRecord(schema.properties) ? schema.properties : {};
+          const fields = Object.keys(properties);
+          const missing = fields.filter((field) => !form.outputBindings[field]?.trim());
+          if (missing.length) throw new Error(`Hãy chọn nguồn dữ liệu trả về cho: ${missing.join(", ")}.`);
+          updated.inputs = Object.fromEntries(fields.map((field) => [
+            field,
+            { from: form.outputBindings[field].trim() },
+          ]));
+        }
       }
       if (selectedNode.type === "agent" || selectedNode.type === "llm.call") {
         const isAgent = selectedNode.type === "agent";
@@ -646,7 +781,7 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
         nodes: graph.nodes.map((node) => node === selectedNode ? updated : node),
         edges,
       });
-      setSelectedId(id);
+      setSelectedId(undefined);
       setFormError("");
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "Không thể lưu node.");
@@ -658,20 +793,20 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
       <div className="node-toolbar">
         <div>
           <strong>Nodes</strong>
-          <span>Thêm và cấu hình các bước của workflow</span>
+          <span>Thêm node, sau đó bấm vào node trên canvas để cấu hình</span>
         </div>
         <div className="node-add-actions">
-          <button disabled={disabled || !graph} onClick={() => addNode("input.schema")}>+ Input schema</button>
+          <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "input.schema")} onClick={() => addNode("input.schema")}>+ Start</button>
           <button disabled={disabled || !graph} onClick={() => addNode("agent")}>+ Agent</button>
           <button disabled={disabled || !graph} onClick={() => addNode("llm.call")}>+ LLM Call</button>
           <button disabled={disabled || !graph} onClick={() => addNode("code.python")}>+ Python</button>
           <button disabled={disabled || !graph} onClick={() => addNode("if")}>+ If / Else</button>
           <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>
-          <button disabled={disabled || !graph} onClick={() => addNode("output.schema")}>+ Output schema</button>
+          <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "output.schema")} onClick={() => addNode("output.schema")}>+ End</button>
         </div>
       </div>
 
-      <div className="builder-grid">
+      <div className="builder-canvas">
         <section className="flow-preview" aria-label="Danh sách node">
           {layers.length ? layers.map((layer, layerIndex) => {
             const nextLayer = layers[layerIndex + 1];
@@ -681,20 +816,61 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
                 {layer.map((node) => {
                   const metadata = nodeMetadata[node.type ?? ""] ?? { label: (node.type ?? "NODE").toUpperCase(), className: "" };
                   return (
-                    <div className="flow-node-item" key={node.id}>
+                    <div
+                      className={`flow-node-item${dropTargetId === node.id ? " drop-target" : ""}${connectionSource && connectionSource.from !== node.id ? " link-target" : ""}`}
+                      key={node.id}
+                      onDragEnter={(event) => {
+                        if (connectionSource && connectionSource.from !== node.id) {
+                          event.preventDefault();
+                          setDropTargetId(node.id);
+                        }
+                      }}
+                      onDragOver={(event) => {
+                        if (connectionSource && connectionSource.from !== node.id) {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "link";
+                        }
+                      }}
+                      onDragLeave={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetId(undefined);
+                      }}
+                      onDrop={(event) => dropConnection(event, node.id)}
+                    >
                       <div className="flow-node-row">
                         <button
                           className={`node ${metadata.className}${selectedId === node.id ? " selected" : ""}`}
-                          onClick={() => setSelectedId(node.id)}
+                          onClick={() => openNode(node.id)}
+                          aria-label={connectionSource && connectionSource.from !== node.id ? `Nối tới node ${node.id}` : `Mở cấu hình node ${typeof node.name === "string" ? node.name : node.id}`}
                         >
                           <small>{metadata.label}</small>
                           <strong>{typeof node.name === "string" ? node.name : node.id}</strong>
                           <span>{typeof node.note === "string" && node.note ? node.note : `ID: ${node.id}`}</span>
                         </button>
                         <div className="node-row-actions">
-                          <button title="Sửa node" onClick={() => setSelectedId(node.id)}>Sửa</button>
-                          <button className="danger" title="Xóa node" disabled={disabled} onClick={() => deleteNode(node)}>Xóa</button>
+                          <button title="Cấu hình node" onClick={() => openNode(node.id)}>Cấu hình</button>
+                          <button className="danger" title={node.type === "input.schema" || node.type === "output.schema" ? "Start và End là node bắt buộc" : "Xóa node"} disabled={disabled || node.type === "input.schema" || node.type === "output.schema"} onClick={() => deleteNode(node)}>Xóa</button>
                         </div>
+                      </div>
+                      <div className="node-connection-handles" aria-label={`Điểm nối của node ${node.id}`}>
+                        {portsForNode(node.id).map((port) => (
+                          <button
+                            className={`node-connection-handle port-${port}${connectionSource?.from === node.id && connectionSource.port === port ? " active" : ""}`}
+                            type="button"
+                            draggable={!disabled}
+                            disabled={disabled}
+                            key={port}
+                            title={`Kéo để nối từ cổng ${port}`}
+                            onClick={() => {
+                              setConnectionSource({ from: node.id, port });
+                              setConnectionMessage(`Đã chọn ${node.id}:${port}. Chọn hoặc thả vào node đích.`);
+                            }}
+                            onDragStart={(event) => startConnectionDrag(event, node.id, port)}
+                            onDragEnd={() => {
+                              setConnectionSource(undefined);
+                              setDropTargetId(undefined);
+                            }}
+                          ><i aria-hidden="true" />{port}</button>
+                        ))}
                       </div>
                     </div>
                   );
@@ -711,17 +887,46 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
           )}
           {parsed.error && <p className="builder-error">{parsed.error}</p>}
         </section>
+      </div>
 
-        <aside className="node-inspector">
-          <div className="panel-title"><span>Thuộc tính node</span><code>{selectedNode?.type ?? "NONE"}</code></div>
-          {selectedNode && form ? (
+      {selectedNode && form && (
+          <aside className="node-inspector node-drawer" aria-labelledby="node-drawer-title">
+            <div className="panel-title node-drawer-title">
+              <span id="node-drawer-title">Cấu hình · {typeof selectedNode.name === "string" ? selectedNode.name : selectedNode.id}</span>
+              <code>{selectedNode.type}</code>
+              <button type="button" aria-label="Đóng cửa sổ cấu hình node" onClick={closeNodeInspector}>×</button>
+            </div>
             <div className="node-form">
               <label>ID<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /></label>
               <label>Tên node<input value={form.name} maxLength={160} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
               <label>Note<textarea className="compact-textarea" value={form.note} placeholder="Mô tả vai trò của node…" onChange={(event) => setForm({ ...form, note: event.target.value })} /></label>
 
-              {(selectedNode.type === "input.schema" || selectedNode.type === "output.schema") && (
-                <SchemaBuilder label={selectedNode.type === "input.schema" ? "Input schema" : "Output schema"} value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
+              {selectedNode.type === "input.schema" && (
+                <SchemaBuilder label="Biến đầu vào ban đầu" value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
+              )}
+
+              {selectedNode.type === "output.schema" && (
+                <>
+                  <SchemaBuilder label="Biến workflow trả về" value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
+                  <section className="output-binding-editor">
+                    <div><strong>Nguồn dữ liệu trả về</strong><span>Ánh xạ mỗi biến End tới output của node trước hoặc biến từ Start.</span></div>
+                    <datalist id={`output-references-${selectedNode.id}`}>
+                      {outputReferences.map((reference) => <option value={reference} key={reference} />)}
+                    </datalist>
+                    {inputSchemaFields(form.schema).map((field) => (
+                      <label key={field}>{field}<input
+                        list={`output-references-${selectedNode.id}`}
+                        value={form.outputBindings[field] ?? ""}
+                        placeholder="$nodes.agent.output.result"
+                        onChange={(event) => setForm({
+                          ...form,
+                          outputBindings: { ...form.outputBindings, [field]: event.target.value },
+                        })}
+                      /></label>
+                    ))}
+                    {!inputSchemaFields(form.schema).length && <p>Thêm biến trả về ở phần trên để cấu hình nguồn dữ liệu.</p>}
+                  </section>
+                </>
               )}
 
               {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
@@ -832,18 +1037,18 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
               )}
 
               {formError && <p className="form-error">{formError}</p>}
-              <button className="save-node" disabled={disabled} onClick={saveNode}>Lưu thay đổi node</button>
+              <div className="node-drawer-actions">
+                <button type="button" className="cancel-node" onClick={closeNodeInspector}>Hủy</button>
+                <button type="button" className="save-node" disabled={disabled} onClick={saveNode}>Lưu thay đổi node</button>
+              </div>
             </div>
-          ) : (
-            <div className="inspector-empty">Chọn một node để sửa thuộc tính.</div>
-          )}
-        </aside>
-      </div>
+          </aside>
+      )}
 
       {graph && (
         <section className="connection-editor">
           <div className="connection-heading">
-            <div><strong>Kết nối và nhánh</strong><span>If dùng cổng true/false; Parallel dùng cổng parallel.</span></div>
+            <div><strong>Kết nối và nhánh</strong><span>{connectionMessage} If dùng cổng true/false; Parallel dùng cổng parallel.</span></div>
             <div className="connection-form">
               <select value={edgeDraft.from} onChange={(event) => {
                 const from = event.target.value;
@@ -871,3 +1076,5 @@ export function WorkflowEditor({ value, onChange, disabled = false, skills = [],
     </div>
   );
 }
+
+export const WorkflowEditor = memo(WorkflowEditorView);

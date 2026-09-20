@@ -11,10 +11,10 @@ def default_workflow_draft() -> dict[str, Any]:
     return {
         "nodes": [
             {
-                "id": "input",
+                "id": "start",
                 "type": "input.schema",
-                "name": "Dữ liệu đầu vào",
-                "note": "Định nghĩa dữ liệu workflow tiếp nhận.",
+                "name": "Bắt đầu",
+                "note": "Định nghĩa các biến đầu vào ban đầu của workflow.",
                 "schema": _object_schema(),
             },
             {
@@ -29,16 +29,17 @@ def default_workflow_draft() -> dict[str, Any]:
                 },
             },
             {
-                "id": "output",
+                "id": "end",
                 "type": "output.schema",
-                "name": "Dữ liệu đầu ra",
-                "note": "Định nghĩa kết quả workflow trả về.",
+                "name": "Kết thúc",
+                "note": "Định nghĩa các biến workflow trả về.",
+                "inputs": {},
                 "schema": _object_schema(),
             },
         ],
         "edges": [
-            {"from": "input", "to": "agent", "port": "success"},
-            {"from": "agent", "to": "output", "port": "success"},
+            {"from": "start", "to": "agent", "port": "success"},
+            {"from": "agent", "to": "end", "port": "success"},
         ],
     }
 

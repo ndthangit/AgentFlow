@@ -246,6 +246,13 @@ class WorkflowValidationTests(unittest.TestCase):
             [node["type"] for node in draft["nodes"]],
             ["input.schema", "agent", "output.schema"],
         )
+        self.assertEqual(
+            [node["id"] for node in draft["nodes"]],
+            ["start", "agent", "end"],
+        )
+        self.assertEqual(draft["nodes"][0]["name"], "Bắt đầu")
+        self.assertEqual(draft["nodes"][-1]["name"], "Kết thúc")
+        self.assertEqual(draft["nodes"][-1]["inputs"], {})
         self.assertEqual(validate_graph(draft), [])
 
     def test_python_code_node_config_is_validated(self):
