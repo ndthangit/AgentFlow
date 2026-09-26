@@ -1,6 +1,23 @@
-import { memo, useEffect, useMemo, useState, type DragEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Background,
+  BackgroundVariant,
+  Controls,
+  Handle,
+  MarkerType,
+  MiniMap,
+  Position,
+  ReactFlow,
+  applyNodeChanges,
+  type Connection,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type ReactFlowInstance,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 
-import type { LlmProvider, Skill } from "./types";
+import type { LlmProvider, McpServer, Skill } from "./types";
 
 type WorkflowEditorProps = {
   value: string;
@@ -8,11 +25,13 @@ type WorkflowEditorProps = {
   disabled?: boolean;
   skills?: Skill[];
   providers?: LlmProvider[];
+  mcpServers?: McpServer[];
 };
 
 type GraphNode = Record<string, unknown> & {
   id: string;
   type?: string;
+  position?: { x: number; y: number };
 };
 
 type GraphEdge = Record<string, unknown> & {
@@ -26,6 +45,17 @@ type Graph = Record<string, unknown> & {
   edges: GraphEdge[];
 };
 
+type WorkflowNodeData = Record<string, unknown> & {
+  graphNode: GraphNode;
+  ports: string[];
+  disabled: boolean;
+  onConfigure: (nodeId: string) => void;
+  onDelete: (node: GraphNode) => void;
+};
+
+type WorkflowFlowNode = Node<WorkflowNodeData, "workflowNode">;
+type WorkflowFlowEdge = Edge<{ graphEdge: GraphEdge; index: number }>;
+
 type EditableNodeType = "input.schema" | "agent" | "llm.call" | "code.python" | "if" | "parallel" | "output.schema";
 type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array";
 type IfOperator = "equals" | "notEquals" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "truthy" | "falsy";
@@ -36,13 +66,14 @@ type NodeForm = {
   note: string;
   schema: string;
   instructions: string;
+  runtime: "direct" | "agent";
   providerId: string;
   model: string;
   code: string;
   inputSchema: string;
   outputSchema: string;
   skillIds: string[];
-  inheritsWorkflowSkills: boolean;
+  mcpServerIds: string[];
   conditionFrom: string;
   operator: IfOperator;
   expected: string;
@@ -127,6 +158,75 @@ function graphLayers(graph: Graph): GraphNode[][] {
   return layers;
 }
 
+function isNodePosition(value: unknown): value is { x: number; y: number } {
+  return isRecord(value) && Number.isFinite(value.x) && Number.isFinite(value.y);
+}
+
+function layoutNodePositions(graph: Graph) {
+  const positions = new Map<string, { x: number; y: number }>();
+  const layers = graphLayers(graph);
+  const horizontalStep = 370;
+  const verticalStep = 245;
+  for (const [layerIndex, layer] of layers.entries()) {
+    const layerWidth = Math.max(0, (layer.length - 1) * horizontalStep);
+    for (const [nodeIndex, node] of layer.entries()) {
+      positions.set(node.id, {
+        x: nodeIndex * horizontalStep - layerWidth / 2,
+        y: layerIndex * verticalStep,
+      });
+    }
+  }
+  return positions;
+}
+
+const defaultCanvasNodeSize = { width: 322, height: 165 };
+
+type OccupiedCanvasNode = {
+  position: { x: number; y: number };
+  width: number;
+  height: number;
+};
+
+function availableNodePosition(
+  desired: { x: number; y: number },
+  occupied: OccupiedCanvasNode[],
+) {
+  const horizontalStep = 370;
+  const verticalStep = 215;
+  const gap = 24;
+  const isFree = (candidate: { x: number; y: number }) => occupied.every((node) => (
+    candidate.x + defaultCanvasNodeSize.width + gap <= node.position.x
+    || node.position.x + node.width + gap <= candidate.x
+    || candidate.y + defaultCanvasNodeSize.height + gap <= node.position.y
+    || node.position.y + node.height + gap <= candidate.y
+  ));
+
+  if (isFree(desired)) return desired;
+  for (let ring = 1; ring <= 12; ring += 1) {
+    const offsets = [
+      { x: ring, y: 0 },
+      { x: 0, y: ring },
+      { x: -ring, y: 0 },
+      { x: 0, y: -ring },
+    ];
+    for (let y = -ring; y <= ring; y += 1) {
+      for (let x = -ring; x <= ring; x += 1) {
+        if (Math.abs(x) !== ring && Math.abs(y) !== ring) continue;
+        if ((x === 0 || y === 0) && Math.abs(x + y) === ring) continue;
+        offsets.push({ x, y });
+      }
+    }
+    for (const offset of offsets) {
+      const candidate = {
+        x: desired.x + offset.x * horizontalStep,
+        y: desired.y + offset.y * verticalStep,
+      };
+      if (isFree(candidate)) return candidate;
+    }
+  }
+  return { x: desired.x + occupied.length * 32, y: desired.y + occupied.length * 32 };
+}
+
 function createsCycle(graph: Graph, from: string, to: string) {
   const children = new Map<string, string[]>();
   for (const edge of graph.edges) {
@@ -146,49 +246,60 @@ function createsCycle(graph: Graph, from: string, to: string) {
   return false;
 }
 
-function LayerConnections({
-  graph,
-  sourceLayer,
-  targetLayer,
-}: {
-  graph: Graph;
-  sourceLayer: GraphNode[];
-  targetLayer: GraphNode[];
-}) {
-  const sourceIds = new Set(sourceLayer.map((node) => node.id));
-  const targetIds = new Set(targetLayer.map((node) => node.id));
-  const edges = graph.edges.filter((edge) => sourceIds.has(edge.from) && targetIds.has(edge.to));
-  const visualEdges = edges.map((edge, index) => {
-    const sourceIndex = sourceLayer.findIndex((node) => node.id === edge.from);
-    const targetIndex = targetLayer.findIndex((node) => node.id === edge.to);
-    const sourceX = ((sourceIndex + 0.5) * 1000) / sourceLayer.length;
-    const targetX = ((targetIndex + 0.5) * 1000) / targetLayer.length;
-    const port = edge.port ?? "success";
-    return {
-      key: `${edge.from}-${edge.to}-${port}-${index}`,
-      sourceX,
-      targetX,
-      labelX: (sourceX + targetX) / 20,
-      port,
-      label: port === "parallel" ? "PARALLEL" : port.toUpperCase(),
-    };
-  });
+function portsForType(type?: string) {
+  if (type === "output.schema" || type === "end") return [];
+  if (type === "if") return ["true", "false"];
+  if (type === "parallel") return ["parallel"];
+  return ["success"];
+}
+
+function WorkflowCanvasNode({ data, selected }: NodeProps<WorkflowFlowNode>) {
+  const node = data.graphNode;
+  const metadata = nodeMetadata[node.type ?? ""] ?? { label: (node.type ?? "NODE").toUpperCase(), className: "" };
+  const acceptsInput = node.type !== "input.schema" && node.type !== "trigger.manual";
+  const protectedNode = node.type === "input.schema" || node.type === "output.schema";
 
   return (
-    <div className="layer-connections" aria-label="Liên kết giữa các node">
-      <svg viewBox="0 0 1000 112" preserveAspectRatio="none" role="img">
-        {visualEdges.map((edge) => (
-            <g className={`visual-edge edge-${edge.port}`} key={edge.key}>
-              <path d={`M ${edge.sourceX} 2 C ${edge.sourceX} 45, ${edge.targetX} 67, ${edge.targetX} 110`} />
-              <circle cx={edge.sourceX} cy="3" r="4" />
-              <circle cx={edge.targetX} cy="109" r="4" />
-            </g>
-        ))}
-      </svg>
-      {visualEdges.map((edge) => <span className={`visual-edge-label edge-${edge.port}`} style={{ left: `${edge.labelX}%` }} key={`${edge.key}-label`}>{edge.label}</span>)}
+    <div className={`workflow-flow-node${selected ? " selected" : ""}`}>
+      {acceptsInput && <Handle className="workflow-target-handle" type="target" position={Position.Top} id="target" />}
+      <div className="flow-node-row">
+        <div className={`node ${metadata.className}`}>
+          <small>{metadata.label}</small>
+          <strong>{typeof node.name === "string" ? node.name : node.id}</strong>
+          <span>{typeof node.note === "string" && node.note ? node.note : `ID: ${node.id}`}</span>
+        </div>
+        <div className="node-row-actions nodrag nowheel">
+          <button type="button" title="Cấu hình node" onClick={() => data.onConfigure(node.id)}>Cấu hình</button>
+          <button
+            type="button"
+            className="danger"
+            title={protectedNode ? "Start và End là node bắt buộc" : "Xóa node"}
+            disabled={data.disabled || protectedNode}
+            onClick={() => data.onDelete(node)}
+          >Xóa</button>
+        </div>
+      </div>
+      {!!data.ports.length && (
+        <div className="node-connection-labels" aria-label={`Điểm nối của node ${node.id}`}>
+          {data.ports.map((port) => <span className={`port-${port}`} key={port}>{port}</span>)}
+        </div>
+      )}
+      {data.ports.map((port, index) => (
+        <Handle
+          className={`workflow-source-handle port-${port}`}
+          type="source"
+          position={Position.Bottom}
+          id={port}
+          key={port}
+          style={{ left: `${((index + 1) * 100) / (data.ports.length + 1)}%` }}
+          isConnectable={!data.disabled}
+        />
+      ))}
     </div>
   );
 }
+
+const workflowNodeTypes = { workflowNode: WorkflowCanvasNode };
 
 function schemaText(value: unknown) {
   return JSON.stringify(isRecord(value) ? value : emptyObjectSchema, null, 2);
@@ -207,6 +318,7 @@ function formFromNode(node: GraphNode): NodeForm {
       : typeof config.prompt === "string"
         ? config.prompt
         : "",
+    runtime: config.runtime === "direct" ? "direct" : "agent",
     providerId: typeof config.providerId === "string" ? config.providerId : "",
     model: typeof config.model === "string" ? config.model : "",
     code: typeof config.code === "string" ? config.code : "",
@@ -215,7 +327,9 @@ function formFromNode(node: GraphNode): NodeForm {
     skillIds: Array.isArray(config.skillIds)
       ? config.skillIds.filter((item): item is string => typeof item === "string")
       : [],
-    inheritsWorkflowSkills: !Array.isArray(config.skillIds),
+    mcpServerIds: Array.isArray(config.mcpServerIds)
+      ? config.mcpServerIds.filter((item): item is string => typeof item === "string")
+      : [],
     conditionFrom: isRecord(node.inputs) && isRecord(node.inputs.value) && typeof node.inputs.value.from === "string"
       ? node.inputs.value.from
       : "$input.condition",
@@ -448,8 +562,10 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
       name: "Agent",
       note: "Mô tả ngắn nhiệm vụ của agent.",
       config: {
+        runtime: "agent",
         instructions: "",
         skillIds: [],
+        mcpServerIds: [],
         inputSchema: emptyObjectSchema,
         outputSchema: emptyObjectSchema,
       },
@@ -505,21 +621,24 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
   return nodes.length;
 }
 
-function WorkflowEditorView({ value, onChange, disabled = false, skills = [], providers = [] }: WorkflowEditorProps) {
+function WorkflowEditorView({ value, onChange, disabled = false, skills = [], providers = [], mcpServers = [] }: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
-  const layers = useMemo(() => graph ? graphLayers(graph) : [], [graph]);
   const [selectedId, setSelectedId] = useState<string>();
   const selectedNode = graph?.nodes.find((node) => node.id === selectedId);
   const [form, setForm] = useState<NodeForm>();
   const [formError, setFormError] = useState("");
-  const [edgeDraft, setEdgeDraft] = useState({ from: "", to: "", port: "success" });
   const [connectionSource, setConnectionSource] = useState<{ from: string; port: string }>();
-  const [dropTargetId, setDropTargetId] = useState<string>();
-  const [connectionMessage, setConnectionMessage] = useState("Kéo tay nắm từ node nguồn và thả vào node đích.");
-  const agentSkillIds = form?.inheritsWorkflowSkills
-    ? skills.map((skill) => skill.id)
-    : form?.skillIds ?? [];
+  const [connectionMessage, setConnectionMessage] = useState("Kéo từ cổng dưới node sang node đích; chọn đường nối rồi nhấn Delete để xóa.");
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
+  const [isJsonOpen, setIsJsonOpen] = useState(false);
+  const [flowNodes, setFlowNodes] = useState<WorkflowFlowNode[]>([]);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<WorkflowFlowNode, WorkflowFlowEdge>>();
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const didFitInitialView = useRef(false);
+  const agentSkillIds = form?.skillIds ?? [];
+  const agentMcpServerIds = form?.mcpServerIds ?? [];
+  const enabledMcpServers = mcpServers.filter((server) => server.enabled);
   const enabledProviders = providers.filter((provider) => provider.enabled);
   const selectedProvider = enabledProviders.find((provider) => provider.id === form?.providerId);
   const selectedProviderModels = selectedProvider?.settings.selected_models ?? [];
@@ -528,6 +647,77 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
     () => graph && selectedNode ? outputReferenceOptions(graph, selectedNode.id) : [],
     [graph, selectedNode],
   );
+  const flowEdges = useMemo<WorkflowFlowEdge[]>(() => graph ? graph.edges.map((edge, index) => {
+    const port = edge.port ?? "success";
+    const stroke = port === "true" ? "#68a638" : port === "false" ? "#c05d5d" : port === "parallel" ? "#169d84" : "#71867b";
+    const id = `${index}:${edge.from}:${edge.to}:${port}`;
+    const selected = id === selectedEdgeId;
+    return {
+      id,
+      source: edge.from,
+      target: edge.to,
+      sourceHandle: port,
+      targetHandle: "target",
+      type: "smoothstep",
+      label: port.toUpperCase(),
+      labelStyle: { fill: stroke, fontSize: 9, fontWeight: 700 },
+      labelBgStyle: { fill: "#f8faf7", stroke, strokeWidth: 1 },
+      labelBgPadding: [7, 4],
+      labelBgBorderRadius: 12,
+      markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+      style: { stroke, strokeWidth: selected ? 4 : 2, strokeDasharray: port === "false" ? "7 5" : undefined },
+      selected,
+      deletable: !disabled,
+      data: { graphEdge: edge, index },
+    };
+  }) : [], [disabled, graph, selectedEdgeId]);
+
+  useEffect(() => {
+    if (!graph) {
+      setFlowNodes([]);
+      return;
+    }
+    const fallbackPositions = layoutNodePositions(graph);
+    setFlowNodes((current) => {
+      const currentById = new Map(current.map((node) => [node.id, node]));
+      const occupied: OccupiedCanvasNode[] = [];
+      const nextNodes: WorkflowFlowNode[] = [];
+      for (const node of graph.nodes) {
+        const previous = currentById.get(node.id);
+        const desiredPosition = isNodePosition(node.position)
+          ? node.position
+          : previous?.position ?? fallbackPositions.get(node.id) ?? { x: 0, y: 0 };
+        const position = availableNodePosition(desiredPosition, occupied);
+        const measuredWidth = previous?.measured?.width ?? defaultCanvasNodeSize.width;
+        const measuredHeight = previous?.measured?.height ?? defaultCanvasNodeSize.height;
+        occupied.push({ position, width: measuredWidth, height: measuredHeight });
+        nextNodes.push({
+          id: node.id,
+          type: "workflowNode",
+          position,
+          selected: previous?.selected ?? false,
+          draggable: !disabled,
+          selectable: true,
+          connectable: !disabled,
+          deletable: false,
+          data: {
+            graphNode: node,
+            ports: portsForType(node.type),
+            disabled,
+            onConfigure: openNode,
+            onDelete: deleteNode,
+          },
+        });
+      }
+      return nextNodes;
+    });
+  }, [value, disabled]);
+
+  useEffect(() => {
+    if (!flowInstance || !flowNodes.length || didFitInitialView.current) return;
+    didFitInitialView.current = true;
+    window.requestAnimationFrame(() => flowInstance.fitView({ padding: 0.18, maxZoom: 1 }));
+  }, [flowInstance, flowNodes.length]);
 
   useEffect(() => {
     setForm(selectedNode ? formFromNode(selectedNode) : undefined);
@@ -552,20 +742,19 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
     onChange(JSON.stringify(next, null, 2));
   }
 
-  function portsForNode(nodeId: string) {
-    const type = graph?.nodes.find((node) => node.id === nodeId)?.type;
-    if (type === "if") return ["true", "false"];
-    if (type === "parallel") return ["parallel"];
-    return ["success"];
-  }
-
   function connectNodes(from: string, to: string, requestedPort: string) {
     if (!graph || disabled) return false;
     if (!from || !to || from === to) {
       setConnectionMessage("Node nguồn và node đích phải khác nhau.");
       return false;
     }
-    const port = portsForNode(from).includes(requestedPort) ? requestedPort : portsForNode(from)[0];
+    const source = graph.nodes.find((node) => node.id === from);
+    const ports = portsForType(source?.type);
+    const port = ports.includes(requestedPort) ? requestedPort : ports[0];
+    if (!port) {
+      setConnectionMessage("Node nguồn này không có cổng đầu ra.");
+      return false;
+    }
     if (graph.edges.some((edge) => edge.from === from && edge.to === to && (edge.port ?? "success") === port)) {
       setConnectionMessage(`Liên kết ${from} → ${to} qua cổng ${port} đã tồn tại.`);
       return false;
@@ -575,54 +764,34 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
       return false;
     }
     commit({ ...graph, edges: [...graph.edges, { from, to, port }] });
-    setEdgeDraft({ from: "", to: "", port: "success" });
     setConnectionMessage(`Đã nối ${from} → ${to} qua cổng ${port}.`);
     return true;
   }
 
-  function addEdge() {
-    connectNodes(edgeDraft.from, edgeDraft.to, edgeDraft.port);
-  }
-
-  function startConnectionDrag(event: DragEvent<HTMLButtonElement>, from: string, port: string) {
-    const source = { from, port };
-    event.dataTransfer.effectAllowed = "link";
-    event.dataTransfer.setData("application/x-agentflow-edge", JSON.stringify(source));
-    setConnectionSource(source);
-    setConnectionMessage(`Đang nối từ ${from} qua cổng ${port}…`);
-  }
-
-  function dropConnection(event: DragEvent<HTMLDivElement>, to: string) {
-    event.preventDefault();
-    let source = connectionSource;
-    const payload = event.dataTransfer.getData("application/x-agentflow-edge");
-    if (payload) {
-      try {
-        source = JSON.parse(payload) as { from: string; port: string };
-      } catch {
-        source = undefined;
-      }
-    }
-    if (source) connectNodes(source.from, to, source.port);
+  function connectFlowNodes(connection: Connection) {
+    if (!connection.source || !connection.target) return;
+    connectNodes(connection.source, connection.target, connection.sourceHandle ?? "success");
     setConnectionSource(undefined);
-    setDropTargetId(undefined);
   }
 
   function openNode(nodeId: string) {
-    if (connectionSource && connectionSource.from !== nodeId) {
-      connectNodes(connectionSource.from, nodeId, connectionSource.port);
-      setConnectionSource(undefined);
-      setDropTargetId(undefined);
-      return;
-    }
     setConnectionSource(undefined);
-    setDropTargetId(undefined);
+    setSelectedEdgeId(undefined);
     setSelectedId(nodeId);
   }
 
-  function removeEdge(index: number) {
-    if (!graph) return;
-    commit({ ...graph, edges: graph.edges.filter((_, edgeIndex) => edgeIndex !== index) });
+  function removeFlowEdges(edgesToRemove: WorkflowFlowEdge[]) {
+    if (!graph || disabled) return;
+    const graphEdges = edgesToRemove
+      .map((edge) => edge.data?.graphEdge)
+      .filter((edge): edge is GraphEdge => Boolean(edge));
+    if (!graphEdges.length) return;
+    const removed = new Set(graphEdges);
+    commit({ ...graph, edges: graph.edges.filter((edge) => !removed.has(edge)) });
+    setSelectedEdgeId(undefined);
+    setConnectionMessage(graphEdges.length === 1
+      ? `Đã xóa kết nối ${graphEdges[0].from} → ${graphEdges[0].to}.`
+      : `Đã xóa ${graphEdges.length} kết nối.`);
   }
 
   function addNode(type: EditableNodeType) {
@@ -636,47 +805,46 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
     }
     const id = uniqueNodeId(graph.nodes, type);
     const index = nodeInsertIndex(graph.nodes, type);
-    const previous = graph.nodes[index - 1];
-    const next = graph.nodes[index];
-    let edges = [...graph.edges];
-
-    if (previous && next) {
-      const directEdge = edges.find((edge) => edge.from === previous.id && edge.to === next.id);
-      if (directEdge) {
-        edges = edges.filter((edge) => edge !== directEdge);
-        const port = type === "if" ? "true" : type === "parallel" ? "parallel" : "success";
-        edges.push({ ...directEdge, to: id }, { from: id, to: next.id, port });
-      } else {
-        const port = type === "if" ? "true" : type === "parallel" ? "parallel" : "success";
-        edges.push({ from: previous.id, to: id, port: "success" }, { from: id, to: next.id, port });
-      }
-    } else if (previous) {
-      edges.push({ from: previous.id, to: id, port: "success" });
-    } else if (next) {
-      edges.push({ from: id, to: next.id, port: "success" });
-    }
-
     const nodes = [...graph.nodes];
-    nodes.splice(index, 0, newNode(type, id));
-    commit({ ...graph, nodes, edges });
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    const desiredPosition = flowInstance && bounds
+      ? flowInstance.screenToFlowPosition({ x: bounds.left + bounds.width / 2 - 145, y: bounds.top + bounds.height / 2 - 80 })
+      : { x: graph.nodes.length * 36, y: graph.nodes.length * 36 };
+    const position = availableNodePosition(desiredPosition, flowNodes.map((node) => ({
+      position: node.position,
+      width: node.measured?.width ?? defaultCanvasNodeSize.width,
+      height: node.measured?.height ?? defaultCanvasNodeSize.height,
+    })));
+    nodes.splice(index, 0, { ...newNode(type, id), position });
+    commit({ ...graph, nodes });
+    setConnectionMessage(`Đã thêm ${id}. Kéo cổng của node nguồn sang node này để tạo kết nối.`);
     setSelectedId(id);
+  }
+
+  function arrangeNodes() {
+    if (!graph) return;
+    const positions = layoutNodePositions(graph);
+    commit({
+      ...graph,
+      nodes: graph.nodes.map((node) => ({ ...node, position: positions.get(node.id) ?? { x: 0, y: 0 } })),
+    });
+    window.setTimeout(() => flowInstance?.fitView({ padding: 0.18, duration: 350 }), 0);
+  }
+
+  function saveNodePosition(nodeId: string, position: { x: number; y: number }) {
+    if (!graph || disabled) return;
+    commit({
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === nodeId ? { ...node, position } : node),
+    });
   }
 
   function deleteNode(node: GraphNode) {
     if (node.type === "input.schema" || node.type === "output.schema") return;
     if (!graph || !window.confirm(`Xóa node “${typeof node.name === "string" ? node.name : node.id}”?`)) return;
-    const incoming = graph.edges.filter((edge) => edge.to === node.id);
-    const outgoing = graph.edges.filter((edge) => edge.from === node.id);
     const edges = graph.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
-
-    for (const before of incoming) {
-      for (const after of outgoing) {
-        if (before.from === after.to || edges.some((edge) => edge.from === before.from && edge.to === after.to)) continue;
-        edges.push({ from: before.from, to: after.to, port: before.port ?? "success" });
-      }
-    }
-
     commit({ ...graph, nodes: graph.nodes.filter((item) => item.id !== node.id), edges });
+    setConnectionMessage(`Đã xóa ${node.id} và các kết nối trực tiếp của node.`);
     setSelectedId(undefined);
   }
 
@@ -698,6 +866,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
         id,
         name: form.name.trim() || id,
         note: form.note.trim(),
+        position: flowNodes.find((node) => node.id === selectedNode.id)?.position ?? selectedNode.position,
       };
       if (selectedNode.type === "input.schema" || selectedNode.type === "output.schema") {
         const schema = parseSchema(form.schema, "Schema");
@@ -722,8 +891,10 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
           outputSchema: parseSchema(form.outputSchema, "Output schema"),
         };
         if (isAgent) {
+          nextConfig.runtime = form.runtime;
           nextConfig.instructions = form.instructions.trim();
           nextConfig.skillIds = agentSkillIds.filter((skillId) => skills.some((skill) => skill.id === skillId));
+          nextConfig.mcpServerIds = agentMcpServerIds.filter((serverId) => enabledMcpServers.some((server) => server.id === serverId));
         } else {
           if (!form.instructions.trim()) throw new Error("Prompt của LLM Call không được để trống.");
           nextConfig.prompt = form.instructions.trim();
@@ -793,7 +964,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
       <div className="node-toolbar">
         <div>
           <strong>Nodes</strong>
-          <span>Thêm node, sau đó bấm vào node trên canvas để cấu hình</span>
+          <span>Thêm rồi kéo node tới vị trí mong muốn; kéo từ cổng dưới node sang cổng trên node đích</span>
         </div>
         <div className="node-add-actions">
           <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "input.schema")} onClick={() => addNode("input.schema")}>+ Start</button>
@@ -803,90 +974,68 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
           <button disabled={disabled || !graph} onClick={() => addNode("if")}>+ If / Else</button>
           <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>
           <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "output.schema")} onClick={() => addNode("output.schema")}>+ End</button>
+          <span className="node-toolbar-divider" aria-hidden="true" />
+          <button disabled={disabled || !graph?.nodes.length} onClick={arrangeNodes}>Sắp xếp</button>
+          <button className="canvas-tool-button" onClick={() => setIsJsonOpen(true)}>JSON</button>
         </div>
       </div>
 
-      <div className="builder-canvas">
-        <section className="flow-preview" aria-label="Danh sách node">
-          {layers.length ? layers.map((layer, layerIndex) => {
-            const nextLayer = layers[layerIndex + 1];
-            return (
-            <div className="flow-level-group" key={layerIndex}>
-              <div className="flow-level" style={{ gridTemplateColumns: `repeat(${layer.length}, minmax(285px, 1fr))` }}>
-                {layer.map((node) => {
-                  const metadata = nodeMetadata[node.type ?? ""] ?? { label: (node.type ?? "NODE").toUpperCase(), className: "" };
-                  return (
-                    <div
-                      className={`flow-node-item${dropTargetId === node.id ? " drop-target" : ""}${connectionSource && connectionSource.from !== node.id ? " link-target" : ""}`}
-                      key={node.id}
-                      onDragEnter={(event) => {
-                        if (connectionSource && connectionSource.from !== node.id) {
-                          event.preventDefault();
-                          setDropTargetId(node.id);
-                        }
-                      }}
-                      onDragOver={(event) => {
-                        if (connectionSource && connectionSource.from !== node.id) {
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = "link";
-                        }
-                      }}
-                      onDragLeave={(event) => {
-                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetId(undefined);
-                      }}
-                      onDrop={(event) => dropConnection(event, node.id)}
-                    >
-                      <div className="flow-node-row">
-                        <button
-                          className={`node ${metadata.className}${selectedId === node.id ? " selected" : ""}`}
-                          onClick={() => openNode(node.id)}
-                          aria-label={connectionSource && connectionSource.from !== node.id ? `Nối tới node ${node.id}` : `Mở cấu hình node ${typeof node.name === "string" ? node.name : node.id}`}
-                        >
-                          <small>{metadata.label}</small>
-                          <strong>{typeof node.name === "string" ? node.name : node.id}</strong>
-                          <span>{typeof node.note === "string" && node.note ? node.note : `ID: ${node.id}`}</span>
-                        </button>
-                        <div className="node-row-actions">
-                          <button title="Cấu hình node" onClick={() => openNode(node.id)}>Cấu hình</button>
-                          <button className="danger" title={node.type === "input.schema" || node.type === "output.schema" ? "Start và End là node bắt buộc" : "Xóa node"} disabled={disabled || node.type === "input.schema" || node.type === "output.schema"} onClick={() => deleteNode(node)}>Xóa</button>
-                        </div>
-                      </div>
-                      <div className="node-connection-handles" aria-label={`Điểm nối của node ${node.id}`}>
-                        {portsForNode(node.id).map((port) => (
-                          <button
-                            className={`node-connection-handle port-${port}${connectionSource?.from === node.id && connectionSource.port === port ? " active" : ""}`}
-                            type="button"
-                            draggable={!disabled}
-                            disabled={disabled}
-                            key={port}
-                            title={`Kéo để nối từ cổng ${port}`}
-                            onClick={() => {
-                              setConnectionSource({ from: node.id, port });
-                              setConnectionMessage(`Đã chọn ${node.id}:${port}. Chọn hoặc thả vào node đích.`);
-                            }}
-                            onDragStart={(event) => startConnectionDrag(event, node.id, port)}
-                            onDragEnd={() => {
-                              setConnectionSource(undefined);
-                              setDropTargetId(undefined);
-                            }}
-                          ><i aria-hidden="true" />{port}</button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {nextLayer && <LayerConnections graph={graph!} sourceLayer={layer} targetLayer={nextLayer} />}
-            </div>
-            );
-          }) : (
-            <div className="nodes-empty">
-              <strong>Workflow chưa có node</strong>
-              <span>Hãy bắt đầu bằng Input schema, LLM Call, Agent, Python hoặc Output schema.</span>
-            </div>
-          )}
-          {parsed.error && <p className="builder-error">{parsed.error}</p>}
-        </section>
+      <div className="builder-canvas" ref={canvasRef}>
+        <span className={connectionSource ? "canvas-connection-hint active" : "canvas-connection-hint"}>{connectionMessage}</span>
+        <span className="canvas-pan-hint" aria-hidden="true">Kéo nền để di chuyển · cuộn để zoom</span>
+        {graph ? (
+          <ReactFlow<WorkflowFlowNode, WorkflowFlowEdge>
+            nodes={flowNodes}
+            edges={flowEdges}
+            nodeTypes={workflowNodeTypes}
+            onInit={setFlowInstance}
+            onNodesChange={(changes) => setFlowNodes((nodes) => applyNodeChanges(changes, nodes))}
+            onNodeClick={(event, node) => {
+              setSelectedEdgeId(undefined);
+              if (!(event.target as Element).closest("button, .react-flow__handle")) openNode(node.id);
+            }}
+            onEdgeClick={(_event, edge) => {
+              setSelectedEdgeId(edge.id);
+              setConnectionMessage(`Đã chọn kết nối ${edge.source} → ${edge.target}. Nhấn Delete để xóa.`);
+            }}
+            onPaneClick={() => setSelectedEdgeId(undefined)}
+            onNodeDragStop={(_event, node) => saveNodePosition(node.id, node.position)}
+            onConnect={connectFlowNodes}
+            onConnectStart={(_event, params) => {
+              if (!params.nodeId) return;
+              const port = params.handleId ?? "success";
+              setConnectionSource({ from: params.nodeId, port });
+              setConnectionMessage(`Đang nối từ ${params.nodeId} qua cổng ${port}… đưa chuột tới mép để di chuyển canvas.`);
+            }}
+            onConnectEnd={() => setConnectionSource(undefined)}
+            onEdgesDelete={removeFlowEdges}
+            autoPanOnConnect
+            autoPanOnNodeDrag
+            autoPanSpeed={18}
+            panOnDrag
+            zoomOnScroll
+            zoomOnPinch
+            minZoom={0.2}
+            maxZoom={1.8}
+            fitView
+            fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
+            nodesDraggable={!disabled}
+            nodesConnectable={!disabled}
+            elementsSelectable
+            deleteKeyCode={disabled ? null : ["Backspace", "Delete"]}
+            proOptions={{ hideAttribution: true }}
+            aria-label="Canvas workflow kéo thả"
+          >
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#cdd6d0" />
+            <MiniMap pannable zoomable nodeColor="#78936b" maskColor="rgba(238, 241, 237, .72)" />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+        ) : (
+          <div className="nodes-empty builder-invalid">
+            <strong>Không thể hiển thị workflow</strong>
+            <span>{parsed.error}</span>
+          </div>
+        )}
       </div>
 
       {selectedNode && form && (
@@ -931,6 +1080,16 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
 
               {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
                 <>
+                  {selectedNode.type === "agent" && <section className="agent-model-picker">
+                    <div><strong>Agent runtime</strong><span>Agent trong src/agent được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
+                    <label>Runtime<select value={form.runtime} onChange={(event) => {
+                      const runtime = event.target.value === "direct" ? "direct" : "agent";
+                      setForm({ ...form, runtime, ...(runtime === "direct" ? { mcpServerIds: [] } : {}) });
+                    }}>
+                      <option value="agent">Agent container (src/agent)</option>
+                      <option value="direct">Direct provider</option>
+                    </select></label>
+                  </section>}
                   <section className="agent-model-picker">
                     <div><strong>{selectedNode.type === "agent" ? "Model của Agent" : "Model của LLM Call"}</strong><span>Chọn model từ các provider đang hoạt động đã đăng ký.</span></div>
                     <label>Provider<select
@@ -945,7 +1104,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                         setForm({ ...form, providerId, model });
                       }}
                     >
-                      <option value="">Tự động dùng provider/model mặc định</option>
+                      <option value="">Dùng provider/model mặc định đã đăng ký</option>
                       {enabledProviders.map((provider) => (
                         <option value={provider.id} key={provider.id}>{provider.name} ({provider.kind})</option>
                       ))}
@@ -962,6 +1121,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                     {form.providerId && !selectedProvider && <p>Provider đã lưu không còn hoạt động. Hãy chọn provider khác.</p>}
                     {selectedProvider && !selectedProviderModels.length && <p>Provider này chưa có model đã đăng ký.</p>}
                     {selectedProvider && form.model && !selectedProviderModels.includes(form.model) && <p>Model đã lưu không còn được bật cho provider này. Hãy chọn model khác.</p>}
+                    {selectedNode.type === "agent" && form.runtime === "agent" && <p>Provider, model và API key đã lưu được truyền tạm thời vào container của lần chạy này; Agent không lấy cấu hình model từ .env.</p>}
                   </section>
                   <label>{selectedNode.type === "agent" ? "Instructions" : "Prompt"}<textarea className="compact-textarea instructions" value={form.instructions} placeholder={selectedNode.type === "agent" ? "Agent cần thực hiện điều gì?" : "Model cần xử lý dữ liệu đầu vào như thế nào?"} onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
                   <section className="prompt-variable-picker">
@@ -984,7 +1144,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                       value=""
                       disabled={!skills.some((skill) => !agentSkillIds.includes(skill.id))}
                       onChange={(event) => {
-                        if (event.target.value) setForm({ ...form, skillIds: [...agentSkillIds, event.target.value], inheritsWorkflowSkills: false });
+                        if (event.target.value) setForm({ ...form, skillIds: [...agentSkillIds, event.target.value] });
                       }}
                     >
                       <option value="">+ Thêm skill…</option>
@@ -993,9 +1153,29 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                     <div className="agent-skill-list">
                       {agentSkillIds.flatMap((skillId) => {
                         const skill = skills.find((item) => item.id === skillId);
-                        return skill ? [<span key={skill.id}><b>{skill.name}</b><small>{skill.slug} · v{skill.version}</small><button type="button" aria-label={`Bỏ skill ${skill.name}`} onClick={() => setForm({ ...form, skillIds: agentSkillIds.filter((id) => id !== skill.id), inheritsWorkflowSkills: false })}>×</button></span>] : [];
+                        return skill ? [<span key={skill.id}><b>{skill.name}</b><small>{skill.slug} · v{skill.version}</small><button type="button" aria-label={`Bỏ skill ${skill.name}`} onClick={() => setForm({ ...form, skillIds: agentSkillIds.filter((id) => id !== skill.id) })}>×</button></span>] : [];
                       })}
-                      {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>Chưa gắn skill. Hãy thêm skill vào kho workflow trước.</p>}
+                      {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>Chưa chọn skill. Hãy thêm skill trong trang quản lý rồi chọn tại đây.</p>}
+                    </div>
+                  </section>}
+                  {selectedNode.type === "agent" && form.runtime === "agent" && <section className="agent-skill-picker">
+                    <div><strong>MCP của Agent</strong><span>Agent chỉ kết nối tới các MCP server được chọn cho node này.</span></div>
+                    <select
+                      value=""
+                      disabled={!enabledMcpServers.some((server) => !agentMcpServerIds.includes(server.id))}
+                      onChange={(event) => {
+                        if (event.target.value) setForm({ ...form, mcpServerIds: [...agentMcpServerIds, event.target.value] });
+                      }}
+                    >
+                      <option value="">+ Thêm MCP…</option>
+                      {enabledMcpServers.filter((server) => !agentMcpServerIds.includes(server.id)).map((server) => <option value={server.id} key={server.id}>{server.name}</option>)}
+                    </select>
+                    <div className="agent-skill-list">
+                      {agentMcpServerIds.flatMap((serverId) => {
+                        const server = mcpServers.find((item) => item.id === serverId);
+                        return server ? [<span key={server.id}><b>{server.name}</b><small>{server.transport === "streamable_http" ? "HTTP" : "SSE"} · {server.slug}</small><button type="button" aria-label={`Bỏ MCP ${server.name}`} onClick={() => setForm({ ...form, mcpServerIds: agentMcpServerIds.filter((id) => id !== server.id) })}>×</button></span>] : [];
+                      })}
+                      {!agentMcpServerIds.some((serverId) => mcpServers.some((server) => server.id === serverId)) && <p>Chưa chọn MCP. Hãy đăng ký server trong trang MCP rồi chọn tại đây.</p>}
                     </div>
                   </section>}
                   <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
@@ -1045,34 +1225,19 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
           </aside>
       )}
 
-      {graph && (
-        <section className="connection-editor">
-          <div className="connection-heading">
-            <div><strong>Kết nối và nhánh</strong><span>{connectionMessage} If dùng cổng true/false; Parallel dùng cổng parallel.</span></div>
-            <div className="connection-form">
-              <select value={edgeDraft.from} onChange={(event) => {
-                const from = event.target.value;
-                setEdgeDraft({ ...edgeDraft, from, port: portsForNode(from)[0] });
-              }}><option value="">Node nguồn…</option>{graph.nodes.map((node) => <option value={node.id} key={node.id}>{node.id}</option>)}</select>
-              <select value={edgeDraft.port} disabled={!edgeDraft.from} onChange={(event) => setEdgeDraft({ ...edgeDraft, port: event.target.value })}>{portsForNode(edgeDraft.from).map((port) => <option value={port} key={port}>{port}</option>)}</select>
-              <select value={edgeDraft.to} onChange={(event) => setEdgeDraft({ ...edgeDraft, to: event.target.value })}><option value="">Node đích…</option>{graph.nodes.filter((node) => node.id !== edgeDraft.from).map((node) => <option value={node.id} key={node.id}>{node.id}</option>)}</select>
-              <button type="button" disabled={disabled || !edgeDraft.from || !edgeDraft.to} onClick={addEdge}>+ Kết nối</button>
+      {isJsonOpen && (
+        <div className="workflow-tool-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setIsJsonOpen(false);
+        }}>
+          <section className="workflow-tool-panel raw-json-panel" role="dialog" aria-modal="true" aria-labelledby="json-panel-title">
+            <div className="workflow-tool-heading">
+              <div><strong id="json-panel-title">Graph definition</strong><span>Chỉnh trực tiếp JSON nâng cao của workflow.</span></div>
+              <button type="button" aria-label="Đóng trình chỉnh JSON" onClick={() => setIsJsonOpen(false)}>×</button>
             </div>
-          </div>
-          <div className="connection-list">
-            {graph.edges.map((edge, index) => <div className="connection-row" key={`${edge.from}-${edge.to}-${edge.port ?? "success"}-${index}`}><code>{edge.from}</code><b>{edge.port ?? "success"}</b><span>→</span><code>{edge.to}</code><button type="button" disabled={disabled} onClick={() => removeEdge(index)}>Xóa</button></div>)}
-            {!graph.edges.length && <p>Chưa có kết nối. Thêm edge để xác định thứ tự và nhánh chạy.</p>}
-          </div>
-        </section>
-      )}
-
-      <details className="raw-json">
-        <summary>JSON nâng cao</summary>
-        <div className="json-panel">
-          <div className="panel-title"><span>Graph definition</span><code>JSON</code></div>
-          <textarea value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} />
+            <textarea value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} />
+          </section>
         </div>
-      </details>
+      )}
     </div>
   );
 }

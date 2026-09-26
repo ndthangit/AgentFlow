@@ -23,7 +23,9 @@ def default_workflow_draft() -> dict[str, Any]:
                 "name": "Agent",
                 "note": "Mô tả ngắn nhiệm vụ của agent.",
                 "config": {
+                    "runtime": "agent",
                     "instructions": "",
+                    "skillIds": [],
                     "inputSchema": _object_schema(),
                     "outputSchema": _object_schema(),
                 },

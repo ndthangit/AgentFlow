@@ -2,9 +2,11 @@
 
 ## Hướng triển khai hiện tại: Deep Agents trước
 
+> **Cập nhật kiến trúc:** đường production mục tiêu không dùng một agent HTTP service lâu dài. Mỗi attempt của agent node sẽ chạy trong một container dùng một lần; xem [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md). HTTP/CLI ở tài liệu này vẫn là bề mặt thử nghiệm contract và adapter.
+
 Theo phạm vi mới, dùng [agent Python mẫu trong src/agent](../src/agent/README.md) làm runtime đầu tiên. Agent dùng `create_deep_agent` trên LangGraph, tool danh mục node và output có schema để đề xuất một kế hoạch workflow nhỏ. Có CLI JSON stdin/stdout, `POST /v1/runs` đồng bộ và client Node.js minh họa.
 
-Đường thử nghiệm: **task/context → Deep Agents → WorkflowPlan JSON → output của agent node**. Demo dùng model giả lập qua graph thật; chế độ live mặc định gọi LLM self-host qua OpenAI-compatible Chat Completions API và vẫn cho phép chọn Anthropic. Kết quả là đề xuất, chưa tự chuyển thành DSL hoặc thực thi hành động.
+Đường thử nghiệm: **task/context → Deep Agents → LLM thật → WorkflowPlan JSON → output của agent node**. Runtime gọi OpenAI-compatible Chat Completions API hoặc Anthropic theo provider/model đã cấu hình; không có nhánh fake model. Kết quả là đề xuất, chưa tự chuyển thành DSL hoặc thực thi hành động.
 
 Mẫu chưa triển khai contract `startOrAttach`, session, streaming, approval hay recovery ở các phần dưới. Worker có thể gọi HTTP/CLI để thử ranh giới tích hợp trước. Chi tiết Codex/OpenCode bên dưới được giữ làm **thiết kế mở rộng sau**, không còn là việc cần tích hợp ngay trong PoC đầu tiên.
 
@@ -21,6 +23,8 @@ Ngày kiểm chứng tài liệu nhà cung cấp: **05/09/2026**. Các interface
 | OpenCode SDK | `@opencode-ai/sdk`, quản lý session, gửi prompt, abort và stream sự kiện SSE | MVP qua SDK kết nối server trong runner |
 
 Nguồn cho Codex SDK: [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk). Tài liệu cũng ghi `codex mcp-server` đã deprecated; không chọn nó làm nền tích hợp mới.
+
+Agent runtime hiện nạp các MCP được chọn bằng `langchain-mcp-adapters`. Worker truyền cấu hình qua `AGENT_MCP_SERVERS` cho đúng một container, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin.
 
 App Server dùng JSON-RPC với định dạng wire có khác biệt: bỏ trường `jsonrpc`; stdio dùng JSONL. Transport WebSocket hiện được ghi experimental/unsupported. AgentFlow nên bọc stdio bằng gateway của mình khi cần truy cập từ xa. Nguồn: [Codex App Server](https://learn.chatgpt.com/docs/app-server).
 

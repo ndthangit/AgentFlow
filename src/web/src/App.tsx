@@ -2,11 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
 import { keycloak } from "./auth";
+import { McpPage } from "./McpPage";
 import { ModelsPage } from "./ModelsPage";
-import type { FlowRun, LlmProvider, RunStep, Skill, Workflow, WorkflowVersion } from "./types";
+import type { FlowRun, LlmProvider, McpServer, RunStep, Skill, Workflow, WorkflowVersion } from "./types";
 import { WorkflowEditor } from "./WorkflowEditor";
 
-type AppTab = "workflows" | "skills" | "models";
+type AppTab = "workflows" | "skills" | "mcp" | "models";
+
+const FILESYSTEM_DEMO_MCP = {
+  slug: "filesystem-demo",
+  name: "Filesystem MCP demo",
+  description: "Đọc, ghi và liệt kê file trong volume cô lập của MCP container.",
+  transport: "streamable_http" as const,
+  url: "http://filesystem-mcp:8002/mcp",
+};
 
 const starterDraft = {
   nodes: [
@@ -24,6 +33,8 @@ const starterDraft = {
       note: "Mô tả ngắn nhiệm vụ của agent.",
       config: {
         instructions: "",
+        skillIds: [],
+        mcpServerIds: [],
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         outputSchema: { type: "object", properties: {}, additionalProperties: false },
       },
@@ -66,6 +77,8 @@ const agentPythonWorkflowDraft = {
       inputs: { topic: { from: "$input.topic" } },
       config: {
         instructions: "Phân tích chủ đề người dùng cung cấp. Trả về draft là một đoạn nội dung ngắn, rõ ràng và có các ý chính.",
+        skillIds: [],
+        mcpServerIds: [],
         inputSchema: {
           type: "object",
           properties: { topic: { type: "string" } },
@@ -127,6 +140,8 @@ const agentPythonWorkflowDraft = {
       inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
       config: {
         instructions: "Đánh giá draft, chỉ ra điểm cần cải thiện ngắn gọn và trả về trường review.",
+        skillIds: [],
+        mcpServerIds: [],
         inputSchema: {
           type: "object",
           properties: { draft: { type: "string" } },
@@ -152,7 +167,9 @@ const agentPythonWorkflowDraft = {
         review: { from: "$nodes.review_agent.output.review" },
       },
       config: {
-        instructions: "Kết hợp content đã chuẩn hóa với review để tạo câu trả lời hoàn chỉnh bằng tiếng Việt. Trả về trường final_answer.",
+        instructions: "Kết hợp content đã chuẩn hóa với review để tạo câu trả lời hoàn chỉnh bằng tiếng Việt. Bắt buộc dùng tool filesystem-demo_write_file để ghi câu trả lời vào demo/workflow-result.txt, sau đó dùng filesystem-demo_read_file đọc lại chính file đó. Trả nội dung đã đọc trong trường final_answer.",
+        skillIds: [],
+        mcpServerIds: [],
         inputSchema: {
           type: "object",
           properties: {
@@ -195,6 +212,16 @@ const agentPythonWorkflowDraft = {
     { from: "final_agent", to: "end", port: "success" },
   ],
 };
+
+function agentPythonMcpWorkflowDraft(mcpServerId: string) {
+  const draft = structuredClone(agentPythonWorkflowDraft);
+  const finalAgent = draft.nodes.find((node) => node.id === "final_agent") as
+    | { config: { mcpServerIds: string[] } }
+    | undefined;
+  if (!finalAgent) throw new Error("Không tìm thấy Agent tổng hợp trong workflow demo");
+  finalAgent.config.mcpServerIds = [mcpServerId];
+  return draft;
+}
 
 const sumWorkflowDraft = {
   nodes: [
@@ -277,13 +304,14 @@ export function App() {
   const [runs, setRuns] = useState<FlowRun[]>([]);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runStepsLoading, setRunStepsLoading] = useState(false);
+  const [isRunInputOpen, setIsRunInputOpen] = useState(false);
   const [isRunHistoryOpen, setIsRunHistoryOpen] = useState(false);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
   const [runDetailsRefreshKey, setRunDetailsRefreshKey] = useState(0);
   const [runInput, setRunInput] = useState("{}");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [providers, setProviders] = useState<LlmProvider[]>([]);
-  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [skillForm, setSkillForm] = useState(emptySkill);
   const [isAddingSkill, setIsAddingSkill] = useState(false);
   const [editingSkill, setEditingSkill] = useState<Skill>();
@@ -293,10 +321,7 @@ export function App() {
     [selectedId, workflows],
   );
   const enabledSkills = useMemo(() => skills.filter((skill) => skill.enabled), [skills]);
-  const workflowEditorSkills = useMemo(
-    () => enabledSkills.filter((skill) => selectedSkillIds.includes(skill.id)),
-    [enabledSkills, selectedSkillIds],
-  );
+  const enabledMcpServers = useMemo(() => mcpServers.filter((server) => server.enabled), [mcpServers]);
   const latestCompletedOutput = useMemo(
     () => runs.find((item) => item.status === "succeeded" && item.output)?.output,
     [runs],
@@ -320,8 +345,32 @@ export function App() {
     setProviders(await api.listLlmProviders());
   }
 
+  async function refreshMcpServers() {
+    setMcpServers(await api.listMcpServers());
+  }
+
+  async function ensureFilesystemDemoMcp(): Promise<McpServer> {
+    const existing = mcpServers.find((server) => server.slug === FILESYSTEM_DEMO_MCP.slug);
+    if (existing) {
+      if (!existing.enabled) {
+        throw new Error("MCP filesystem-demo đang bị tắt. Hãy bật lại trong trang MCP.");
+      }
+      if (existing.transport !== FILESYSTEM_DEMO_MCP.transport || existing.url !== FILESYSTEM_DEMO_MCP.url) {
+        throw new Error(`MCP filesystem-demo phải dùng URL ${FILESYSTEM_DEMO_MCP.url}`);
+      }
+      return existing;
+    }
+    const created = await api.createMcpServer({
+      ...FILESYSTEM_DEMO_MCP,
+      headers: {},
+      enabled: true,
+    });
+    setMcpServers((items) => [...items, created].sort((left, right) => left.name.localeCompare(right.name)));
+    return created;
+  }
+
   useEffect(() => {
-    Promise.all([refreshWorkflows(), refreshSkills(), refreshProviders()]).catch((error: Error) =>
+    Promise.all([refreshWorkflows(), refreshSkills(), refreshProviders(), refreshMcpServers()]).catch((error: Error) =>
       setMessage(error.message),
     );
   }, []);
@@ -333,6 +382,7 @@ export function App() {
     setVersion(undefined);
     setRun(undefined);
     setRuns([]);
+    setIsRunInputOpen(false);
     setIsRunHistoryOpen(false);
     const nodes = selected.draft.nodes;
     const isSumWorkflow = Array.isArray(nodes) && nodes.some((node) => (
@@ -346,13 +396,9 @@ export function App() {
       : isAgentPythonDemo
         ? JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2)
         : "{}");
-    Promise.all([
-      api.listWorkflowSkills(selected.id),
-      api.getCurrentWorkflowVersion(selected.id),
-    ])
-      .then(([workflowSkills, currentVersion]) => {
+    api.getCurrentWorkflowVersion(selected.id)
+      .then((currentVersion) => {
         if (!cancelled) {
-          setSelectedSkillIds(workflowSkills.map((skill) => skill.id));
           setVersion(currentVersion ?? undefined);
         }
       })
@@ -557,6 +603,9 @@ export function App() {
           <button className={activeTab === "skills" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("skills")}>
             <span className="nav-icon">◆</span><span><strong>Skills</strong><small>Quản lý kỹ năng agent</small></span><b>{enabledSkills.length}</b>
           </button>
+          <button className={activeTab === "mcp" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("mcp")}>
+            <span className="nav-icon">M</span><span><strong>MCP</strong><small>Công cụ ngoài cho agent</small></span><b>{enabledMcpServers.length}</b>
+          </button>
           <button className={activeTab === "models" ? "nav-tab active" : "nav-tab"} onClick={() => setActiveTab("models")}>
             <span className="nav-icon">◉</span><span><strong>Models</strong><small>LLM providers và models</small></span><b>{providers.filter((item) => item.enabled).length}</b>
           </button>
@@ -583,11 +632,12 @@ export function App() {
               <button disabled={busy || !name.trim()}>Tạo mới</button>
             </form>
             <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
-              const created = await api.createWorkflow("Demo Agent → Parallel → Join", agentPythonWorkflowDraft);
+              const demoMcp = await ensureFilesystemDemoMcp();
+              const created = await api.createWorkflow("Demo Agent → Parallel → MCP → Join", agentPythonMcpWorkflowDraft(demoMcp.id));
               await refreshWorkflows(created.id);
               setRunInput(JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2));
-              setMessage("Đã tạo demo có 2 nhánh chạy song song và Agent tổng hợp kết quả");
-            })}>＋ Tạo demo Parallel + Join</button>
+              setMessage("Đã đăng ký MCP filesystem và tạo demo dùng tool ghi/đọc file");
+            })}>＋ Tạo demo Parallel + MCP</button>
             <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
               const created = await api.createWorkflow("Tính tổng hai số", sumWorkflowDraft);
               await refreshWorkflows(created.id);
@@ -600,22 +650,39 @@ export function App() {
             <strong>Skill library</strong>
             <p>Các skill được cài ở đây sẽ xuất hiện trong bộ chọn của từng workflow.</p>
           </div>
+        ) : activeTab === "mcp" ? (
+          <div className="sidebar-note">
+            <strong>MCP registry</strong>
+            <p>Đăng ký MCP từ xa và chỉ cấp đúng các tool được chọn cho từng Agent.</p>
+          </div>
         ) : (
           <div className="sidebar-note">
             <strong>Model providers</strong>
             <p>Kết nối OpenRouter và tải danh sách model để chuẩn bị gán cho agent.</p>
           </div>
         )}
+        <div className="sidebar-account">
+          <span className="status-dot" />
+          <div>
+            <strong>{keycloak.tokenParsed?.preferred_username ?? "developer"}</strong>
+            <small>Đã xác thực</small>
+          </div>
+          <button
+            type="button"
+            onClick={() => void keycloak.logout({ redirectUri: window.location.origin })}
+          >
+            Đăng xuất
+          </button>
+        </div>
       </aside>
 
-      <main className={activeTab === "workflows" ? "workspace" : "workspace skills-workspace"}>
+      <main className={activeTab === "workflows" ? selected ? "workspace workflow-studio-workspace" : "workspace" : "workspace skills-workspace"}>
         <header>
           <div className="page-heading">
             {activeTab === "workflows" && selected && <button className="back-to-workflows" onClick={showWorkflowList}>← Tất cả workflow</button>}
-            <p className="eyebrow">{activeTab === "workflows" ? "WORKFLOW STUDIO" : activeTab === "skills" ? "SKILL LIBRARY" : "MODEL CATALOG"}</p>
-            <h1>{activeTab === "workflows" ? selected?.name ?? "Workflows" : activeTab === "skills" ? "Skills" : "Models"}</h1>
+            <p className="eyebrow">{activeTab === "workflows" ? "WORKFLOW STUDIO" : activeTab === "skills" ? "SKILL LIBRARY" : activeTab === "mcp" ? "MCP REGISTRY" : "MODEL CATALOG"}</p>
+            <h1>{activeTab === "workflows" ? selected?.name ?? "Workflows" : activeTab === "skills" ? "Skills" : activeTab === "mcp" ? "MCP" : "Models"}</h1>
           </div>
-          <div className="account"><span className="status-dot" /><div><strong>{keycloak.tokenParsed?.preferred_username ?? "developer"}</strong><small>Đã xác thực</small></div><button onClick={() => void keycloak.logout()}>Đăng xuất</button></div>
         </header>
 
         {activeTab === "workflows" ? !selected ? (
@@ -669,20 +736,32 @@ export function App() {
                 value={editor}
                 onChange={setEditor}
                 disabled={busy}
-                skills={workflowEditorSkills}
+                skills={enabledSkills}
                 providers={providers}
+                mcpServers={enabledMcpServers}
               />
             </section>
 
-            {selected && (
-              <section className="run-input-card">
-                <div><p className="eyebrow">RUN DATA</p><h2>Input chạy thử</h2><p>Nhập JSON đúng với Input schema. Demo Agent/Python dùng topic; mẫu tính tổng dùng num1 và num2.</p></div>
-                <textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} spellCheck={false} />
-                <div className="run-output">
-                  <strong>Kết quả trong phiên</strong>
-                  <code>{latestCompletedOutput ? JSON.stringify(latestCompletedOutput, null, 2) : "Chưa có kết quả trong phiên này"}</code>
-                </div>
-              </section>
+            {selected && isRunInputOpen && (
+              <div
+                className="workflow-modal-backdrop"
+                role="presentation"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) setIsRunInputOpen(false);
+                }}
+              >
+                <section className="run-input-card run-input-modal" role="dialog" aria-modal="true" aria-labelledby="run-input-title">
+                  <div className="run-input-modal-heading">
+                    <div><p className="eyebrow">RUN DATA</p><h2 id="run-input-title">Dữ liệu chạy</h2><p>Nhập JSON đúng với Input schema trước khi chạy workflow.</p></div>
+                    <button type="button" aria-label="Đóng dữ liệu chạy" onClick={() => setIsRunInputOpen(false)}>×</button>
+                  </div>
+                  <label>Workflow input<textarea autoFocus value={runInput} onChange={(event) => setRunInput(event.target.value)} spellCheck={false} /></label>
+                  <div className="run-output">
+                    <strong>Kết quả gần nhất trong phiên</strong>
+                    <code>{latestCompletedOutput ? JSON.stringify(latestCompletedOutput, null, 2) : "Chưa có kết quả trong phiên này"}</code>
+                  </div>
+                </section>
+              </div>
             )}
 
             {selected && isRunHistoryOpen && (
@@ -777,34 +856,11 @@ export function App() {
               </div>
             )}
 
-            {selected && (
-              <section className="skills-card">
-                <div><p className="eyebrow">WORKFLOW SKILLS</p><h2>Kho skill của workflow</h2><p>Thêm skill vào đây, sau đó mở từng node Agent để chọn skill riêng cho Agent đó.</p></div>
-                <div className="skill-list">
-                  {enabledSkills.length ? enabledSkills.map((skill) => {
-                    const checked = selectedSkillIds.includes(skill.id);
-                    return <label className={checked ? "skill-chip selected" : "skill-chip"} key={skill.id}>
-                      <input type="checkbox" checked={checked} onChange={() => setSelectedSkillIds((ids) => checked ? ids.filter((id) => id !== skill.id) : [...ids, skill.id])} />
-                      <span><strong>{skill.name}</strong><small>{skill.slug} · v{skill.version}</small></span>
-                    </label>;
-                  }) : <p className="muted">Chưa có skill nào được cài.</p>}
-                </div>
-                <button disabled={busy} onClick={() => void perform(async () => {
-                  const chosen = await api.selectWorkflowSkills(selected.id, selectedSkillIds);
-                  const currentVersion = await api.getCurrentWorkflowVersion(selected.id);
-                  setSelectedSkillIds(chosen.map((skill) => skill.id));
-                  setVersion(currentVersion ?? undefined);
-                  setMessage(currentVersion
-                    ? `Đã gắn ${chosen.length} skill · Published v${currentVersion.version}`
-                    : `Đã gắn ${chosen.length} skill · cần publish lại`);
-                })}>Lưu lựa chọn</button>
-              </section>
-            )}
           </>
         ) : activeTab === "skills" ? (
           <section className="skills-page">
             <div className="library-intro">
-              <div><p className="eyebrow">AVAILABLE TO AGENTS</p><h2>Skill đã cài</h2><p>Quản lý hướng dẫn dùng chung. Khi publish workflow, nội dung của các skill được chọn sẽ được snapshot vào version.</p></div>
+              <div><p className="eyebrow">AVAILABLE TO AGENTS</p><h2>Skill đã cài</h2><p>Mọi skill đang Active đều có thể được chọn trực tiếp trong từng node Agent. Khi publish, các skill được Agent chọn sẽ được snapshot vào version.</p></div>
               <div className="library-summary-actions">
                 <span className="library-count"><strong>{enabledSkills.length}</strong> đang hoạt động</span>
                 <button className="add-provider-button" type="button" onClick={openNewSkillForm}>+ Thêm skill</button>
@@ -834,10 +890,9 @@ export function App() {
                   <div className="provider-actions skill-actions">
                     {skill.source === "user" ? <>
                       <button className="danger" type="button" disabled={busy} onClick={() => {
-                        if (!window.confirm(`Xóa skill “${skill.name}”? Skill sẽ được bỏ khỏi các workflow chưa publish.`)) return;
+                        if (!window.confirm(`Xóa skill “${skill.name}”? Các Agent đang tham chiếu skill này sẽ cần được lưu lại trước khi publish.`)) return;
                         void perform(async () => {
                           await api.deleteSkill(skill.id);
-                          setSelectedSkillIds((ids) => ids.filter((id) => id !== skill.id));
                           await refreshSkills();
                           if (selected) setVersion((await api.getCurrentWorkflowVersion(selected.id)) ?? undefined);
                           setMessage(`Đã xóa skill “${skill.name}”`);
@@ -864,7 +919,7 @@ export function App() {
                     <div>
                       <p className="eyebrow">{editingSkill ? "EDIT SKILL" : "INSTALL A SKILL"}</p>
                       <h2 id="skill-form-title">{editingSkill ? "Chỉnh sửa skill" : "Thêm skill"}</h2>
-                      <p>{editingSkill ? "Cập nhật nội dung dùng chung. Các workflow đã publish vẫn giữ snapshot cũ cho đến lần publish tiếp theo." : "Tạo bộ hướng dẫn dùng chung để gắn vào workflow và từng Agent."}</p>
+                      <p>{editingSkill ? "Cập nhật nội dung dùng chung. Các workflow đã publish vẫn giữ snapshot cũ cho đến lần publish tiếp theo." : "Tạo bộ hướng dẫn dùng chung để chọn trực tiếp trong từng Agent."}</p>
                     </div>
                     <button type="button" aria-label="Đóng form skill" onClick={closeSkillForm}>×</button>
                   </div>
@@ -913,6 +968,8 @@ export function App() {
               </div>
             )}
           </section>
+        ) : activeTab === "mcp" ? (
+          <McpPage servers={mcpServers} refresh={refreshMcpServers} />
         ) : (
           <ModelsPage providers={providers} refresh={refreshProviders} />
         )}
@@ -921,6 +978,7 @@ export function App() {
           <footer className="action-bar">
             <div className="run-state">{run ? <><span className="run-dot" />Run <code>{run.id.slice(0, 8)}</code> · {run.status}</> : "Chưa có run trong phiên này"}</div>
             <div className="actions">
+              <button disabled={!selected || busy} onClick={() => setIsRunInputOpen(true)}>Dữ liệu chạy</button>
               <button disabled={!selected || busy} onClick={openRunHistory}>Lịch sử chạy</button>
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const result = await api.validate(selected!.id); setMessage(result.valid ? "Graph hợp lệ" : result.errors.join(" · ")); })}>Kiểm tra</button>
               <button disabled={!selected || busy} onClick={() => void perform(async () => { const saved = await api.updateDraft(selected!, parseDraft()); const currentVersion = await api.getCurrentWorkflowVersion(saved.id); setWorkflows((items) => items.map((item) => item.id === saved.id ? saved : item)); setVersion(currentVersion ?? undefined); setMessage(currentVersion ? `Đã lưu revision ${saved.revision} · Published v${currentVersion.version}` : `Đã lưu revision ${saved.revision} · cần publish lại`); })}>Lưu draft</button>

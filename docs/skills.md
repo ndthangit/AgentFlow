@@ -1,6 +1,6 @@
 # Quản lý skill cho agent
 
-System quản lý một catalog skill để người dùng chọn năng lực/hướng dẫn cho workflow trước khi gọi agent. Agent integration không tự đọc toàn bộ folder và không tự chọn skill ngoài danh sách System cung cấp.
+System quản lý một catalog skill dùng chung. Mọi skill đang enabled tự động xuất hiện trong bộ chọn của từng Agent node; người dùng không cần gắn hoặc tích chọn skill ở cấp workflow. Agent integration không tự đọc toàn bộ folder và chỉ nhận các skill có ID được chọn trong `config.skillIds` của node.
 
 ## Nguồn skill
 
@@ -19,14 +19,11 @@ Khi System khởi động, các built-in skill được đọc từ filesystem v
 | `POST /v1/skills` | Tạo user skill |
 | `GET /v1/skills/{id}` | Đọc nội dung một skill có quyền truy cập |
 | `PUT /v1/skills/{id}` | Cập nhật user skill bằng `expected_version` |
-| `GET /v1/workflows/{id}/skills` | Liệt kê skill đang gắn với workflow |
-| `PUT /v1/workflows/{id}/skills` | Thay toàn bộ selection, giữ thứ tự từ `skill_ids` |
-
-Một workflow chỉ chọn tối đa 20 skill đang enabled. System kiểm tra quyền sở hữu workflow và chỉ cho chọn built-in skill hoặc skill thuộc chính người dùng.
+Các endpoint workflow-skill cũ vẫn được giữ để tương thích với client cũ nhưng giao diện và quá trình publish không còn dùng selection cấp workflow. System kiểm tra từng `config.skillIds` khi validate/publish và chỉ chấp nhận skill đang enabled, là built-in hoặc thuộc chính người dùng.
 
 ## Snapshot lúc publish
 
-Selection trên draft là mutable. Khi publish workflow version, System chép các trường sau vào `workflow_versions.graph.skills`:
+Khi publish workflow version, System thu thập các ID được chọn trong mọi Agent node, loại trùng theo thứ tự xuất hiện và chép các trường sau vào `workflow_versions.graph.skills`:
 
 ```json
 {
@@ -39,7 +36,7 @@ Selection trên draft là mutable. Khi publish workflow version, System chép c�
 }
 ```
 
-Worker sau này phải lấy skill từ snapshot của workflow version và truyền đúng danh sách này cho agent. Việc sửa hay tắt skill sau đó không làm thay đổi version/run cũ.
+Worker lấy skill từ snapshot của workflow version và chỉ truyền đúng danh sách `skillIds` của Agent đang chạy. Việc sửa hay tắt skill sau đó không làm thay đổi version/run cũ.
 
 ## Thêm built-in skill
 

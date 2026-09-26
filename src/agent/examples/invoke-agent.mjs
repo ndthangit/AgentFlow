@@ -15,7 +15,7 @@ try {
   if (!response.ok || result.status !== "succeeded") {
     throw new Error(result.error?.message ?? `Agent returned HTTP ${response.status}`);
   }
-  // Preserve mode so callers never mistake a scripted demo for model output.
+  // The runtime only returns live model output.
   console.log(JSON.stringify({ mode: result.mode, output: result.output }, null, 2));
 } catch (error) {
   console.error(error.message);

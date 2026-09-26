@@ -14,13 +14,12 @@ from agent.contracts import AgentRunError, RunRequest, RunResult
 from agent.runtime import AgentRuntime
 
 
-def create_app(*, demo: bool | None = None) -> FastAPI:
-    use_demo = os.getenv("AGENT_DEMO", "").lower() == "true" if demo is None else demo
+def create_app() -> FastAPI:
     auth_enabled = os.getenv("AUTH_ENABLED", "false").lower() == "true"
     verifier = KeycloakTokenVerifier(OidcSettings.from_env()) if auth_enabled else None
     bearer = HTTPBearer(auto_error=False)
     app = FastAPI(title="AgentFlow Agent Integration", version="0.1.0")
-    runtime = AgentRuntime(demo=use_demo)
+    runtime = AgentRuntime()
 
     async def authorize(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -47,7 +46,7 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
         return {
             "status": "ok",
             "service": "agent-integration",
-            "mode": "demo" if use_demo else "live",
+            "mode": "live",
         }
 
     @app.post("/v1/runs", response_model=RunResult)
@@ -62,8 +61,15 @@ def create_app(*, demo: bool | None = None) -> FastAPI:
                 "TIMEOUT": 504,
                 "STEP_LIMIT": 502,
                 "OUTPUT_INVALID": 502,
+                "PROVIDER_OVERLOADED": 503,
+                "RATE_LIMITED": 429,
+                "PROVIDER_AUTH_ERROR": 502,
+                "MODEL_NOT_FOUND": 502,
+                "MODEL_REQUEST_REJECTED": 502,
+                "PROVIDER_UNAVAILABLE": 503,
+                "MCP_CONNECTION_FAILED": 502,
                 "AGENT_FAILED": 502,
-            }[exc.code]
+            }.get(exc.code, 502)
             return JSONResponse(
                 status_code=response_status,
                 content={"error": {"code": exc.code, "message": exc.message}},

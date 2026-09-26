@@ -10,7 +10,7 @@ import uuid
 from sqlalchemy import select, update
 
 from core.database import SessionFactory
-from domain.models import FlowRun, LlmProvider, RunStep, WorkflowVersion
+from domain.models import FlowRun, LlmProvider, McpServer, RunStep, WorkflowVersion
 from providers.secrets import ProviderSecretStore
 from runtime.agent_executor import create_agent_executor, create_llm_executor
 from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
@@ -58,11 +58,22 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
             .order_by(LlmProvider.name)
         )
         providers = list(provider_result)
+        mcp_result = await session.scalars(
+            select(McpServer)
+            .where(
+                McpServer.owner_subject == flow_run.owner_subject,
+                McpServer.enabled.is_(True),
+            )
+            .order_by(McpServer.name)
+        )
+        mcp_servers = list(mcp_result)
         graph = version.graph
         run_input = flow_run.input
 
     secret_store = ProviderSecretStore.from_config()
-    execute_agent = create_agent_executor(graph, providers, secret_store)
+    execute_agent = create_agent_executor(
+        graph, providers, secret_store, mcp_servers=mcp_servers
+    )
     execute_llm = create_llm_executor(graph, providers, secret_store)
 
     async def persist_progress(step: ExecutionStep) -> None:

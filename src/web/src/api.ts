@@ -2,6 +2,7 @@ import { accessToken } from "./auth";
 import type {
   FlowRun,
   LlmProvider,
+  McpServer,
   OpenRouterSettings,
   ProviderModel,
   ProviderModelTestResult,
@@ -38,6 +39,32 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  listMcpServers: () => request<McpServer[]>("/v1/mcp-servers"),
+  createMcpServer: (input: {
+    slug: string;
+    name: string;
+    description: string;
+    transport: McpServer["transport"];
+    url: string;
+    headers: Record<string, string>;
+    enabled: boolean;
+  }) => request<McpServer>("/v1/mcp-servers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  }),
+  updateMcpServer: (server: McpServer, input: {
+    name: string;
+    description: string;
+    transport: McpServer["transport"];
+    url: string;
+    headers?: Record<string, string>;
+    enabled: boolean;
+  }) => request<McpServer>(`/v1/mcp-servers/${server.id}`, {
+    method: "PUT",
+    body: JSON.stringify({ expected_revision: server.revision, ...input }),
+  }),
+  deleteMcpServer: (serverId: string) =>
+    request<void>(`/v1/mcp-servers/${serverId}`, { method: "DELETE" }),
   listLlmProviders: () => request<LlmProvider[]>("/v1/llm-providers"),
   createLlmProvider: (input: { api_key: string }) =>
     request<LlmProvider>("/v1/llm-providers", { method: "POST", body: JSON.stringify(input) }),
@@ -78,13 +105,6 @@ export const api = {
     }),
   deleteSkill: (skillId: string) =>
     request<void>(`/v1/skills/${skillId}`, { method: "DELETE" }),
-  listWorkflowSkills: (workflowId: string) =>
-    request<Skill[]>(`/v1/workflows/${workflowId}/skills`),
-  selectWorkflowSkills: (workflowId: string, skillIds: string[]) =>
-    request<Skill[]>(`/v1/workflows/${workflowId}/skills`, {
-      method: "PUT",
-      body: JSON.stringify({ skill_ids: skillIds }),
-    }),
   listWorkflows: () => request<Workflow[]>("/v1/workflows"),
   deleteWorkflow: (workflowId: string) =>
     request<void>(`/v1/workflows/${workflowId}`, { method: "DELETE" }),

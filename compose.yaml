@@ -103,7 +103,6 @@ services:
       OIDC_AUDIENCE: agentflow-api
       OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
-      AGENT_BASE_URL: http://agent:8001
       REDIS_URL: redis://redis:6379/0
       WORKFLOW_QUEUE_STREAM: agentflow:workflow-runs
       WORKFLOW_QUEUE_GROUP: workflow-workers
@@ -121,10 +120,38 @@ services:
         condition: service_healthy
     networks: [backend]
 
+  agent-runtime-image:
+    image: agentflow-agent-runtime:${AGENT_RUNTIME_IMAGE_VERSION:-0.1.0}
+    build:
+      context: ./src/agent
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    network_mode: none
+
+  filesystem-mcp:
+    image: agentflow-filesystem-mcp
+    build:
+      context: ./src/mcp-filesystem
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      MCP_FILE_ROOT: /data
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8002
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - agentflow_mcp_files:/data
+    networks: [runtime]
+
   workflow-worker:
     image: agentflow-system
     restart: unless-stopped
     command: ["python", "-m", "runtime.worker"]
+    # Local-only supervisor access. Production should use a dedicated hardened
+    # runner instead of mounting the Docker socket into a workflow worker.
+    user: "0:0"
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       REDIS_URL: redis://redis:6379/0
@@ -132,12 +159,26 @@ services:
       WORKFLOW_QUEUE_GROUP: workflow-workers
       WORKFLOW_RECLAIM_IDLE_MS: ${WORKFLOW_RECLAIM_IDLE_MS:-300000}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
+      AGENT_RUNTIME_IMAGE: agentflow-agent-runtime:${AGENT_RUNTIME_IMAGE_VERSION:-0.1.0}
+      AGENT_RUNTIME_TIMEOUT_SECONDS: ${AGENT_RUNTIME_TIMEOUT_SECONDS:-180}
+      AGENT_RUNTIME_MAX_CONTAINERS: ${AGENT_RUNTIME_MAX_CONTAINERS:-2}
+      AGENT_RUNTIME_CPUS: ${AGENT_RUNTIME_CPUS:-1}
+      AGENT_RUNTIME_MEMORY: ${AGENT_RUNTIME_MEMORY:-1g}
+      AGENT_RUNTIME_PIDS_LIMIT: ${AGENT_RUNTIME_PIDS_LIMIT:-128}
+      AGENT_RUNTIME_NETWORK: ${AGENT_RUNTIME_NETWORK:-agentflow-runtime}
+      AGENT_RUNTIME_MAX_OUTPUT_BYTES: ${AGENT_RUNTIME_MAX_OUTPUT_BYTES:-1048576}
+      AGENT_RUNTIME_PULL_POLICY: never
     volumes:
       - agentflow_system_secrets:/var/lib/agentflow
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       system:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      agent-runtime-image:
+        condition: service_completed_successfully
+      filesystem-mcp:
         condition: service_healthy
     healthcheck:
       disable: true
@@ -162,35 +203,15 @@ services:
         condition: service_healthy
     networks: [backend]
 
-  agent:
-    build:
-      context: ./src/agent
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      AUTH_ENABLED: "true"
-      OIDC_ISSUER: http://localhost:8080/realms/agentflow
-      OIDC_AUDIENCE: agentflow-api
-      OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
-      AGENT_DEMO: ${AGENT_DEMO:-true}
-      AGENT_PROVIDER: ${AGENT_PROVIDER:-openai-compatible}
-      AGENT_MODEL: ${AGENT_MODEL:-}
-      OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-}
-      OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
-    ports:
-      - "127.0.0.1:8001:8001"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      keycloak:
-        condition: service_healthy
-    networks: [backend]
-
 volumes:
   agentflow_postgres:
   agentflow_redis:
   agentflow_system_secrets:
+  agentflow_mcp_files:
 
 networks:
   backend:
+    driver: bridge
+  runtime:
+    name: agentflow-runtime
     driver: bridge

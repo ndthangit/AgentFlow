@@ -2,7 +2,7 @@
 
 Ngày nghiên cứu: **05/09/2026**. Trạng thái: **đề xuất để bắt đầu triển khai**.
 
-**Điều chỉnh phạm vi PoC:** bắt đầu bằng [agent Python dùng Deep Agents/LangGraph](../src/agent/README.md), có CLI/HTTP và output JSON, để kiểm chứng ranh giới flow–agent. Stack dưới đây là kiến trúc đích; Codex/OpenCode được bổ sung sau. Python chỉ nằm ở runtime mẫu, chưa thay đổi lựa chọn TypeScript cho editor/API/engine dự kiến.
+**Điều chỉnh phạm vi PoC:** runtime hiện tại là [agent Python dùng Deep Agents/LangGraph trong `src/agent`](../src/agent/README.md), có CLI/HTTP và output JSON; mỗi Agent node chạy CLI này trong container riêng. Stack dưới đây là kiến trúc đích; Codex/OpenCode chỉ là khả năng mở rộng sau.
 
 ## 1. Mục tiêu và giả định
 
@@ -83,7 +83,7 @@ flowchart TB
     TS --> TDB[(Persistence riêng của Temporal)]
 ```
 
-Các khối là trách nhiệm logic; MVP triển khai **modular monolith cho API và một số worker process**, không cần mỗi khối là một microservice. Agent chạy tách process/container từ đầu vì có shell và truy cập filesystem.
+Các khối là trách nhiệm logic; MVP triển khai **modular monolith cho API và một số worker process**, không cần mỗi khối là một microservice. Mỗi attempt của agent node chạy trong một container dùng một lần do runner supervisor quản lý vì agent có thể có shell và truy cập filesystem; chi tiết nằm trong [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md).
 
 Temporal Service lưu trạng thái, history và task queues; code Workflow/Activity của AgentFlow chạy trong worker. Không coi Temporal là nơi trực tiếp chạy binary Codex.
 

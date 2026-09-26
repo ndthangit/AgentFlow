@@ -2,19 +2,25 @@
 
 Một agent Python nhỏ dùng **Deep Agents trên LangGraph** để đề xuất kế hoạch workflow từ `task/context`. Agent gọi tool `get_node_catalog`, có planning tool `write_todos`, scratchpad trong `StateBackend` và trả `WorkflowPlan` có schema. Agent chưa thực thi các node trong kế hoạch.
 
-Mục đích là thử đường tích hợp **flow → agent → output JSON** trước khi xây adapter Codex/OpenCode. Mẫu chạy độc lập; engine và giao diện AgentFlow vẫn chưa triển khai.
+Đây là implementation Agent chính cho đường tích hợp **flow → agent → output JSON** hiện tại.
 
-## Chạy nhanh không cần API key
+Workflow worker chạy CLI này trong **một container mới cho mỗi attempt của agent node**, thu kết quả rồi xóa container. Chọn runtime `agent` trong editor hoặc đặt `config.runtime` thành `agent`; Compose build image `agentflow-agent-runtime`. Đây là runtime mặc định của Agent node và luôn gọi model thật đã chọn trong editor. Runtime không có fake model. FastAPI bên dưới chỉ phục vụ phát triển/kiểm thử contract, không phải runtime dùng chung cho workflow. Xem [thiết kế ephemeral agent runtime](../../docs/ephemeral-agent-runtime.md).
+
+Có thể kiểm tra trực tiếp contract container bằng request mẫu [examples/container-request.json](examples/container-request.json):
+
+```powershell
+Get-Content -Raw examples/container-request.json | docker run --rm -i --read-only --cap-drop ALL --security-opt no-new-privileges --env AGENT_PROVIDER --env AGENT_MODEL --env OPENAI_COMPATIBLE_BASE_URL --env OPENAI_COMPATIBLE_API_KEY --env OPENROUTER_BASE_URL --env OPENROUTER_API_KEY --entrypoint agent agentflow-agent-runtime:0.1.0
+```
+
+## Chạy nhanh với LLM thật
 
 Yêu cầu Python 3.13 và uv. Từ thư mục gốc repository:
 
 ```powershell
 cd src/agent
 uv sync --locked
-uv run agent --demo --task "Tạo flow nhận dữ liệu, chuẩn hóa và trả kết quả"
+uv run --env-file .env agent --task "Tạo flow nhận dữ liệu, chuẩn hóa và trả kết quả"
 ```
-
-`--demo` dùng **model giả lập với kế hoạch cố định**, không suy luận theo task và không gọi provider. Model này vẫn chạy qua graph Deep Agents thật, gọi tool danh mục node và đi qua bộ kiểm tra structured output. Response luôn có `mode: "demo"` để phân biệt.
 
 ## Chạy LLM self-host qua OpenAI-compatible API
 
@@ -36,6 +42,16 @@ OPENAI_COMPATIBLE_API_KEY=
 ```
 
 Base URL trỏ tới gốc API và thường kết thúc bằng `/v1`; không thêm `/chat/completions`. Khi server không yêu cầu xác thực, để key trống; client dùng placeholder `not-required`. Nếu server có xác thực, đặt key thật trong `.env`, không commit file này.
+
+OpenRouter có thể dùng trực tiếp mà không cần đổi tên biến:
+
+```dotenv
+AGENT_PROVIDER=openrouter
+AGENT_MODEL=nvidia/nemotron-3-super-120b-a12b:free
+OPENROUTER_API_KEY=your-key
+```
+
+Khi chạy từ workflow, nếu Agent node không chọn riêng provider/model, worker tự lấy provider có `default_model` của người dùng và truyền model, base URL cùng credential đã giải mã vào container.
 
 `ChatOpenAI` chỉ dùng phần chuẩn của OpenAI API. Các field riêng như reasoning metadata có thể không được giữ lại. Một server chỉ hỗ trợ text completion mà không hỗ trợ OpenAI tool calls sẽ không chạy được agent này. Nguồn: [LangChain OpenAI-compatible endpoints](https://docs.langchain.com/oss/python/concepts/providers-and-models#openai-compatible-endpoints).
 
@@ -79,17 +95,9 @@ CLI ghi một JSON object vào stdout; lỗi chẩn đoán ghi stderr. Exit code
 
 ## HTTP để flow gọi
 
-Chạy server demo từ `src/agent`:
+Chạy server với LLM thật từ `src/agent`:
 
 ```powershell
-$env:AGENT_DEMO = "true"
-uv run uvicorn agent.api:app --host 127.0.0.1 --port 8001
-```
-
-Chạy server với LLM self-host trong terminal khác, hoặc sau khi dừng demo:
-
-```powershell
-$env:AGENT_DEMO = "false"
 uv run --env-file .env uvicorn agent.api:app --host 127.0.0.1 --port 8001
 ```
 
@@ -107,7 +115,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8001/v1/runs -Method Post -ContentType '
 
 Khi `AUTH_ENABLED=true`, `POST /v1/runs` yêu cầu JWT Bearer token. Agent xác minh chữ ký RS256 bằng JWKS, đồng thời kiểm tra issuer, audience, thời hạn và các claim bắt buộc. Docker Compose đã cấu hình chế độ này với Keycloak; xem [hướng dẫn hạ tầng](../../infra/README.md). `GET /health` vẫn public cho liveness probe.
 
-Client Node.js mẫu: [examples/invoke-agent.mjs](examples/invoke-agent.mjs). Khi server demo đang chạy:
+Client Node.js mẫu: [examples/invoke-agent.mjs](examples/invoke-agent.mjs). Khi server đang chạy:
 
 ```powershell
 node examples/invoke-agent.mjs
@@ -122,15 +130,15 @@ import asyncio
 from agent.contracts import RunRequest
 from agent.runtime import run_agent
 
-result = asyncio.run(run_agent(RunRequest(task="Plan a small workflow"), demo=True))
-print(result.output.model_dump())
+result = asyncio.run(run_agent(RunRequest(task="Plan a small workflow")))
+print(result.output)
 ```
 
 ## Phạm vi bản mẫu
 
 - HTTP service dùng một `AgentRuntime` và một model dùng chung. Mỗi request tạo graph state riêng, nhận bộ skill riêng và không đọc file trên host; scratchpad và skill không truyền sang session khác.
 - Chỉ có một agent; general-purpose subagent được tắt qua harness profile. Cấu hình profile là process-global, nên chạy module này như runtime riêng.
-- Không có shell, web search, credential của connector hoặc hành động bên ngoài; chỉ có lời gọi model khi chạy live.
+- Không có shell, web search, credential của connector hoặc hành động bên ngoài; mọi lần chạy đều gọi model thật.
 - Giới hạn task/context, output tối đa 12 bước, graph tối đa 40 supersteps và deadline 120 giây. Đây không phải hard billing cap; request provider đã gửi có thể vẫn bị tính phí sau timeout.
 - Agent là integration độc lập và không sở hữu database. FastAPI control plane, PostgreSQL và migration nằm trong [`../system`](../system/README.md). Agent chưa có streaming, resume hoặc cancel endpoint; deadline runtime vẫn áp dụng.
 - `run_id` dùng để tương quan kết quả trả về, chưa dùng truy vấn job. Khi tích hợp engine thật, worker chịu trách nhiệm gắn kết quả vào node execution và quản lý retry.
@@ -143,6 +151,6 @@ uv run ruff check src tests
 uv run ruff format --check src tests
 ```
 
-Test dùng graph thật với model giả lập: tool call, output schema, dữ liệu riêng từng request, CLI, HTTP, lỗi cấu hình, deadline/cancel và che thông tin lỗi provider. Chưa kiểm chứng chất lượng kế hoạch hoặc kết nối model bằng API key thật trong phiên triển khai này.
+Unit test mock biên model/network để kiểm tra output schema, dữ liệu riêng từng request, CLI, HTTP, lỗi cấu hình, deadline/cancel và che thông tin lỗi provider. Runtime ứng dụng không chứa hoặc cung cấp fake model.
 
 Phiên bản đã khóa trong [uv.lock](uv.lock): Deep Agents 0.7.13, LangGraph 1.2.11. Nguồn API: [Deep Agents quickstart](https://docs.langchain.com/oss/python/deepagents/quickstart), [customization và structured output](https://docs.langchain.com/oss/python/deepagents/customization), [tắt subagents](https://docs.langchain.com/oss/python/deepagents/subagents#running-without-subagents).

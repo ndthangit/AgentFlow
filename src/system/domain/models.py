@@ -212,3 +212,34 @@ class LlmProvider(Base):
     @property
     def has_api_key(self) -> bool:
         return bool(self.api_key_encrypted)
+
+
+class McpServer(Base):
+    """User-owned remote MCP server available to Agent nodes."""
+
+    __tablename__ = "mcp_servers"
+    __table_args__ = (
+        UniqueConstraint("owner_subject", "slug"),
+        {"schema": "system"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    owner_subject: Mapped[str] = mapped_column(String(255), index=True)
+    slug: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str] = mapped_column(String(500), default="")
+    transport: Mapped[str] = mapped_column(String(32))
+    url: Mapped[str] = mapped_column(String(2048))
+    headers_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @property
+    def has_headers(self) -> bool:
+        return bool(self.headers_encrypted)

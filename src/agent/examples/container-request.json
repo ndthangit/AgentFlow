@@ -1,0 +1,5 @@
+{
+  "task": "Create a small workflow plan",
+  "context": "{\"source\":\"container-example\"}",
+  "skills": []
+}

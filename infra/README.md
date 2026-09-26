@@ -7,8 +7,8 @@
 | `web` | `3000` | React/Vite workflow studio và đăng nhập Keycloak PKCE |
 | `system` | `8000` | FastAPI control plane, API workflow và orchestrator dispatch outbox |
 | `workflow-worker` | Nội bộ | Consumer thực thi workflow và cập nhật run/step |
+| `agent-runtime-image` | Không chạy lâu dài | Build agent trong `src/agent` để worker tạo container dùng một lần |
 | `redis` | `6379` | Redis Stream queue, consumer group và retry pending job |
-| `agent` | `8001` | Deep Agents API, build từ `src/agent/Dockerfile` |
 | `postgres` | `5432` | Một database dùng chung, phân tách bằng schema |
 | `keycloak` | `8080`, management `9000` | OIDC authentication và trang quản trị |
 
@@ -24,20 +24,34 @@ Từ thư mục gốc repository:
 Copy-Item .env.example .env
 # Thay toàn bộ mật khẩu trong .env trước lần chạy đầu tiên.
 docker compose config
-docker compose build system agent
+docker compose build system agent-runtime-image
 docker compose up -d
 docker compose ps
 ```
 
-Mở `http://localhost:3000`, đăng nhập bằng user development trong `.env`, sau đó có thể tạo workflow, sửa draft JSON, validate, publish và tạo run. Giao diện chạy local bằng Vite tại `http://localhost:5173`; cả hai origin đã được cấu hình trong Keycloak và CORS của System API.
+Agent node mới mặc định dùng agent đã viết trong `src/agent`. Có thể chọn **Agent container (src/agent)** trong editor; graph được lưu với cấu hình:
 
-Mặc định `AGENT_DEMO=true`, nên không cần LLM để kiểm tra hạ tầng. Để gọi LLM self-host, đặt `AGENT_DEMO=false`, cấu hình model/base URL trong `.env`, rồi chạy:
-
-```powershell
-docker compose up -d --build agent
+```json
+{
+  "type": "agent",
+  "config": {
+    "runtime": "agent",
+    "providerId": "<provider-id>",
+    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+    "instructions": "Phân tích input và trả kết quả theo schema.",
+    "inputSchema": { "type": "object" },
+    "outputSchema": { "type": "object" }
+  }
+}
 ```
 
-Nếu LLM chạy trên host, container gọi qua `host.docker.internal`; Compose thêm ánh xạ `host-gateway` cho Linux. LLM phải lắng nghe trên interface mà Docker truy cập được, không chỉ loopback trong một container khác. Nếu LLM cũng nằm trong Compose, dùng tên service, ví dụ `http://vllm:8000/v1`.
+Khi worker gặp node này, nó chạy container `agentflow-agent-*` từ image build bằng `src/agent/Dockerfile`, truyền task, context và snapshot đầy đủ của skill qua stdin, inject tạm thời provider/model/API key đã đăng ký trong editor, đọc `RunResult.output` từ stdout rồi luôn dừng/xóa container. Node không chọn riêng model dùng provider/model mặc định đã đăng ký của chủ workflow. Workflow worker không đọc model hoặc credential từ `.env`, và runtime không có nhánh fake model.
+
+Compose local mount `/var/run/docker.sock` và chạy `workflow-worker` dưới quyền root để supervisor tạo container. Quyền này tương đương quyền quản trị Docker host, chỉ phù hợp môi trường phát triển. Production phải tách supervisor thành runner được harden và dùng credential proxy/token ngắn hạn; không mount Docker socket vào API hoặc container agent.
+
+Compose cũng chạy `filesystem-mcp` trên network cô lập `agentflow-runtime`. Để demo, đăng ký MCP Streamable HTTP với URL `http://filesystem-mcp:8002/mcp`, không cần header, rồi chọn MCP đó trong node Agent. Ba tool `write_file`, `read_file`, `list_files` chỉ truy cập volume `/data`; xem [README của MCP demo](../src/mcp-filesystem/README.md).
+
+Mở `http://localhost:3000`, đăng nhập bằng user development trong `.env`, sau đó có thể tạo workflow, sửa draft JSON, validate, publish và tạo run. Giao diện chạy local bằng Vite tại `http://localhost:5173`; cả hai origin đã được cấu hình trong Keycloak và CORS của System API.
 
 ## Lấy token development
 

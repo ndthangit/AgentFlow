@@ -2,7 +2,9 @@
 
 FastAPI control plane của AgentFlow đồng thời là orchestrator: lifecycle của backend chạy `runtime.orchestrator` để dispatch outbox vào Redis Stream. `runtime.worker` vẫn là process/container độc lập chịu trách nhiệm thực thi workflow.
 
-System cũng quản lý skill catalog. Built-in skill nằm trong `skills/<slug>/SKILL.md` cùng `metadata.json` và được đồng bộ vào PostgreSQL khi khởi động. Skill do người dùng tạo được lưu trực tiếp trong `system.skills`; workflow chọn skill qua `PUT /v1/workflows/{id}/skills`.
+Agent node mặc định dùng runtime `agent`: worker tạo container từ `AGENT_RUNTIME_IMAGE` và chạy CLI của `src/agent`. Container nhận JSON qua stdin, trả JSON qua stdout và được cleanup sau mỗi attempt. Runtime `direct` vẫn tồn tại làm đường tương thích để gọi provider adapter ngay trong worker. Hướng dẫn local và lưu ý Docker socket nằm trong [tài liệu hạ tầng](../../infra/README.md).
+
+System cũng quản lý skill catalog. Built-in skill nằm trong `skills/<slug>/SKILL.md` cùng `metadata.json` và được đồng bộ vào PostgreSQL khi khởi động. Skill do người dùng tạo được lưu trực tiếp trong `system.skills`; mọi skill Active được chọn trực tiếp tại từng Agent node qua `config.skillIds` và được snapshot khi publish.
 
 ```powershell
 uv sync --locked

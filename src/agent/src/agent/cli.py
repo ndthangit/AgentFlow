@@ -16,9 +16,6 @@ def main() -> None:
     parser.add_argument(
         "--task", help="Task to plan; omit to read a JSON request from stdin"
     )
-    parser.add_argument(
-        "--demo", action="store_true", help="Use a scripted offline model"
-    )
     args = parser.parse_args()
     for stream in (sys.stdin, sys.stdout):
         if hasattr(stream, "reconfigure"):
@@ -29,7 +26,7 @@ def main() -> None:
             if args.task is not None
             else RunRequest.model_validate_json(sys.stdin.read())
         )
-        result = asyncio.run(run_agent(request, demo=args.demo))
+        result = asyncio.run(run_agent(request))
         print(result.model_dump_json())
     except ValidationError:
         print(

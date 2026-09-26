@@ -14,6 +14,7 @@ from api.skills import visible_skill_filter
 from domain.models import (
     FlowRun,
     LlmProvider,
+    McpServer,
     Skill,
     Workflow,
     WorkflowSkill,
@@ -26,7 +27,14 @@ from domain.schemas import (
     WorkflowCreate,
     WorkflowView,
 )
-from domain.validation import validate_agent_model_selections, validate_graph
+from domain.validation import (
+    agent_mcp_server_ids,
+    agent_skill_ids,
+    validate_agent_mcp_selections,
+    validate_agent_model_selections,
+    validate_agent_skill_selections,
+    validate_graph,
+)
 from services.skills import SkillView, WorkflowSkillSelection
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
@@ -35,27 +43,57 @@ router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
 async def _workflow_validation_errors(
     workflow: Workflow, session: AsyncSession
 ) -> list[str]:
-    result = await session.scalars(
+    providers = await session.scalars(
         select(LlmProvider).where(
             LlmProvider.owner_subject == workflow.owner_subject,
             LlmProvider.enabled.is_(True),
         )
     )
+    skills = await session.scalars(
+        select(Skill).where(
+            visible_skill_filter(workflow.owner_subject), Skill.enabled.is_(True)
+        )
+    )
+    mcp_servers = await session.scalars(
+        select(McpServer).where(
+            McpServer.owner_subject == workflow.owner_subject,
+            McpServer.enabled.is_(True),
+        )
+    )
     return [
         *validate_graph(workflow.draft),
-        *validate_agent_model_selections(workflow.draft, result),
+        *validate_agent_model_selections(workflow.draft, providers),
+        *validate_agent_skill_selections(workflow.draft, skills),
+        *validate_agent_mcp_selections(workflow.draft, mcp_servers),
     ]
 
 
 async def _version_snapshot(
     workflow: Workflow, session: AsyncSession
 ) -> tuple[dict, str]:
-    selected_skills = await session.scalars(
-        select(Skill)
-        .join(WorkflowSkill, WorkflowSkill.skill_id == Skill.id)
-        .where(WorkflowSkill.workflow_id == workflow.id)
-        .order_by(WorkflowSkill.position)
+    selected_ids = agent_skill_ids(workflow.draft)
+    selected_mcp_ids = agent_mcp_server_ids(workflow.draft)
+    available_skills = await session.scalars(
+        select(Skill).where(
+            visible_skill_filter(workflow.owner_subject), Skill.enabled.is_(True)
+        )
     )
+    skills_by_id = {str(skill.id): skill for skill in available_skills}
+    selected_skills = [
+        skills_by_id[skill_id] for skill_id in selected_ids if skill_id in skills_by_id
+    ]
+    available_mcp_servers = await session.scalars(
+        select(McpServer).where(
+            McpServer.owner_subject == workflow.owner_subject,
+            McpServer.enabled.is_(True),
+        )
+    )
+    mcp_by_id = {str(server.id): server for server in available_mcp_servers}
+    selected_mcp_servers = [
+        mcp_by_id[server_id]
+        for server_id in selected_mcp_ids
+        if server_id in mcp_by_id
+    ]
     graph = deepcopy(workflow.draft)
     graph["skills"] = [
         {
@@ -67,6 +105,17 @@ async def _version_snapshot(
             "instructions": skill.instructions,
         }
         for skill in selected_skills
+    ]
+    graph["mcpServers"] = [
+        {
+            "id": str(server.id),
+            "slug": server.slug,
+            "name": server.name,
+            "transport": server.transport,
+            "url": server.url,
+            "revision": server.revision,
+        }
+        for server in selected_mcp_servers
     ]
     canonical = json.dumps(graph, sort_keys=True, separators=(",", ":"))
     return graph, hashlib.sha256(canonical.encode()).hexdigest()

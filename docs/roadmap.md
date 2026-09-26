@@ -1,6 +1,6 @@
 # Lộ trình MVP và vận hành
 
-Trạng thái: kế hoạch đề xuất ngày **05/09/2026**, đã điều chỉnh để bắt đầu từ [agent mẫu Deep Agents](../src/agent/README.md). Agent độc lập đã có CLI/HTTP và kiểm thử offline; engine, runner hạ tầng và UI dưới đây chưa triển khai.
+Trạng thái: kế hoạch đề xuất ngày **05/09/2026**, đã điều chỉnh để bắt đầu từ [agent Deep Agents trong `src/agent`](../src/agent/README.md) và [runtime container dùng một lần](ephemeral-agent-runtime.md). CLI/HTTP, đường supervisor Docker local và kiểm thử offline đã có; agent job bền vững, runner nhiều host và các phần còn lại dưới đây chưa triển khai đầy đủ.
 
 ## 1. Kết quả MVP cần đạt
 
@@ -12,10 +12,10 @@ Chưa chốt số tuần vì chưa có nhân lực và yêu cầu hạ tầng. T
 
 | Mốc | Công việc | Tiêu chí nghiệm thu |
 | --- | --- | --- |
-| M0a — Agent mẫu | Deep Agents/LangGraph, tool nhỏ, output schema, CLI/HTTP, model demo | Đã có mã mẫu và kiểm thử offline; cần cấu hình API key để thử model thật |
-| M0b — PoC engine gọi agent | Temporal flow ngắn gọi agent mẫu qua HTTP/CLI | Nhận output/error đúng; xác minh deadline và policy retry trước khi thêm runtime khác |
+| M0a — Agent mẫu | Deep Agents/LangGraph, tool nhỏ, output schema, CLI/HTTP, model thật | Đã có mã mẫu; cần cấu hình provider/model và credential hợp lệ để chạy |
+| M0b — PoC ephemeral agent | Flow ngắn tạo một container từ image đã khóa cho mỗi attempt và gọi agent qua file JSON | Nhận output/error đúng; container luôn được dọn; xác minh deadline, redelivery và policy retry trước khi thêm runtime khác |
 | M1 — Lõi workflow | DSL validator/interpreter; versioning; Postgres; start command/outbox; HTTP/Transform/If | Webhook trùng tạo một logical run; branch inactive không làm join treo; restart tiếp tục đúng |
-| M2 — Agent runner | Adapter contract, workspace, process supervisor, result manifest, quota | Agent sửa repo mẫu; test từ snapshot; worker chết có thể lấy kết quả đã lưu hoặc báo unknown đúng |
+| M2 — Agent runner | Job queue riêng, lease/fencing, workspace, container supervisor, result manifest, quota và reconciler | Agent sửa repo mẫu; test từ snapshot; worker chết có thể lấy kết quả đã lưu hoặc báo unknown đúng; container mồ côi được dọn |
 | M3 — Editor và quan sát | React Flow, node form, input mapping, publish, run timeline và SSE | Reload trình duyệt xem lại run; node lỗi hiển thị nguyên nhân và artifact liên quan |
 | M4 — Approval và connector | Durable approval, GitHub connector, cancellation và đối soát | Duyệt đúng snapshot; deny/expiry không tạo PR; lỗi mất ACK không tự tạo PR thứ hai |
 | M5 — Bản thử nội bộ | OIDC/RBAC, backup, telemetry, failure drills, tài liệu chạy local | Cài từ repo sạch; chạy flow mẫu; restore backup; kiểm tra isolation và runbook |

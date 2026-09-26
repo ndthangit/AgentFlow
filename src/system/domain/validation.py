@@ -101,6 +101,11 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
     if node_type in {"agent", "llm.call"}:
         _validate_configured_node(node, errors, require_language=False)
         config = node.get("config")
+        runtime = (
+            config.get("runtime", "agent") if isinstance(config, dict) else "agent"
+        )
+        if node_type == "agent" and runtime not in {"direct", "agent"}:
+            errors.append(f"agent node {node_id} runtime must be direct or agent")
         if (
             node_type == "llm.call"
             and isinstance(config, dict)
@@ -116,6 +121,12 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
             and "skillIds" in config
         ):
             errors.append(f"llm.call node {node_id} cannot define skillIds")
+        if (
+            node_type == "llm.call"
+            and isinstance(config, dict)
+            and "mcpServerIds" in config
+        ):
+            errors.append(f"llm.call node {node_id} cannot define mcpServerIds")
         if isinstance(config, dict):
             has_provider = "providerId" in config
             has_model = "model" in config
@@ -146,6 +157,23 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
             ):
                 errors.append(
                     f"agent node {node_id} skillIds must be unique non-empty strings"
+                )
+        if node_type == "agent" and isinstance(config, dict) and "mcpServerIds" in config:
+            server_ids = config["mcpServerIds"]
+            if (
+                not isinstance(server_ids, list)
+                or any(
+                    not isinstance(server_id, str) or not server_id
+                    for server_id in server_ids
+                )
+                or len(set(server_ids)) != len(server_ids)
+            ):
+                errors.append(
+                    f"agent node {node_id} mcpServerIds must be unique non-empty strings"
+                )
+            if runtime == "direct" and server_ids:
+                errors.append(
+                    f"agent node {node_id} must use agent runtime when MCP servers are selected"
                 )
     elif node_type == "code.python":
         _validate_configured_node(node, errors, require_language=True)
@@ -264,5 +292,105 @@ def validate_agent_model_selections(
         if not isinstance(selected_models, list) or model not in selected_models:
             errors.append(
                 f"{node_type} node {node_id} model {model} is not enabled for provider {provider.name}"
+            )
+    return errors
+
+
+def agent_skill_ids(graph: dict[str, Any]) -> list[str]:
+    """Return unique Agent skill IDs in stable graph/node selection order."""
+    selected: list[str] = []
+    seen: set[str] = set()
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return selected
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "agent":
+            continue
+        config = node.get("config")
+        skill_ids = config.get("skillIds") if isinstance(config, dict) else None
+        if not isinstance(skill_ids, list):
+            continue
+        for skill_id in skill_ids:
+            if isinstance(skill_id, str) and skill_id and skill_id not in seen:
+                selected.append(skill_id)
+                seen.add(skill_id)
+    return selected
+
+
+def validate_agent_skill_selections(
+    graph: dict[str, Any], skills: Iterable[Any]
+) -> list[str]:
+    """Validate Agent selections against the owner's active, visible skill catalog."""
+    available_ids = {str(skill.id) for skill in skills}
+    errors: list[str] = []
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return errors
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "agent":
+            continue
+        config = node.get("config")
+        skill_ids = config.get("skillIds") if isinstance(config, dict) else None
+        if not isinstance(skill_ids, list):
+            continue
+        missing = [
+            skill_id
+            for skill_id in skill_ids
+            if isinstance(skill_id, str) and skill_id not in available_ids
+        ]
+        if missing:
+            errors.append(
+                f"agent node {node.get('id', 'unknown')} references unavailable skills: "
+                + ", ".join(missing)
+            )
+    return errors
+
+
+def agent_mcp_server_ids(graph: dict[str, Any]) -> list[str]:
+    """Return unique MCP server IDs selected by Agent nodes."""
+    selected: list[str] = []
+    seen: set[str] = set()
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return selected
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "agent":
+            continue
+        config = node.get("config")
+        server_ids = config.get("mcpServerIds") if isinstance(config, dict) else None
+        if not isinstance(server_ids, list):
+            continue
+        for server_id in server_ids:
+            if isinstance(server_id, str) and server_id and server_id not in seen:
+                selected.append(server_id)
+                seen.add(server_id)
+    return selected
+
+
+def validate_agent_mcp_selections(
+    graph: dict[str, Any], servers: Iterable[Any]
+) -> list[str]:
+    """Validate Agent MCP selections against the owner's enabled registry."""
+    available_ids = {str(server.id) for server in servers}
+    errors: list[str] = []
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        return errors
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "agent":
+            continue
+        config = node.get("config")
+        server_ids = config.get("mcpServerIds") if isinstance(config, dict) else None
+        if not isinstance(server_ids, list):
+            continue
+        missing = [
+            server_id
+            for server_id in server_ids
+            if isinstance(server_id, str) and server_id not in available_ids
+        ]
+        if missing:
+            errors.append(
+                f"agent node {node.get('id', 'unknown')} references unavailable MCP servers: "
+                + ", ".join(missing)
             )
     return errors

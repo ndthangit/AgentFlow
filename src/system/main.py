@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.health import router as health_router
+from api.mcp_servers import router as mcp_servers_router
 from api.providers import router as providers_router
 from api.runs import router as runs_router
 from api.skills import router as skills_router
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type"],
     )
     application.include_router(health_router)
+    application.include_router(mcp_servers_router)
     application.include_router(providers_router)
     application.include_router(skills_router)
     application.include_router(workflows_router)

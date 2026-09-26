@@ -88,3 +88,17 @@ export type ProviderModelTestResult = {
   latency_ms: number;
   response: string;
 };
+
+export type McpServer = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  transport: "streamable_http" | "sse";
+  url: string;
+  has_headers: boolean;
+  enabled: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+};

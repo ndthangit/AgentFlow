@@ -1,4 +1,5 @@
 FROM ghcr.io/astral-sh/uv:0.12.1 AS uv
+FROM docker:29.6.2-cli AS docker_cli
 
 FROM python:3.13.14-slim AS runtime
 
@@ -9,6 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
 COPY --from=uv /uv /uvx /bin/
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 RUN groupadd --system --gid 10001 agentflow \
     && useradd --system --uid 10001 --gid agentflow --home-dir /app agentflow \
     && install -d -o agentflow -g agentflow /var/lib/agentflow

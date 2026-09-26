@@ -379,6 +379,11 @@ async def execute_workflow(
                 return node_id, node_output
             except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
                 states[node_id] = "failed"
+                error_code = (
+                    exc.code
+                    if isinstance(exc, WorkflowExecutionError)
+                    else "STEP_EXECUTION_FAILED"
+                )
                 failed_step = ExecutionStep(
                     sequence=sequence,
                     node_id=node_id,
@@ -387,7 +392,7 @@ async def execute_workflow(
                     status="failed",
                     input=node_input,
                     output=None,
-                    error={"code": "STEP_EXECUTION_FAILED", "message": str(exc)},
+                    error={"code": error_code, "message": str(exc)},
                     started_at=started_at,
                     completed_at=datetime.now(UTC),
                 )

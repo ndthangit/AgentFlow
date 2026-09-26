@@ -1,13 +1,22 @@
 import unittest
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from pydantic import ValidationError
 
+from api.workflows import _version_snapshot
 from domain.errors import WorkflowExecutionError
 from domain.examples import sum_workflow_draft
 from domain.schemas import WorkflowCreate
-from domain.validation import validate_agent_model_selections, validate_graph
+from domain.validation import (
+    agent_mcp_server_ids,
+    agent_skill_ids,
+    validate_agent_mcp_selections,
+    validate_agent_model_selections,
+    validate_agent_skill_selections,
+    validate_graph,
+)
 from runtime.agent_executor import skill_instructions_for_node
 from runtime.builtin import (
     execute_builtin_workflow,
@@ -17,6 +26,62 @@ from services.skills import WorkflowSkillSelection, content_hash
 
 
 class WorkflowValidationTests(unittest.TestCase):
+    def test_agent_mcp_selections_are_scoped_and_validated(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "researcher",
+                    "type": "agent",
+                    "config": {
+                        "runtime": "agent",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                        "mcpServerIds": ["docs", "shared"],
+                    },
+                },
+                {
+                    "id": "writer",
+                    "type": "agent",
+                    "config": {
+                        "runtime": "agent",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                        "mcpServerIds": ["shared"],
+                    },
+                },
+            ]
+        }
+
+        self.assertEqual(agent_mcp_server_ids(graph), ["docs", "shared"])
+        servers = [SimpleNamespace(id="docs"), SimpleNamespace(id="shared")]
+        self.assertEqual(validate_agent_mcp_selections(graph, servers), [])
+        self.assertEqual(
+            validate_agent_mcp_selections(graph, [SimpleNamespace(id="docs")]),
+            ["agent node researcher references unavailable MCP servers: shared", "agent node writer references unavailable MCP servers: shared"],
+        )
+
+    def test_direct_agent_runtime_rejects_mcp_servers(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "writer",
+                    "type": "agent",
+                    "config": {
+                        "runtime": "direct",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                        "mcpServerIds": ["docs"],
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        self.assertIn(
+            "agent node writer must use agent runtime when MCP servers are selected",
+            validate_graph(graph),
+        )
+
     def test_agent_receives_only_its_assigned_skills(self):
         graph = {
             "skills": [
@@ -30,6 +95,46 @@ class WorkflowValidationTests(unittest.TestCase):
             ["Write clearly"],
         )
         self.assertEqual(skill_instructions_for_node(graph, {"skillIds": []}), [])
+
+    def test_agent_skill_selections_come_directly_from_node_configs(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "researcher",
+                    "type": "agent",
+                    "config": {"skillIds": ["research", "shared"]},
+                },
+                {
+                    "id": "writer",
+                    "type": "agent",
+                    "config": {"skillIds": ["shared", "writing"]},
+                },
+            ]
+        }
+
+        self.assertEqual(agent_skill_ids(graph), ["research", "shared", "writing"])
+        available = [
+            SimpleNamespace(id="research"),
+            SimpleNamespace(id="shared"),
+            SimpleNamespace(id="writing"),
+        ]
+        self.assertEqual(validate_agent_skill_selections(graph, available), [])
+
+    def test_rejects_agent_skill_that_is_not_active_and_visible(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "writer",
+                    "type": "agent",
+                    "config": {"skillIds": ["missing-skill"]},
+                }
+            ]
+        }
+
+        self.assertEqual(
+            validate_agent_skill_selections(graph, []),
+            ["agent node writer references unavailable skills: missing-skill"],
+        )
 
     def test_legacy_agent_inherits_all_workflow_skills(self):
         graph = {
@@ -136,6 +241,7 @@ class WorkflowValidationTests(unittest.TestCase):
                     "id": "agent",
                     "type": "agent",
                     "config": {
+                        "runtime": "direct",
                         "providerId": "provider-1",
                         "inputSchema": {},
                         "outputSchema": {},
@@ -147,6 +253,56 @@ class WorkflowValidationTests(unittest.TestCase):
 
         self.assertIn(
             "agent node agent must define a non-empty model", validate_graph(graph)
+        )
+
+    def test_agent_container_runtime_does_not_require_registered_provider(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {
+                        "runtime": "agent",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        self.assertEqual(validate_graph(graph), [])
+        self.assertEqual(validate_agent_model_selections(graph, []), [])
+
+    def test_agent_container_accepts_node_provider_and_model(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {
+                        "runtime": "agent",
+                        "providerId": "provider-1",
+                        "model": "model-1",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        provider = SimpleNamespace(
+            id="provider-1",
+            name="OpenRouter",
+            settings={"selected_models": ["model-1"]},
+        )
+
+        self.assertEqual(validate_graph(graph), [])
+        self.assertEqual(validate_agent_model_selections(graph, [provider]), [])
+        self.assertIn(
+            "agent node agent references an unavailable LLM provider",
+            validate_agent_model_selections(graph, []),
         )
 
     def test_llm_call_requires_prompt_and_structured_schemas(self):
@@ -167,9 +323,7 @@ class WorkflowValidationTests(unittest.TestCase):
 
         errors = validate_graph(graph)
 
-        self.assertIn(
-            "llm.call node summarize must define a non-empty prompt", errors
-        )
+        self.assertIn("llm.call node summarize must define a non-empty prompt", errors)
         self.assertIn("llm.call node summarize cannot define skillIds", errors)
         self.assertIn(
             "llm.call node summarize must define outputSchema as an object", errors
@@ -213,6 +367,7 @@ class WorkflowValidationTests(unittest.TestCase):
                     "id": "writer",
                     "type": "agent",
                     "config": {
+                        "runtime": "direct",
                         "providerId": str(provider_id),
                         "model": "openai/gpt-test",
                         "inputSchema": {},
@@ -253,6 +408,7 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertEqual(draft["nodes"][0]["name"], "Bắt đầu")
         self.assertEqual(draft["nodes"][-1]["name"], "Kết thúc")
         self.assertEqual(draft["nodes"][-1]["inputs"], {})
+        self.assertEqual(draft["nodes"][1]["config"]["skillIds"], [])
         self.assertEqual(validate_graph(draft), [])
 
     def test_python_code_node_config_is_validated(self):
@@ -334,6 +490,47 @@ class SkillTests(unittest.TestCase):
         skill_id = uuid.uuid4()
         with self.assertRaises(ValidationError):
             WorkflowSkillSelection(skill_ids=[skill_id, skill_id])
+
+
+class WorkflowSkillSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_snapshot_contains_only_skills_selected_by_agent_nodes(self):
+        selected_id = uuid.uuid4()
+        unused_id = uuid.uuid4()
+        selected = SimpleNamespace(
+            id=selected_id,
+            slug="writer",
+            name="Writer",
+            version=2,
+            content_hash="a" * 64,
+            instructions="Write clearly",
+        )
+        unused = SimpleNamespace(
+            id=unused_id,
+            slug="unused",
+            name="Unused",
+            version=1,
+            content_hash="b" * 64,
+            instructions="Not selected",
+        )
+        workflow = SimpleNamespace(
+            owner_subject="user-1",
+            draft={
+                "nodes": [
+                    {
+                        "id": "agent",
+                        "type": "agent",
+                        "config": {"skillIds": [str(selected_id)]},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        session = AsyncMock()
+        session.scalars.return_value = [unused, selected]
+
+        graph, _content_hash = await _version_snapshot(workflow, session)
+
+        self.assertEqual([skill["id"] for skill in graph["skills"]], [str(selected_id)])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock
 
+from domain.errors import WorkflowExecutionError
 from runtime.engine import execute_workflow
 from runtime.restricted_python import (
     RestrictedPythonError,
@@ -365,6 +366,35 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert result.steps[0].error is not None
         self.assertEqual(result.steps[0].error["message"], "provider unavailable")
         self.assertEqual(result.steps[1].status, "skipped")
+
+    async def test_preserves_safe_workflow_error_code(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                }
+            ],
+            "edges": [],
+        }
+
+        async def overloaded_agent(_node, _inputs):
+            raise WorkflowExecutionError(
+                "Model provider is temporarily overloaded.",
+                code="PROVIDER_OVERLOADED",
+            )
+
+        result = await execute_workflow(graph, {}, overloaded_agent)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(
+            result.steps[0].error,
+            {
+                "code": "PROVIDER_OVERLOADED",
+                "message": "Model provider is temporarily overloaded.",
+            },
+        )
 
     async def test_reports_each_step_while_the_workflow_is_running(self):
         graph = {
