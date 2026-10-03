@@ -1097,12 +1097,12 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
               {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
                 <>
                   {selectedNode.type === "agent" && <section className="agent-model-picker">
-                    <div><strong>Agent runtime</strong><span>Agent trong src/agents được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
+                    <div><strong>Agent runtime</strong><span>Runtime đã chọn trong src/agents/&lt;runtime-name&gt; được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
                     <label>Runtime<select value={form.runtime} onChange={(event) => {
                       const runtime = event.target.value === "direct" ? "direct" : "agent";
                       setForm({ ...form, runtime, ...(runtime === "direct" ? { mcpServerIds: [] } : {}) });
                     }}>
-                      <option value="agent">Agent container (src/agents)</option>
+                      <option value="agent">Agent container (configured runtime)</option>
                       <option value="direct">Direct provider</option>
                     </select></label>
                   </section>}

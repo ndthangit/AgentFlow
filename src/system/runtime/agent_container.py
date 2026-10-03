@@ -1,4 +1,4 @@
-"""Run the Agent implementation from src/agents in a disposable container."""
+"""Run the configured src/agents/<runtime-name> image in a disposable container."""
 
 import asyncio
 import json

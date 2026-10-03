@@ -4,7 +4,7 @@
 
 > **Cập nhật kiến trúc:** đường production mục tiêu không dùng một agent HTTP service lâu dài. Mỗi attempt của agent node sẽ chạy trong một container dùng một lần; xem [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md). HTTP/CLI ở tài liệu này vẫn là bề mặt thử nghiệm contract và adapter.
 
-Theo phạm vi mới, dùng [agent Python mẫu trong src/agents](../src/agents/README.md) làm runtime đầu tiên. Agent dùng `create_deep_agent` trên LangGraph, tool danh mục node và output có schema để đề xuất một kế hoạch workflow nhỏ. Có CLI JSON stdin/stdout, `POST /v1/runs` đồng bộ và client Node.js minh họa.
+Theo phạm vi mới, dùng [agent Python mặc định trong `src/agents/default`](../src/agents/default/README.md) làm runtime đầu tiên. Agent dùng `create_deep_agent` trên LangGraph, tool danh mục node và output có schema để đề xuất một kế hoạch workflow nhỏ. Có CLI JSON stdin/stdout, `POST /v1/runs` đồng bộ và client Node.js minh họa. Runtime khác được thêm theo [quy ước thư mục và contract container](../src/agents/README.md).
 
 Đường thử nghiệm: **task/context → Deep Agents → LLM thật → WorkflowPlan JSON → output của agent node**. Runtime gọi OpenAI-compatible Chat Completions API hoặc Anthropic theo provider/model đã cấu hình; không có nhánh fake model. Kết quả là đề xuất, chưa tự chuyển thành DSL hoặc thực thi hành động.
 

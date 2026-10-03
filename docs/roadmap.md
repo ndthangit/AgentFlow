@@ -1,6 +1,6 @@
 # Lộ trình MVP và vận hành
 
-Trạng thái: kế hoạch đề xuất ngày **05/09/2026**, đã điều chỉnh để bắt đầu từ [agent Deep Agents trong `src/agents`](../src/agents/README.md) và [runtime container dùng một lần](ephemeral-agent-runtime.md). CLI/HTTP, đường supervisor Docker local và kiểm thử offline đã có; agent job bền vững, runner nhiều host và các phần còn lại dưới đây chưa triển khai đầy đủ.
+Trạng thái: kế hoạch đề xuất ngày **05/09/2026**, đã điều chỉnh để bắt đầu từ [agent Deep Agents trong `src/agents/default`](../src/agents/default/README.md), hỗ trợ [thêm runtime dưới `src/agents`](../src/agents/README.md) và [runtime container dùng một lần](ephemeral-agent-runtime.md). CLI/HTTP, đường supervisor Docker local và kiểm thử offline đã có; agent job bền vững, runner nhiều host và các phần còn lại dưới đây chưa triển khai đầy đủ.
 
 Backlog kỹ thuật theo dependency, schema/API dự kiến và tiêu chí nghiệm thu được theo dõi tại [kế hoạch bổ sung lõi workflow và Agent Runtime](core-runtime-implementation-plan.md).
 

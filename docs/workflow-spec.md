@@ -18,13 +18,13 @@ Editor lưu draft với optimistic revision. Khi publish, server validate graph,
 | If/Switch | JSON → port được chọn | Điều kiện deterministic, port `true`/`false` hoặc route cụ thể |
 | Parallel | JSON → mọi nhánh con | Truyền cùng output cha và kích hoạt đồng thời tất cả edge `parallel` |
 | LLM Call | Prompt + input refs → JSON | Gọi model đúng một completion, không nạp skill hoặc chạy vòng lặp Agent |
-| Agent | Prompt + input refs → JSON + artifact refs | Runtime `src/agents` trong container dùng một lần, timeout/budget/policy |
+| Agent | Prompt + input refs → JSON + artifact refs | Runtime được chọn trong `src/agents/<runtime-name>`, container dùng một lần, timeout/budget/policy |
 | Test | Snapshot → passed, exitCode, reportRef | Lệnh từ cấu hình được quản lý, chạy trong sandbox |
 | Approval | Action/artifact hash → decision | Chờ bền vững, có reviewer scope và deadline |
 | Connector Action | Payload → external resource reference | Operation key, quyền và tác động được khai báo |
 | End | JSON kết quả | Kết thúc nhánh; run kết thúc khi không còn công việc khả dụng |
 
-Trong lát cắt M0b hiện tại, Agent node chọn đường chạy bằng `config.runtime`: `agent` (mặc định, tạo container dùng một lần chạy CLI trong `src/agents`) hoặc `direct` (đường tương thích gọi provider adapter trong worker). Cả hai runtime đều có thể chọn `providerId` và `model` đã đăng ký. Với runtime `agent`, worker giải mã credential khi thực thi và truyền cấu hình model vào environment của container; nếu node không chọn model thì runtime tiếp tục dùng cấu hình mặc định của worker. Workflow mẫu và workflow production đều gọi model thật; runtime không có nhánh fake model. Xem [thiết kế và giới hạn của ephemeral runtime](ephemeral-agent-runtime.md).
+Trong lát cắt M0b hiện tại, Agent node chọn đường chạy bằng `config.runtime`: `agent` (mặc định, tạo container dùng một lần từ runtime được chọn bởi `AGENT_RUNTIME_NAME`, mặc định `src/agents/default`) hoặc `direct` (đường tương thích gọi provider adapter trong worker). Cả hai runtime đều có thể chọn `providerId` và `model` đã đăng ký. Với runtime `agent`, worker giải mã credential khi thực thi và truyền cấu hình model vào environment của container; nếu node không chọn model thì runtime tiếp tục dùng cấu hình mặc định của worker. Workflow mẫu và workflow production đều gọi model thật. Xem [contract tích hợp Agent runtime](../src/agents/README.md) và [thiết kế, giới hạn của ephemeral runtime](ephemeral-agent-runtime.md).
 
 `config.mcpServerIds` chọn các remote MCP server đã bật cho riêng node Agent. Tính năng này chỉ dùng với runtime `agent`. Version workflow snapshot slug, transport và URL; header xác thực vẫn được mã hóa trong registry và chỉ giải mã vào environment của container lúc thực thi.
 
