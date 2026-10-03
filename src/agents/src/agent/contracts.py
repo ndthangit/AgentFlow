@@ -4,7 +4,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-NodeType = Literal["trigger.manual", "transform", "http.request", "approval", "end"]
+NodeType = Literal[
+    "input.schema",
+    "math.add",
+    "llm.call",
+    "agent",
+    "code.python",
+    "if",
+    "parallel",
+    "output.schema",
+]
 
 
 class AgentSkill(BaseModel):

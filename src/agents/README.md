@@ -17,7 +17,7 @@ Get-Content -Raw examples/container-request.json | docker run --rm -i --read-onl
 Yêu cầu Python 3.13 và uv. Từ thư mục gốc repository:
 
 ```powershell
-cd src/agent
+cd src/agents
 uv sync --locked
 uv run --env-file .env agent --task "Tạo flow nhận dữ liệu, chuẩn hóa và trả kết quả"
 ```
@@ -95,7 +95,7 @@ CLI ghi một JSON object vào stdout; lỗi chẩn đoán ghi stderr. Exit code
 
 ## HTTP để flow gọi
 
-Chạy server với LLM thật từ `src/agent`:
+Chạy server với LLM thật từ `src/agents`:
 
 ```powershell
 uv run --env-file .env uvicorn agent.api:app --host 127.0.0.1 --port 8001

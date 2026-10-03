@@ -46,6 +46,18 @@ class ValidationResult(BaseModel):
     errors: list[str]
 
 
+class NodeTypeView(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    type: str
+    type_version: int = Field(alias="typeVersion")
+    label: str
+    description: str
+    control_ports: list[str]
+    side_effect_class: str
+    config_schema: dict[str, Any]
+    required_capabilities: list[str]
+
+
 class FlowRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version_id: uuid.UUID

@@ -11,12 +11,27 @@ from langgraph.errors import GraphRecursionError
 
 from agent.api import create_app
 from agent.contracts import AgentRunError, AgentSkill, RunRequest
-from agent.graph import build_configured_model
+from agent.graph import build_configured_model, get_node_catalog
 from agent.mcp import _connections_from_env, load_mcp_tools
 from agent.runtime import AgentRuntime, run_agent
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_workflow_planner_catalog_only_contains_executable_node_types(self):
+        self.assertEqual(
+            {item["type"] for item in get_node_catalog.invoke({})},
+            {
+                "input.schema",
+                "math.add",
+                "llm.call",
+                "agent",
+                "code.python",
+                "if",
+                "parallel",
+                "output.schema",
+            },
+        )
+
     async def test_runtime_uses_requested_node_output_schema(self):
         with patch("agent.runtime.build_agent") as factory:
             factory.return_value.ainvoke = AsyncMock(
@@ -54,7 +69,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                         "summary": "done",
                         "steps": [
                             {
-                                "node_type": "end",
+                                "node_type": "output.schema",
                                 "label": "Done",
                                 "instructions": "Return result",
                             }
@@ -92,7 +107,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 "summary": "done",
                 "steps": [
                     {
-                        "node_type": "end",
+                        "node_type": "output.schema",
                         "label": "Done",
                         "instructions": "Return result",
                     }
@@ -284,7 +299,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                         "summary": "done",
                         "steps": [
                             {
-                                "node_type": "end",
+                                "node_type": "output.schema",
                                 "label": "Done",
                                 "instructions": "Return result",
                             }
@@ -344,7 +359,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                             "summary": "done",
                             "steps": [
                                 {
-                                    "node_type": "end",
+                                    "node_type": "output.schema",
                                     "label": "Done",
                                     "instructions": "Return result",
                                 }

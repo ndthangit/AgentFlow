@@ -4,7 +4,7 @@ import { api } from "./api";
 import { keycloak } from "./auth";
 import { McpPage } from "./McpPage";
 import { ModelsPage } from "./ModelsPage";
-import type { FlowRun, LlmProvider, McpServer, RunStep, Skill, Workflow, WorkflowVersion } from "./types";
+import type { FlowRun, LlmProvider, McpServer, NodeTypeDefinition, RunStep, Skill, Workflow, WorkflowVersion } from "./types";
 import { WorkflowEditor } from "./WorkflowEditor";
 
 type AppTab = "workflows" | "skills" | "mcp" | "models";
@@ -312,6 +312,7 @@ export function App() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [providers, setProviders] = useState<LlmProvider[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [nodeTypes, setNodeTypes] = useState<NodeTypeDefinition[]>([]);
   const [skillForm, setSkillForm] = useState(emptySkill);
   const [isAddingSkill, setIsAddingSkill] = useState(false);
   const [editingSkill, setEditingSkill] = useState<Skill>();
@@ -349,6 +350,10 @@ export function App() {
     setMcpServers(await api.listMcpServers());
   }
 
+  async function refreshNodeTypes() {
+    setNodeTypes(await api.listNodeTypes());
+  }
+
   async function ensureFilesystemDemoMcp(): Promise<McpServer> {
     const existing = mcpServers.find((server) => server.slug === FILESYSTEM_DEMO_MCP.slug);
     if (existing) {
@@ -370,7 +375,7 @@ export function App() {
   }
 
   useEffect(() => {
-    Promise.all([refreshWorkflows(), refreshSkills(), refreshProviders(), refreshMcpServers()]).catch((error: Error) =>
+    Promise.all([refreshWorkflows(), refreshSkills(), refreshProviders(), refreshMcpServers(), refreshNodeTypes()]).catch((error: Error) =>
       setMessage(error.message),
     );
   }, []);
@@ -739,6 +744,7 @@ export function App() {
                 skills={enabledSkills}
                 providers={providers}
                 mcpServers={enabledMcpServers}
+                nodeTypes={nodeTypes}
               />
             </section>
 

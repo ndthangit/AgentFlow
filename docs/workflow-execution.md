@@ -13,7 +13,8 @@ Môi trường phát triển dùng một PostgreSQL database `agentflow`, nhưng
 | Redis | volume `agentflow_redis` | Queue at-least-once, consumer group và pending-entry list |
 | Keycloak | schema `keycloak` | Realm, user, client, role, session đăng nhập |
 | Agent integration | Không có database riêng | Nhận yêu cầu thực thi agent và trả kết quả có schema |
-| Artifact storage, worker attempts | Chưa triển khai | Log lớn, file, diff, checkpoint, retry và lease bền vững |
+| Durable execution ledger | Đang triển khai | Đã có migration/model nền cho node attempt, run command và run event; worker chưa dual-write/recover từ ledger |
+| Artifact storage | Chưa triển khai | Log lớn, file, diff, checkpoint và result manifest |
 
 Hai schema dùng chung PostgreSQL server/database để vận hành development đơn giản. Không tạo foreign key giữa `system` và `keycloak`; System chỉ tin danh tính `sub` sau khi xác minh JWT. Việc dùng chung database không cho phép System đọc hoặc sửa bảng nội bộ của Keycloak.
 
@@ -115,7 +116,7 @@ sequenceDiagram
     W->>R: XREADGROUP / claim job
     W->>P: pending -> running
     W->>W: Chạy DAG, LLM Call và Python giới hạn
-    W->>D: Tạo container src/agent cho mỗi Agent node
+    W->>D: Tạo container src/agents cho mỗi Agent node
     D-->>W: RunResult JSON rồi container bị xóa
     W->>P: Ghi output, step và trạng thái terminal
     W->>R: XACK
@@ -128,7 +129,7 @@ Các bước cụ thể:
 3. `POST /v1/workflows/{id}/validate` hiện kiểm tra cấu trúc `nodes`/`edges`, ID rỗng hoặc trùng, edge tham chiếu node không tồn tại và cycle.
 4. `POST /v1/workflows/{id}/versions` chỉ publish graph hợp lệ, đánh số version tiếp theo và lưu hash.
 5. `POST /v1/workflows/{id}/runs` xác minh version rồi tạo run, step và outbox atomically. API trả HTTP `202` ngay với trạng thái `pending`; nó không gọi LLM hoặc chạy Python.
-6. Orchestrator loop chạy trong chính lifecycle FastAPI gửi outbox vào Redis Stream. Worker trong consumer group claim job bằng phép cập nhật `pending -> running`, tải immutable graph rồi thực thi `input.schema`, `math.add`, `llm.call`, `agent`, `code.python` và `output.schema` theo dependency. `llm.call` gửi đúng một Chat Completions request bằng provider/model của chủ run và không nạp skill. Agent node mặc định tạo container từ image build ở `src/agent`, truyền task/context/skill qua stdin, inject tạm thời provider/model/API key lấy từ lựa chọn của node (hoặc provider mặc định đã đăng ký), nhận `RunResult` qua stdout rồi cleanup. Workflow worker không dùng cấu hình model hoặc credential từ `.env`.
+6. Orchestrator loop chạy trong chính lifecycle FastAPI gửi outbox vào Redis Stream. Worker trong consumer group claim job bằng phép cập nhật `pending -> running`, tải immutable graph rồi thực thi `input.schema`, `math.add`, `llm.call`, `agent`, `code.python` và `output.schema` theo dependency. `llm.call` gửi đúng một Chat Completions request bằng provider/model của chủ run và không nạp skill. Agent node mặc định tạo container từ image build ở `src/agents`, truyền task/context/skill qua stdin, inject tạm thời provider/model/API key lấy từ lựa chọn của node (hoặc provider mặc định đã đăng ký), nhận `RunResult` qua stdout rồi cleanup. Workflow worker không dùng cấu hình model hoặc credential từ `.env`.
 7. `GET /v1/runs/{run_id}` và `/steps` trả projection đang được worker cập nhật. UI poll mỗi giây khi run là `pending/running`. Nếu một bước lỗi, bước đó là `failed`, các bước sau là `skipped`, và run kết thúc `failed`.
 8. Worker chỉ `XACK` sau khi kết quả được commit. Message chưa ack quá thời gian cấu hình được worker khỏe mạnh nhận lại bằng `XAUTOCLAIM`.
 9. `GET /v1/workflows/{id}/runs` trả tối đa 100 lần chạy gần nhất của workflow, mới nhất trước và chỉ trong phạm vi người dùng hiện tại.

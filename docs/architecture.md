@@ -2,7 +2,7 @@
 
 Ngày nghiên cứu: **05/09/2026**. Trạng thái: **đề xuất để bắt đầu triển khai**.
 
-**Điều chỉnh phạm vi PoC:** runtime hiện tại là [agent Python dùng Deep Agents/LangGraph trong `src/agent`](../src/agent/README.md), có CLI/HTTP và output JSON; mỗi Agent node chạy CLI này trong container riêng. Stack dưới đây là kiến trúc đích; Codex/OpenCode chỉ là khả năng mở rộng sau.
+**Điều chỉnh phạm vi PoC:** runtime hiện tại là [agent Python dùng Deep Agents/LangGraph trong `src/agents`](../src/agents/README.md), có CLI/HTTP và output JSON; mỗi Agent node chạy CLI này trong container riêng. Stack dưới đây là kiến trúc đích; Codex/OpenCode chỉ là khả năng mở rộng sau.
 
 ## 1. Mục tiêu và giả định
 

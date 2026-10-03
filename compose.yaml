@@ -123,7 +123,7 @@ services:
   agent-runtime-image:
     image: agentflow-agent-runtime:${AGENT_RUNTIME_IMAGE_VERSION:-0.1.0}
     build:
-      context: ./src/agent
+      context: ./src/agents
       dockerfile: Dockerfile
     entrypoint: ["/bin/true"]
     restart: "no"

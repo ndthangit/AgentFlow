@@ -3,6 +3,7 @@ import type {
   FlowRun,
   LlmProvider,
   McpServer,
+  NodeTypeDefinition,
   OpenRouterSettings,
   ProviderModel,
   ProviderModelTestResult,
@@ -39,6 +40,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  listNodeTypes: () => request<NodeTypeDefinition[]>("/v1/node-types"),
   listMcpServers: () => request<McpServer[]>("/v1/mcp-servers"),
   createMcpServer: (input: {
     slug: string;

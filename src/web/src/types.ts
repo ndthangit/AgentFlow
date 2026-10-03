@@ -42,6 +42,17 @@ export type RunStep = {
   created_at: string;
 };
 
+export type NodeTypeDefinition = {
+  type: string;
+  typeVersion: number;
+  label: string;
+  description: string;
+  control_ports: string[];
+  side_effect_class: "pure" | "read" | "workspace-write" | "external-write";
+  config_schema: Record<string, unknown>;
+  required_capabilities: string[];
+};
+
 export type Skill = {
   id: string;
   slug: string;

@@ -45,11 +45,14 @@ requires their external service. No other external files or services are availab
 def get_node_catalog() -> list[dict[str, str]]:
     """Return the example node types that may be used in a workflow proposal."""
     return [
-        {"type": "trigger.manual", "purpose": "Start with user-provided input"},
-        {"type": "transform", "purpose": "Map, filter, or summarize input data"},
-        {"type": "http.request", "purpose": "Propose an HTTP request to a service"},
-        {"type": "approval", "purpose": "Ask a person to review a proposed action"},
-        {"type": "end", "purpose": "Return the final result"},
+        {"type": "input.schema", "purpose": "Validate workflow input"},
+        {"type": "math.add", "purpose": "Add two numeric values"},
+        {"type": "llm.call", "purpose": "Make one structured model completion"},
+        {"type": "agent", "purpose": "Run an Agent with optional skills and MCP tools"},
+        {"type": "code.python", "purpose": "Transform data with restricted Python"},
+        {"type": "if", "purpose": "Select a true or false branch"},
+        {"type": "parallel", "purpose": "Activate multiple branches"},
+        {"type": "output.schema", "purpose": "Validate and return workflow output"},
     ]
 
 

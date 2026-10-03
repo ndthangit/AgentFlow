@@ -17,7 +17,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { LlmProvider, McpServer, Skill } from "./types";
+import type { LlmProvider, McpServer, NodeTypeDefinition, Skill } from "./types";
 
 type WorkflowEditorProps = {
   value: string;
@@ -26,6 +26,7 @@ type WorkflowEditorProps = {
   skills?: Skill[];
   providers?: LlmProvider[];
   mcpServers?: McpServer[];
+  nodeTypes?: NodeTypeDefinition[];
 };
 
 type GraphNode = Record<string, unknown> & {
@@ -536,11 +537,12 @@ function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
   return candidate;
 }
 
-function newNode(type: EditableNodeType, id: string): GraphNode {
+function newNode(type: EditableNodeType, id: string, typeVersion: number): GraphNode {
   if (type === "if") {
     return {
       id,
       type,
+      typeVersion,
       name: "Điều kiện If / Else",
       note: "Chỉ chạy nhánh true hoặc false theo điều kiện.",
       inputs: { value: { from: "$input.condition" } },
@@ -551,6 +553,7 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
     return {
       id,
       type,
+      typeVersion,
       name: "Rẽ nhánh song song",
       note: "Chạy đồng thời tất cả nhánh con và truyền output cha cho từng nhánh.",
     };
@@ -559,6 +562,7 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
     return {
       id,
       type,
+      typeVersion,
       name: "Agent",
       note: "Mô tả ngắn nhiệm vụ của agent.",
       config: {
@@ -575,6 +579,7 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
     return {
       id,
       type,
+      typeVersion,
       name: "LLM Call",
       note: "Gọi model đúng một lần, không dùng skill hay vòng lặp Agent.",
       config: {
@@ -588,6 +593,7 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
     return {
       id,
       type,
+      typeVersion,
       name: "Python code",
       note: "Xử lý dữ liệu bằng một hàm Python thuần.",
       config: {
@@ -602,6 +608,7 @@ function newNode(type: EditableNodeType, id: string): GraphNode {
   return {
     id,
     type,
+    typeVersion,
     name: input ? "Bắt đầu" : "Kết thúc",
     note: input ? "Định nghĩa các biến đầu vào ban đầu của workflow." : "Định nghĩa các biến workflow trả về.",
     schema: emptyObjectSchema,
@@ -621,7 +628,7 @@ function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
   return nodes.length;
 }
 
-function WorkflowEditorView({ value, onChange, disabled = false, skills = [], providers = [], mcpServers = [] }: WorkflowEditorProps) {
+function WorkflowEditorView({ value, onChange, disabled = false, skills = [], providers = [], mcpServers = [], nodeTypes = [] }: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
   const [selectedId, setSelectedId] = useState<string>();
@@ -640,6 +647,10 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
   const agentMcpServerIds = form?.mcpServerIds ?? [];
   const enabledMcpServers = mcpServers.filter((server) => server.enabled);
   const enabledProviders = providers.filter((provider) => provider.enabled);
+  const nodeTypesByName = useMemo(
+    () => new Map(nodeTypes.map((definition) => [definition.type, definition])),
+    [nodeTypes],
+  );
   const selectedProvider = enabledProviders.find((provider) => provider.id === form?.providerId);
   const selectedProviderModels = selectedProvider?.settings.selected_models ?? [];
   const promptInputFields = form ? inputSchemaFields(form.inputSchema) : [];
@@ -796,6 +807,11 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
 
   function addNode(type: EditableNodeType) {
     if (!graph) return;
+    const definition = nodeTypesByName.get(type);
+    if (!definition) {
+      setConnectionMessage(`Node ${type} khÃ´ng Ä‘Æ°á»£c System hiá»‡n táº¡i há»— trá»£.`);
+      return;
+    }
     if (type === "input.schema" || type === "output.schema") {
       const existing = graph.nodes.find((node) => node.type === type);
       if (existing) {
@@ -815,7 +831,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
       width: node.measured?.width ?? defaultCanvasNodeSize.width,
       height: node.measured?.height ?? defaultCanvasNodeSize.height,
     })));
-    nodes.splice(index, 0, { ...newNode(type, id), position });
+    nodes.splice(index, 0, { ...newNode(type, id, definition.typeVersion), position });
     commit({ ...graph, nodes });
     setConnectionMessage(`Đã thêm ${id}. Kéo cổng của node nguồn sang node này để tạo kết nối.`);
     setSelectedId(id);
@@ -967,13 +983,13 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
           <span>Thêm rồi kéo node tới vị trí mong muốn; kéo từ cổng dưới node sang cổng trên node đích</span>
         </div>
         <div className="node-add-actions">
-          <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "input.schema")} onClick={() => addNode("input.schema")}>+ Start</button>
-          <button disabled={disabled || !graph} onClick={() => addNode("agent")}>+ Agent</button>
-          <button disabled={disabled || !graph} onClick={() => addNode("llm.call")}>+ LLM Call</button>
-          <button disabled={disabled || !graph} onClick={() => addNode("code.python")}>+ Python</button>
-          <button disabled={disabled || !graph} onClick={() => addNode("if")}>+ If / Else</button>
-          <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>
-          <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "output.schema")} onClick={() => addNode("output.schema")}>+ End</button>
+          {nodeTypesByName.has("input.schema") && <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "input.schema")} onClick={() => addNode("input.schema")}>+ Start</button>}
+          {nodeTypesByName.has("agent") && <button disabled={disabled || !graph} onClick={() => addNode("agent")}>+ Agent</button>}
+          {nodeTypesByName.has("llm.call") && <button disabled={disabled || !graph} onClick={() => addNode("llm.call")}>+ LLM Call</button>}
+          {nodeTypesByName.has("code.python") && <button disabled={disabled || !graph} onClick={() => addNode("code.python")}>+ Python</button>}
+          {nodeTypesByName.has("if") && <button disabled={disabled || !graph} onClick={() => addNode("if")}>+ If / Else</button>}
+          {nodeTypesByName.has("parallel") && <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>}
+          {nodeTypesByName.has("output.schema") && <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "output.schema")} onClick={() => addNode("output.schema")}>+ End</button>}
           <span className="node-toolbar-divider" aria-hidden="true" />
           <button disabled={disabled || !graph?.nodes.length} onClick={arrangeNodes}>Sắp xếp</button>
           <button className="canvas-tool-button" onClick={() => setIsJsonOpen(true)}>JSON</button>
@@ -1081,12 +1097,12 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
               {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
                 <>
                   {selectedNode.type === "agent" && <section className="agent-model-picker">
-                    <div><strong>Agent runtime</strong><span>Agent trong src/agent được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
+                    <div><strong>Agent runtime</strong><span>Agent trong src/agents được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
                     <label>Runtime<select value={form.runtime} onChange={(event) => {
                       const runtime = event.target.value === "direct" ? "direct" : "agent";
                       setForm({ ...form, runtime, ...(runtime === "direct" ? { mcpServerIds: [] } : {}) });
                     }}>
-                      <option value="agent">Agent container (src/agent)</option>
+                      <option value="agent">Agent container (src/agents)</option>
                       <option value="direct">Direct provider</option>
                     </select></label>
                   </section>}

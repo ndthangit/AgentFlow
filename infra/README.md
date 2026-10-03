@@ -7,7 +7,7 @@
 | `web` | `3000` | React/Vite workflow studio và đăng nhập Keycloak PKCE |
 | `system` | `8000` | FastAPI control plane, API workflow và orchestrator dispatch outbox |
 | `workflow-worker` | Nội bộ | Consumer thực thi workflow và cập nhật run/step |
-| `agent-runtime-image` | Không chạy lâu dài | Build agent trong `src/agent` để worker tạo container dùng một lần |
+| `agent-runtime-image` | Không chạy lâu dài | Build agent trong `src/agents` để worker tạo container dùng một lần |
 | `redis` | `6379` | Redis Stream queue, consumer group và retry pending job |
 | `postgres` | `5432` | Một database dùng chung, phân tách bằng schema |
 | `keycloak` | `8080`, management `9000` | OIDC authentication và trang quản trị |
@@ -29,7 +29,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Agent node mới mặc định dùng agent đã viết trong `src/agent`. Có thể chọn **Agent container (src/agent)** trong editor; graph được lưu với cấu hình:
+Agent node mới mặc định dùng agent đã viết trong `src/agents`. Có thể chọn **Agent container (src/agents)** trong editor; graph được lưu với cấu hình:
 
 ```json
 {
@@ -45,7 +45,7 @@ Agent node mới mặc định dùng agent đã viết trong `src/agent`. Có th
 }
 ```
 
-Khi worker gặp node này, nó chạy container `agentflow-agent-*` từ image build bằng `src/agent/Dockerfile`, truyền task, context và snapshot đầy đủ của skill qua stdin, inject tạm thời provider/model/API key đã đăng ký trong editor, đọc `RunResult.output` từ stdout rồi luôn dừng/xóa container. Node không chọn riêng model dùng provider/model mặc định đã đăng ký của chủ workflow. Workflow worker không đọc model hoặc credential từ `.env`, và runtime không có nhánh fake model.
+Khi worker gặp node này, nó chạy container `agentflow-agent-*` từ image build bằng `src/agents/Dockerfile`, truyền task, context và snapshot đầy đủ của skill qua stdin, inject tạm thời provider/model/API key đã đăng ký trong editor, đọc `RunResult.output` từ stdout rồi luôn dừng/xóa container. Node không chọn riêng model dùng provider/model mặc định đã đăng ký của chủ workflow. Workflow worker không đọc model hoặc credential từ `.env`, và runtime không có nhánh fake model.
 
 Compose local mount `/var/run/docker.sock` và chạy `workflow-worker` dưới quyền root để supervisor tạo container. Quyền này tương đương quyền quản trị Docker host, chỉ phù hợp môi trường phát triển. Production phải tách supervisor thành runner được harden và dùng credential proxy/token ngắn hạn; không mount Docker socket vào API hoặc container agent.
 

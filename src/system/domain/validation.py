@@ -1,7 +1,10 @@
 """Deterministic validation for workflow graph drafts."""
 
+import re
 from collections.abc import Iterable
 from typing import Any
+
+from domain.node_registry import get_node_type
 
 IF_OPERATORS = {
     "equals",
@@ -14,12 +17,20 @@ IF_OPERATORS = {
     "falsy",
 }
 
+NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+INPUT_REFERENCE_PATTERN = re.compile(r"^\$input(?:\.[A-Za-z0-9_-]+)*$")
+NODE_REFERENCE_PATTERN = re.compile(
+    r"^\$nodes\.([A-Za-z0-9_-]+)\.output\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)$"
+)
+
 
 def validate_graph(graph: dict[str, Any]) -> list[str]:
     nodes = graph.get("nodes")
     edges = graph.get("edges")
     if not isinstance(nodes, list) or not isinstance(edges, list):
         return ["draft must contain nodes and edges arrays"]
+    if not nodes:
+        return ["workflow must contain at least one node"]
 
     errors: list[str] = []
     ids = [node.get("id") for node in nodes if isinstance(node, dict)]
@@ -29,6 +40,11 @@ def validate_graph(graph: dict[str, Any]) -> list[str]:
         return ["every node must have a non-empty string id"]
     if len(set(ids)) != len(ids):
         errors.append("node ids must be unique")
+    for node_id in ids:
+        if not NODE_ID_PATTERN.fullmatch(node_id):
+            errors.append(
+                f"node id {node_id} may contain only letters, numbers, underscores and hyphens"
+            )
 
     for node in nodes:
         _validate_node(node, errors)
@@ -60,8 +76,12 @@ def validate_graph(graph: dict[str, Any]) -> list[str]:
         outgoing_ports[source].append(port)
         if nodes_by_id[source].get("type") == "if" and port not in {"true", "false"}:
             errors.append(f"if node {source} edges must use true or false ports")
-        if nodes_by_id[source].get("type") == "parallel" and port != "parallel":
+        elif nodes_by_id[source].get("type") == "parallel" and port != "parallel":
             errors.append(f"parallel node {source} edges must use parallel ports")
+        else:
+            definition = get_node_type(str(nodes_by_id[source].get("type", "")))
+            if definition is not None and port not in definition.control_ports:
+                errors.append(f"node {source} does not support port {port}")
 
     if _contains_cycle(adjacency):
         errors.append("workflow graph must be acyclic")
@@ -71,6 +91,7 @@ def validate_graph(graph: dict[str, Any]) -> list[str]:
             errors.append(f"if node {node_id} must have true and false branches")
         if node.get("type") == "parallel" and len(ports) < 2:
             errors.append(f"parallel node {node_id} must have at least two branches")
+        _validate_input_bindings(node, nodes_by_id, adjacency, errors)
     settings = graph.get("settings")
     if settings is not None and not isinstance(settings, dict):
         errors.append("settings must be an object")
@@ -88,8 +109,22 @@ def validate_graph(graph: dict[str, Any]) -> list[str]:
 def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
     node_id = node["id"]
     node_type = node.get("type")
-    if node_type is not None and not isinstance(node_type, str):
-        errors.append(f"node {node_id} type must be a string")
+    if not isinstance(node_type, str) or not node_type.strip():
+        errors.append(f"node {node_id} must define a supported type")
+        return
+    definition = get_node_type(node_type)
+    if definition is None:
+        errors.append(f"node {node_id} has unsupported type: {node_type}")
+        return
+    type_version = node.get("typeVersion", definition.type_version)
+    if (
+        not isinstance(type_version, int)
+        or isinstance(type_version, bool)
+        or type_version != definition.type_version
+    ):
+        errors.append(
+            f"node {node_id} typeVersion must be {definition.type_version} for {node_type}"
+        )
     if "name" in node and not isinstance(node["name"], str):
         errors.append(f"node {node_id} name must be a string")
     if "note" in node and not isinstance(node["note"], str):
@@ -181,6 +216,60 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
         _validate_math_node(node, errors)
     elif node_type == "if":
         _validate_if_node(node, errors)
+
+
+def _validate_input_bindings(
+    node: dict[str, Any],
+    nodes_by_id: dict[str, dict[str, Any]],
+    adjacency: dict[str, list[str]],
+    errors: list[str],
+) -> None:
+    inputs = node.get("inputs")
+    if inputs is None:
+        return
+    node_id = node["id"]
+    node_type = node.get("type", "unknown")
+    if not isinstance(inputs, dict):
+        errors.append(f"{node_type} node {node_id} inputs must be an object")
+        return
+    for field, binding in inputs.items():
+        if not isinstance(field, str) or not field:
+            errors.append(f"node {node_id} input names must be non-empty strings")
+            continue
+        if not isinstance(binding, dict) or not isinstance(binding.get("from"), str):
+            errors.append(f"node {node_id} input {field} must bind with from")
+            continue
+        reference = binding["from"]
+        if INPUT_REFERENCE_PATTERN.fullmatch(reference):
+            continue
+        match = NODE_REFERENCE_PATTERN.fullmatch(reference)
+        if match is None:
+            errors.append(f"node {node_id} input {field} has invalid reference {reference}")
+            continue
+        source = match.group(1)
+        if source not in nodes_by_id:
+            errors.append(
+                f"node {node_id} input {field} references unknown node {source}"
+            )
+            continue
+        if source == node_id or not _has_path(source, node_id, adjacency):
+            errors.append(
+                f"node {node_id} input {field} must reference an upstream node"
+            )
+
+
+def _has_path(source: str, target: str, adjacency: dict[str, list[str]]) -> bool:
+    pending = list(adjacency.get(source, []))
+    visited: set[str] = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id == target:
+            return True
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        pending.extend(adjacency.get(node_id, []))
+    return False
 
 
 def _validate_configured_node(

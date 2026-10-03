@@ -20,6 +20,7 @@ from domain.models import (
     WorkflowSkill,
     WorkflowVersion,
 )
+from domain.node_registry import get_node_type
 from domain.schemas import (
     DraftUpdate,
     ValidationResult,
@@ -95,6 +96,12 @@ async def _version_snapshot(
         if server_id in mcp_by_id
     ]
     graph = deepcopy(workflow.draft)
+    for node in graph.get("nodes", []):
+        if not isinstance(node, dict) or not isinstance(node.get("type"), str):
+            continue
+        definition = get_node_type(node["type"])
+        if definition is not None:
+            node.setdefault("typeVersion", definition.type_version)
     graph["skills"] = [
         {
             "id": str(skill.id),

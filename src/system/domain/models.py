@@ -2,9 +2,11 @@
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -19,6 +21,28 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+class NodeAttemptStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+class RunCommandType(StrEnum):
+    START = "start"
+    CANCEL = "cancel"
+    APPROVAL_DECISION = "approval_decision"
+
+
+class RunCommandStatus(StrEnum):
+    ACCEPTED = "accepted"
+    APPLIED = "applied"
+    REJECTED = "rejected"
 
 
 class Workflow(Base):
@@ -86,6 +110,12 @@ class FlowRun(Base):
     dispatch: Mapped["RunDispatch | None"] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    commands: Mapped[list["RunCommand"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    events: Mapped[list["RunEvent"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
 
 
 class RunDispatch(Base):
@@ -140,6 +170,117 @@ class RunStep(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     run: Mapped[FlowRun] = relationship(back_populates="steps")
+    attempts: Mapped[list["NodeAttempt"]] = relationship(
+        back_populates="run_step", cascade="all, delete-orphan"
+    )
+
+
+class NodeAttempt(Base):
+    """Durable execution attempt; redelivery reuses the same operation key."""
+
+    __tablename__ = "node_attempts"
+    __table_args__ = (
+        UniqueConstraint("run_step_id", "attempt"),
+        UniqueConstraint("operation_key"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', "
+            "'timed_out', 'cancelled', 'unknown')",
+            name="ck_node_attempts_status",
+        ),
+        {"schema": "system"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_step_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("system.run_steps.id", ondelete="CASCADE"), index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer)
+    operation_key: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(
+        String(32), default=NodeAttemptStatus.QUEUED, index=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64))
+    config_hash: Mapped[str] = mapped_column(String(64))
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    result_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    run_step: Mapped[RunStep] = relationship(back_populates="attempts")
+
+
+class RunCommand(Base):
+    """Idempotent user intent applied asynchronously to a workflow run."""
+
+    __tablename__ = "run_commands"
+    __table_args__ = (
+        UniqueConstraint("owner_subject", "scope", "idempotency_key"),
+        CheckConstraint(
+            "type IN ('start', 'cancel', 'approval_decision')",
+            name="ck_run_commands_type",
+        ),
+        CheckConstraint(
+            "status IN ('accepted', 'applied', 'rejected')",
+            name="ck_run_commands_status",
+        ),
+        {"schema": "system"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("system.runs.id", ondelete="CASCADE"), index=True
+    )
+    owner_subject: Mapped[str] = mapped_column(String(255), index=True)
+    scope: Mapped[str] = mapped_column(String(255))
+    type: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(32), default=RunCommandStatus.ACCEPTED, index=True
+    )
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    run: Mapped[FlowRun] = relationship(back_populates="commands")
+
+
+class RunEvent(Base):
+    """Append-only lifecycle event used for audit and reconnectable streams."""
+
+    __tablename__ = "run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence"),
+        {"schema": "system"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("system.runs.id", ondelete="CASCADE"), index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    type: Mapped[str] = mapped_column(String(100), index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    run: Mapped[FlowRun] = relationship(back_populates="events")
 
 
 class Skill(Base):

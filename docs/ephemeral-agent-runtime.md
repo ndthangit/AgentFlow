@@ -1,6 +1,6 @@
 # Thiết kế agent runtime dùng một lần cho mỗi node attempt
 
-Ngày cập nhật: **20/09/2026**. Trạng thái: **đã triển khai lát cắt M0b bằng agent trong `src/agent` trên Docker local; không dùng Codex trong đường chạy hiện tại; job/lease/reconciler bền vững vẫn thuộc các giai đoạn tiếp theo**. Phạm vi: node `agent`; node `llm.call` đơn giản tiếp tục gọi provider trực tiếp nếu không cần tool, shell hoặc workspace.
+Ngày cập nhật: **20/09/2026**. Trạng thái: **đã triển khai lát cắt M0b bằng agent trong `src/agents` trên Docker local; không dùng Codex trong đường chạy hiện tại; job/lease/reconciler bền vững vẫn thuộc các giai đoạn tiếp theo**. Phạm vi: node `agent`; node `llm.call` đơn giản tiếp tục gọi provider trực tiếp nếu không cần tool, shell hoặc workspace.
 
 ## 1. Quyết định kiến trúc
 
@@ -8,7 +8,7 @@ Mỗi lần thực thi một **attempt của agent node** sẽ chạy trong mộ
 
 Container là tài nguyên thực thi tạm thời, không phải nguồn trạng thái bền vững. Trạng thái job, lease, kết quả, log cần giữ và artifact phải được lưu bên ngoài container trước khi xóa.
 
-Quyết định này thay thế đường production dùng một HTTP agent service chạy lâu dài. HTTP server trong `src/agent` có thể được giữ để phát triển và kiểm thử contract, nhưng workflow worker không gọi nó trong đường production mới.
+Quyết định này thay thế đường production dùng một HTTP agent service chạy lâu dài. HTTP server trong `src/agents` có thể được giữ để phát triển và kiểm thử contract, nhưng workflow worker không gọi nó trong đường production mới.
 
 ### Vì sao chọn đơn vị “attempt”
 
@@ -24,7 +24,7 @@ Quyết định này thay thế đường production dùng một HTTP agent serv
 
 Repository hiện có hai đường thực thi cho Agent node:
 
-1. `agent` là mặc định, tạo container `agentflow-agent-*` từ `src/agent/Dockerfile`, chạy CLI `agent` đúng một lần và luôn gọi provider/model thật đã cấu hình.
+1. `agent` là mặc định, tạo container `agentflow-agent-*` từ `src/agents/Dockerfile`, chạy CLI `agent` đúng một lần và luôn gọi provider/model thật đã cấu hình.
 2. `direct` gọi LLM provider trực tiếp trong workflow-worker làm đường tương thích.
 
 Lát cắt local hiện để workflow-worker gọi Docker Engine trực tiếp và luôn cleanup trong `finally`. Đây chưa phải mô hình production đích: vẫn cần **Agent Runner Supervisor** độc lập, job/attempt bền vững và reconciler để workflow-worker không nắm Docker socket.
@@ -66,7 +66,7 @@ Chỉ supervisor đáng tin được truy cập Docker Engine hoặc container r
 
 ## 4. Contract thực thi một lần
 
-MVP nên kế thừa contract JSON của CLI trong `src/agent`, sau đó bổ sung chế độ đọc request và ghi result qua file được mount để supervisor kiểm soát kích thước và thu artifact. Không cần mở port hay health endpoint cho container chỉ chạy một job.
+MVP nên kế thừa contract JSON của CLI trong `src/agents`, sau đó bổ sung chế độ đọc request và ghi result qua file được mount để supervisor kiểm soát kích thước và thu artifact. Không cần mở port hay health endpoint cho container chỉ chạy một job.
 
 Lệnh logic:
 

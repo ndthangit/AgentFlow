@@ -151,10 +151,67 @@ class WorkflowValidationTests(unittest.TestCase):
 
     def test_accepts_dag(self):
         graph = {
-            "nodes": [{"id": "start"}, {"id": "done"}],
+            "nodes": [
+                {"id": "start", "type": "input.schema", "schema": {}},
+                {"id": "done", "type": "output.schema", "schema": {}},
+            ],
             "edges": [{"from": "start", "to": "done"}],
         }
         self.assertEqual(validate_graph(graph), [])
+
+    def test_rejects_empty_unsupported_or_wrong_version_graphs(self):
+        self.assertEqual(
+            validate_graph({"nodes": [], "edges": []}),
+            ["workflow must contain at least one node"],
+        )
+        errors = validate_graph(
+            {
+                "nodes": [
+                    {"id": "future", "type": "http.request"},
+                    {
+                        "id": "agent",
+                        "type": "agent",
+                        "typeVersion": 2,
+                        "config": {"inputSchema": {}, "outputSchema": {}},
+                    },
+                ],
+                "edges": [],
+            }
+        )
+        self.assertIn("node future has unsupported type: http.request", errors)
+        self.assertIn("node agent typeVersion must be 1 for agent", errors)
+
+    def test_rejects_invalid_unknown_and_non_upstream_bindings(self):
+        graph = {
+            "nodes": [
+                {"id": "start", "type": "input.schema", "schema": {}},
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "inputs": {
+                        "bad": {"from": "$input."},
+                        "missing": {"from": "$nodes.missing.output.value"},
+                        "future": {"from": "$nodes.end.output.value"},
+                    },
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+                {"id": "end", "type": "output.schema", "schema": {}},
+            ],
+            "edges": [
+                {"from": "start", "to": "agent"},
+                {"from": "agent", "to": "end"},
+            ],
+        }
+
+        errors = validate_graph(graph)
+
+        self.assertIn("node agent input bad has invalid reference $input.", errors)
+        self.assertIn(
+            "node agent input missing references unknown node missing", errors
+        )
+        self.assertIn(
+            "node agent input future must reference an upstream node", errors
+        )
 
     def test_rejects_cycle(self):
         graph = {
@@ -174,9 +231,9 @@ class WorkflowValidationTests(unittest.TestCase):
                     "config": {"operator": "equals", "expected": True},
                 },
                 {"id": "split", "type": "parallel"},
-                {"id": "disabled"},
-                {"id": "left"},
-                {"id": "right"},
+                {"id": "disabled", "type": "output.schema", "schema": {}},
+                {"id": "left", "type": "output.schema", "schema": {}},
+                {"id": "right", "type": "output.schema", "schema": {}},
             ],
             "edges": [
                 {"from": "decision", "port": "true", "to": "split"},
@@ -531,6 +588,7 @@ class WorkflowSkillSnapshotTests(unittest.IsolatedAsyncioTestCase):
         graph, _content_hash = await _version_snapshot(workflow, session)
 
         self.assertEqual([skill["id"] for skill in graph["skills"]], [str(selected_id)])
+        self.assertEqual(graph["nodes"][0]["typeVersion"], 1)
 
 
 if __name__ == "__main__":
