@@ -18,6 +18,9 @@ IF_OPERATORS = {
 }
 
 NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+AGENT_RUNTIME_ID_PATTERN = re.compile(
+    r"^(?:direct|agent|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)$"
+)
 INPUT_REFERENCE_PATTERN = re.compile(r"^\$input(?:\.[A-Za-z0-9_-]+)*$")
 NODE_REFERENCE_PATTERN = re.compile(
     r"^\$nodes\.([A-Za-z0-9_-]+)\.output\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)$"
@@ -139,8 +142,13 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
         runtime = (
             config.get("runtime", "agent") if isinstance(config, dict) else "agent"
         )
-        if node_type == "agent" and runtime not in {"direct", "agent"}:
-            errors.append(f"agent node {node_id} runtime must be direct or agent")
+        if node_type == "agent" and (
+            not isinstance(runtime, str)
+            or not AGENT_RUNTIME_ID_PATTERN.fullmatch(runtime)
+        ):
+            errors.append(
+                f"agent node {node_id} runtime must be direct, agent, or a valid runtime id"
+            )
         if (
             node_type == "llm.call"
             and isinstance(config, dict)

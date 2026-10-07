@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "default",
+  "image": "agentflow-agent-default:0.1.0",
+  "description": "Deep Agents/LangGraph runtime bundled with AgentFlow"
+}

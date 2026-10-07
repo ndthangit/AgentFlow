@@ -37,6 +37,7 @@ flowchart LR
 | [Kế hoạch bổ sung lõi workflow/runtime](docs/core-runtime-implementation-plan.md) | Backlog P0–P2, migration, API/runtime contract, thứ tự triển khai và tiêu chí nghiệm thu |
 | [Đặc tả workflow](docs/workflow-spec.md) | Node, edge, dữ liệu, ví dụ flow và API dự kiến |
 | [Lưu trữ và xử lý workflow](docs/workflow-execution.md) | PostgreSQL schema, vòng đời draft/version/run và luồng worker mục tiêu |
+| [Giám sát và observability](docs/observability.md) | Kiến trúc OpenTelemetry/Prometheus/Grafana/Loki/Tempo, metric, log, trace, alert và kế hoạch tích hợp |
 | [Quản lý skill](docs/skills.md) | Built-in/user skill, lựa chọn trực tiếp tại Agent node và snapshot khi publish |
 | [Lộ trình triển khai](docs/roadmap.md) | Các mốc MVP, tiêu chí nghiệm thu, triển khai và vận hành |
 

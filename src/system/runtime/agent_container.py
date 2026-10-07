@@ -89,7 +89,7 @@ class AgentContainerSettings:
     @classmethod
     def from_env(cls) -> "AgentContainerSettings":
         return cls(
-            image=os.getenv("AGENT_RUNTIME_IMAGE", "agentflow-agent-runtime:0.1.0"),
+            image=os.getenv("AGENT_RUNTIME_IMAGE", "agentflow-agent-default:0.1.0"),
             docker_binary=os.getenv("DOCKER_BINARY", "docker"),
             timeout_seconds=float(os.getenv("AGENT_RUNTIME_TIMEOUT_SECONDS", "180")),
             cpus=os.getenv("AGENT_RUNTIME_CPUS", "1"),

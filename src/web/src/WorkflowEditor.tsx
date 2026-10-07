@@ -67,7 +67,7 @@ type NodeForm = {
   note: string;
   schema: string;
   instructions: string;
-  runtime: "direct" | "agent";
+  runtime: string;
   providerId: string;
   model: string;
   code: string;
@@ -319,7 +319,7 @@ function formFromNode(node: GraphNode): NodeForm {
       : typeof config.prompt === "string"
         ? config.prompt
         : "",
-    runtime: config.runtime === "direct" ? "direct" : "agent",
+    runtime: typeof config.runtime === "string" && config.runtime ? config.runtime : "default",
     providerId: typeof config.providerId === "string" ? config.providerId : "",
     model: typeof config.model === "string" ? config.model : "",
     code: typeof config.code === "string" ? config.code : "",
@@ -566,7 +566,7 @@ function newNode(type: EditableNodeType, id: string, typeVersion: number): Graph
       name: "Agent",
       note: "Mô tả ngắn nhiệm vụ của agent.",
       config: {
-        runtime: "agent",
+        runtime: "default",
         instructions: "",
         skillIds: [],
         mcpServerIds: [],
@@ -1098,13 +1098,16 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                 <>
                   {selectedNode.type === "agent" && <section className="agent-model-picker">
                     <div><strong>Agent runtime</strong><span>Runtime đã chọn trong src/agents/&lt;runtime-name&gt; được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
-                    <label>Runtime<select value={form.runtime} onChange={(event) => {
-                      const runtime = event.target.value === "direct" ? "direct" : "agent";
+                    <label>Runtime<input list="agent-runtime-options" value={form.runtime} placeholder="default" onChange={(event) => {
+                      const runtime = event.target.value;
                       setForm({ ...form, runtime, ...(runtime === "direct" ? { mcpServerIds: [] } : {}) });
-                    }}>
-                      <option value="agent">Agent container (configured runtime)</option>
+                    }} /></label>
+                    <datalist id="agent-runtime-options">
+                      <option value="default">Default container runtime</option>
+                      <option value="agent">Legacy default alias</option>
                       <option value="direct">Direct provider</option>
-                    </select></label>
+                    </datalist>
+                    <p>Nhập runtime id đã đăng ký trong <code>AGENT_RUNTIME_IMAGES</code>.</p>
                   </section>}
                   <section className="agent-model-picker">
                     <div><strong>{selectedNode.type === "agent" ? "Model của Agent" : "Model của LLM Call"}</strong><span>Chọn model từ các provider đang hoạt động đã đăng ký.</span></div>
@@ -1137,7 +1140,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                     {form.providerId && !selectedProvider && <p>Provider đã lưu không còn hoạt động. Hãy chọn provider khác.</p>}
                     {selectedProvider && !selectedProviderModels.length && <p>Provider này chưa có model đã đăng ký.</p>}
                     {selectedProvider && form.model && !selectedProviderModels.includes(form.model) && <p>Model đã lưu không còn được bật cho provider này. Hãy chọn model khác.</p>}
-                    {selectedNode.type === "agent" && form.runtime === "agent" && <p>Provider, model và API key đã lưu được truyền tạm thời vào container của lần chạy này; Agent không lấy cấu hình model từ .env.</p>}
+                    {selectedNode.type === "agent" && form.runtime !== "direct" && <p>Provider, model và API key đã lưu được truyền tạm thời vào container của lần chạy này; Agent không lấy cấu hình model từ .env.</p>}
                   </section>
                   <label>{selectedNode.type === "agent" ? "Instructions" : "Prompt"}<textarea className="compact-textarea instructions" value={form.instructions} placeholder={selectedNode.type === "agent" ? "Agent cần thực hiện điều gì?" : "Model cần xử lý dữ liệu đầu vào như thế nào?"} onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
                   <section className="prompt-variable-picker">
@@ -1174,7 +1177,7 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
                       {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>Chưa chọn skill. Hãy thêm skill trong trang quản lý rồi chọn tại đây.</p>}
                     </div>
                   </section>}
-                  {selectedNode.type === "agent" && form.runtime === "agent" && <section className="agent-skill-picker">
+                  {selectedNode.type === "agent" && form.runtime !== "direct" && <section className="agent-skill-picker">
                     <div><strong>MCP của Agent</strong><span>Agent chỉ kết nối tới các MCP server được chọn cho node này.</span></div>
                     <select
                       value=""

@@ -15,6 +15,10 @@ from providers.adapters import (
 )
 from providers.secrets import ProviderSecretStore
 from runtime.agent_container import AgentContainerExecutor
+from runtime.agent_runtime_manager import (
+    AgentRuntimeDefinition,
+    AgentRuntimeManager,
+)
 from runtime.engine import AgentExecutor, LlmExecutor
 
 PROMPT_INPUT_REFERENCE = re.compile(r"\{\{\s*input((?:\.[A-Za-z0-9_-]+)*)\s*\}\}")
@@ -311,6 +315,7 @@ def create_agent_executor(
     mcp_servers: Iterable[McpServer] = (),
     *,
     container_executor: AgentContainerExecutor | None = None,
+    runtime_manager: AgentRuntimeManager | None = None,
 ) -> AgentExecutor:
     available = list(providers)
     available_mcp_servers = list(mcp_servers)
@@ -322,7 +327,14 @@ def create_agent_executor(
         prompt_field="instructions",
         include_skills=True,
     )
-    bundled_agent_executor = container_executor or AgentContainerExecutor()
+    if container_executor is not None and runtime_manager is not None:
+        raise ValueError("Pass container_executor or runtime_manager, not both")
+    if runtime_manager is None and container_executor is not None:
+        runtime_manager = AgentRuntimeManager(
+            [AgentRuntimeDefinition("default", "agentflow-agent-default:test")],
+            executor_factory=lambda _settings: container_executor,
+        )
+    selected_runtime_manager = runtime_manager or AgentRuntimeManager.from_env()
 
     async def execute_agent(
         node: dict[str, Any], node_input: dict[str, Any]
@@ -335,8 +347,8 @@ def create_agent_executor(
                     "MCP servers require the Agent container runtime"
                 )
             return await direct_executor(node, node_input)
-        if runtime != "agent":
-            raise WorkflowExecutionError(f"Unsupported agent runtime: {runtime}")
+        if not isinstance(runtime, str):
+            raise WorkflowExecutionError("Agent runtime id must be a string")
 
         configured_instructions = config.get("instructions")
         prompt_template = (
@@ -375,8 +387,10 @@ def create_agent_executor(
             "skills": skill_snapshots,
             "output_schema": config.get("outputSchema", {}),
         }
-        return await bundled_agent_executor.execute(
-            request, environment_overrides=environment_overrides
+        return await selected_runtime_manager.execute(
+            runtime,
+            request,
+            environment_overrides=environment_overrides,
         )
 
     return execute_agent
