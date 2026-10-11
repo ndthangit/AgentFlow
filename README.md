@@ -87,5 +87,6 @@ HTTPS và cấu hình image trong [hướng dẫn Docker](docker/README.md).
 - [Workflow và cơ chế thực thi](docs/workflow-execution.md)
 - [Quản lý Agent runtime](docs/agent-runtime-management.md)
 - [Provider và model LLM](docs/llm-providers.md)
+- [Kế hoạch tích hợp giám sát hệ thống và workflow](docs/observability.md)
 
 Giấy phép: [MIT](LICENSE).

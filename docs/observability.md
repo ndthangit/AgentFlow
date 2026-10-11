@@ -1,6 +1,6 @@
 # Tích hợp giám sát và observability cho AgentFlow
 
-Ngày cập nhật: **04/10/2026**. Trạng thái: **thiết kế và hướng dẫn triển khai; monitoring stack chưa được thêm vào Compose hiện tại**.
+Ngày cập nhật: **11/10/2026**. Trạng thái: **đã triển khai lát cắt đầu tiên cho local/Compose và instrumentation backend; production hardening và Langfuse chưa triển khai**.
 
 Tài liệu này mô tả cách bổ sung metrics, logs, traces, dashboard và cảnh báo cho AgentFlow. Mục tiêu là trả lời được bốn câu hỏi vận hành:
 
@@ -10,6 +10,17 @@ Tài liệu này mô tả cách bổ sung metrics, logs, traces, dashboard và c
 4. Hệ thống có sắp vượt giới hạn tài nguyên, backlog, token hoặc chi phí không?
 
 `runs` và `run_steps` vẫn là nguồn dữ liệu nghiệp vụ có thẩm quyền. Monitoring phục vụ phát hiện và chẩn đoán; không dùng Prometheus, Loki, Tempo hoặc Langfuse để quyết định trạng thái workflow.
+
+### Phạm vi và kết quả cần đạt
+
+Phạm vi của kế hoạch gồm hai lớp:
+
+- **Giám sát hệ thống:** System API, PostgreSQL, Redis, Keycloak, workflow worker, Docker host/container và chính pipeline telemetry.
+- **Giám sát workflow:** vòng đời run, dispatch qua outbox/Redis Stream, từng node/attempt, Agent container, lời gọi MCP/LLM, retry, timeout, backlog và chi phí ước tính.
+
+Kết quả cuối cùng phải cho phép đội vận hành phát hiện sự cố từ alert, xác định phạm vi ảnh hưởng trên dashboard, rồi đi từ `run_id` hoặc `trace_id` tới đúng node, log và dependency gây lỗi. Telemetry không được chứa secret/prompt mặc định và sự cố của monitoring không được làm gián đoạn việc thực thi workflow.
+
+Ngoài phạm vi của đợt tích hợp đầu tiên: Real User Monitoring cho frontend, profiling liên tục, anomaly detection bằng ML, lưu toàn bộ prompt/completion và thay đổi engine thực thi. Các hạng mục này chỉ được bổ sung sau khi metric/log/trace nền tảng ổn định và có chính sách dữ liệu tương ứng.
 
 ## 1. Hiện trạng và khoảng trống
 
@@ -193,19 +204,20 @@ Triển khai theo lát cắt; mỗi giai đoạn phải dùng được độc l�
 Thêm cấu trúc dự kiến:
 
 ```text
-compose.observability.yaml
-infra/observability/
-  otel-collector.yaml
-  prometheus.yaml
-  rules/agentflow.yaml
-  tempo.yaml
-  loki.yaml
-  alloy.alloy
-  grafana/
-    provisioning/datasources/agentflow.yaml
-    provisioning/dashboards/agentflow.yaml
-    dashboards/system-overview.json
-    dashboards/workflow-runtime.json
+docker/
+  compose.observability.yaml
+  observability/
+    otel-collector.yaml
+    prometheus.yaml
+    rules/agentflow.yaml
+    tempo.yaml
+    loki.yaml
+    alloy.alloy
+    grafana/
+      provisioning/datasources/agentflow.yaml
+      provisioning/dashboards/agentflow.yaml
+      dashboards/system-overview.json
+      dashboards/workflow-runtime.json
 ```
 
 Giữ stack trong file Compose override để `docker/compose.yaml` cốt lõi vẫn nhẹ. Các service nên cùng network `backend`; chỉ Grafana (`127.0.0.1:3001`) và Prometheus UI khi cần debug (`127.0.0.1:9090`) được bind ra localhost. Không public cổng OTLP, Loki, Tempo, exporter hoặc management port trong production.
@@ -417,3 +429,62 @@ Definition of Done cho tích hợp đầu tiên:
 | 6 | Agent container + LLM usage/cost; Langfuse nếu cần | Runtime/provider visibility và budget tracking |
 
 Không triển khai tất cả trong một PR. Lát cắt đầu tiên nên chứng minh một request tạo run có metric, trace và log tương quan; sau đó mới tăng số exporter, dashboard và retention.
+
+## 11. Kế hoạch bàn giao
+
+Kế hoạch dưới đây dùng **đợt** thay vì cam kết ngày cố định. Mỗi đợt chỉ bắt đầu khi gate của đợt trước đã đạt; thời lượng thực tế phụ thuộc môi trường CI/CD và nền tảng production.
+
+| Đợt | Phạm vi | Vai trò chính | Phụ thuộc | Gate hoàn thành |
+| --- | --- | --- | --- | --- |
+| 0 — Baseline | Chốt SLI, taxonomy lỗi, cardinality budget, retention và quyền truy cập | Tech lead + vận hành + security | Owner trực sự cố và kênh nhận alert | Có tài liệu quyết định; đo được baseline tải và dung lượng log hiện tại |
+| 1 — Nền tảng local | Compose override, Collector, Prometheus, Loki, Tempo, Grafana; scrape Keycloak | Platform/DevOps | Đợt 0 | Stack khởi động lặp lại được; config validation qua CI; data source được provision |
+| 2 — System visibility | Bootstrap OpenTelemetry, JSON log, API/dependency spans và metrics | Backend | Collector từ đợt 1 | API → PostgreSQL/Redis có trace; log nối bằng `trace_id`; không lộ secret |
+| 3 — Workflow visibility | Truyền trace context qua Redis, run/node/queue/outbox/worker metrics, Agent/LLM spans | Backend/runtime | Đợt 2 | Một run thành công và một run lỗi truy vết xuyên suốt; UUID không xuất hiện trong metric labels |
+| 4 — Vận hành | Dashboard, recording/alert rules, notification routing, runbook và failure drills | Platform + on-call | Đợt 3 | Alert firing/resolution đã thử; on-call xử lý được kịch bản worker/Redis/provider lỗi |
+| 5 — Production | TLS/auth, HA/storage, quota, sampling, backup, external probe và capacity test | Platform + security | Đợt 4 | Staging soak test đạt; rollback đã thử; production sign-off |
+
+### Trách nhiệm
+
+| Nhóm | Trách nhiệm |
+| --- | --- |
+| Backend | Instrument API, database/Redis client, outbox và chuẩn hóa error code |
+| Workflow/runtime | Instrument run/node/attempt, Agent container, MCP/LLM và trace propagation |
+| Platform/DevOps | Vận hành Collector/backends/exporter, storage, dashboard, alert routing và backup |
+| Security/data owner | Duyệt redaction, retention, quyền truy cập, tenant isolation và dữ liệu gửi tới dịch vụ managed |
+| On-call/service owner | Sở hữu SLO, ngưỡng cảnh báo, runbook và post-incident review |
+
+Mỗi alert phải có đúng một owner chính. Không bật alert production nếu chưa có người nhận, runbook, dashboard liên quan và tiêu chí tự resolve.
+
+### Rollout và rollback
+
+1. Bật telemetry ở local, sau đó staging với sampling thấp; so sánh overhead CPU, RAM, latency và số series trước/sau.
+2. Đưa dashboard lên trước, chạy alert ở chế độ ghi nhận hoặc kênh thử nghiệm để hiệu chỉnh ngưỡng.
+3. Canary một instance System API và một worker trước khi bật toàn bộ; theo dõi exporter queue, dropped spans/logs và event-loop latency.
+4. Rollback ứng dụng bằng `OTEL_SDK_DISABLED=true` và `LOG_FORMAT=text`; workflow phải tiếp tục chạy khi Collector/backend không khả dụng.
+5. Rollback stack bằng cách bỏ `docker/compose.observability.yaml`; không xóa volume telemetry trong cùng thao tác để còn dữ liệu điều tra.
+
+## 12. Runbook tối thiểu
+
+| Tín hiệu | Kiểm tra đầu tiên | Hành động an toàn ban đầu | Escalate khi |
+| --- | --- | --- | --- |
+| API down hoặc 5xx cao | `/health`, `/ready`, DB pool, PostgreSQL và deploy gần nhất | Dừng rollout; khôi phục instance khỏe; không restart database mù quáng | Không có instance ready hoặc lỗi dữ liệu/migration |
+| Outbox tăng | PostgreSQL, lỗi dispatcher và kết nối Redis | Giữ API theo dependency policy; phục hồi Redis/dispatcher; quan sát drain rate | Tuổi outbox vượt SLO hoặc backlog tiếp tục tăng sau phục hồi |
+| Queue bị kẹt | Worker heartbeat, Redis pending/reclaim, run đang `running` | Khởi động worker thay thế; để cơ chế reclaim/idempotency xử lý | Run có side effect không rõ trạng thái hoặc lặp lỗi cùng node |
+| Workflow lỗi tăng | `node_type`, `error_code`, trace và provider/MCP latency | Khoanh vùng node/provider; tắt trigger hoặc giới hạn concurrency nếu cần | Lỗi lan nhiều workflow/tenant hoặc có nguy cơ side effect lặp |
+| Agent timeout/OOM | Container exit reason, memory, output size và cleanup | Giảm concurrency; giữ artifact/log đã redaction để điều tra | Có container orphan, rò tài nguyên hoặc cleanup không hoàn tất |
+| Provider 429/lỗi | Tỷ lệ theo provider/model family, retry và `Retry-After` | Giảm concurrency; áp dụng backoff; chuyển provider chỉ theo policy đã duyệt | Budget lỗi cạn, nhiều provider cùng lỗi hoặc chi phí tăng bất thường |
+| Telemetry bị drop | Collector queue/refused metrics, disk và backend ingest | Giảm sampling/log volume; tăng buffer có giới hạn | Monitoring mất hoàn toàn hoặc gây ảnh hưởng workload |
+
+Sau sự cố, đối chiếu trạng thái cuối với `runs`/`run_steps`, không suy ra kết quả nghiệp vụ chỉ từ log hoặc trace. Mọi thao tác redrive/retry phải tuân theo idempotency và reconciliation của workflow.
+
+## 13. Các quyết định cần chốt trước production
+
+- dùng Grafana Alerting hay Alertmanager làm nơi routing chính;
+- self-host hay managed cho metrics/logs/traces, kèm vị trí lưu dữ liệu;
+- retention và quota theo môi trường, ước tính ingest/ngày và ngân sách;
+- sampling theo lưu lượng, cách giữ error/slow trace và cardinality budget;
+- kênh cảnh báo, lịch on-call, severity và thời gian phản hồi;
+- tenant isolation, quyền tra cứu prompt/content và quy trình cấp quyền tạm thời;
+- có triển khai Langfuse hay không; nếu có, trường dữ liệu nào được phép gửi.
+
+Các quyết định này phải được ghi thành cấu hình hoặc ADR trong repository. Không để giá trị production chỉ tồn tại dưới dạng chỉnh tay trong UI Grafana.

@@ -8,6 +8,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry import trace
+
 from domain.errors import WorkflowExecutionError
 from runtime.container_process import (
     ContainerRunner,
@@ -15,6 +17,7 @@ from runtime.container_process import (
 )
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("agentflow.agent-container")
 
 PASSTHROUGH_ENV = (
     "AGENT_PROVIDER",
@@ -167,6 +170,7 @@ class AgentContainerExecutor:
         self._runner = runner
         self._semaphore = semaphore or _shared_semaphore()
 
+    @tracer.start_as_current_span("agent.container.run")
     async def execute(
         self,
         request: dict[str, Any],
@@ -188,6 +192,13 @@ class AgentContainerExecutor:
 
         job_id = uuid.uuid4().hex
         container_name = f"agentflow-agent-{job_id}"
+        span = trace.get_current_span()
+        span.set_attributes(
+            {
+                "agentflow.agent.job_id": job_id,
+                "agentflow.agent.runtime": self.settings.image,
+            }
+        )
         command = build_agent_docker_command(self.settings, container_name)
         environment = dict(os.environ)
         # Model credentials must come from the workflow/provider selection for

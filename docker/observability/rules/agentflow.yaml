@@ -1,0 +1,41 @@
+groups:
+  - name: agentflow
+    rules:
+      - alert: AgentFlowSystemDown
+        expr: probe_success{job="agentflow-system-health"} == 0
+        for: 2m
+        labels:
+          severity: page
+          service: agentflow-system
+        annotations:
+          summary: AgentFlow System API health probe is failing
+          runbook: docs/observability.md#12-runbook-tối-thiểu
+
+      - alert: AgentFlowWorkerMissing
+        expr: time() - max(agentflow_worker_heartbeat_timestamp_seconds) > 60
+        for: 2m
+        labels:
+          severity: page
+          service: agentflow-workflow-worker
+        annotations:
+          summary: No AgentFlow workflow worker heartbeat in the last minute
+          runbook: docs/observability.md#12-runbook-tối-thiểu
+
+      - alert: AgentFlowOutboxDispatchFailing
+        expr: increase(agentflow_outbox_dispatches_total{status="failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+          service: agentflow-system
+        annotations:
+          summary: AgentFlow outbox dispatches are failing
+          runbook: docs/observability.md#12-runbook-tối-thiểu
+
+      - alert: TelemetryPipelineDropping
+        expr: rate(otelcol_exporter_send_failed_spans_total[5m]) > 0 or rate(otelcol_exporter_send_failed_metric_points_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+          service: observability
+        annotations:
+          summary: OpenTelemetry Collector is dropping telemetry

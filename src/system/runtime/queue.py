@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry.propagate import inject
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
@@ -16,6 +17,7 @@ class RunQueueMessage:
     message_id: str
     run_id: str
     reclaimed: bool = False
+    trace_context: dict[str, str] | None = None
 
 
 class RedisRunQueue:
@@ -55,10 +57,25 @@ class RedisRunQueue:
     async def ping(self) -> bool:
         return bool(await self.client.ping())
 
-    async def enqueue(self, run_id: str) -> str:
+    async def enqueue(
+        self, run_id: str, trace_context: dict[str, str] | None = None
+    ) -> str:
+        fields = {"run_id": run_id}
+        carrier: dict[str, str] = {}
+        if trace_context:
+            carrier.update(
+                {
+                    key: value
+                    for key, value in trace_context.items()
+                    if key in {"traceparent", "tracestate"} and value
+                }
+            )
+        else:
+            inject(carrier)
+        fields.update(carrier)
         return await self.client.xadd(
             self.stream,
-            {"run_id": run_id},
+            fields,
             maxlen=int(os.getenv("WORKFLOW_QUEUE_MAXLEN", "10000")),
             approximate=True,
         )
@@ -78,6 +95,11 @@ class RedisRunQueue:
                         message_id=str(message_id),
                         run_id=str(run_id),
                         reclaimed=reclaimed,
+                        trace_context={
+                            key: str(fields[key])
+                            for key in ("traceparent", "tracestate")
+                            if fields.get(key)
+                        },
                     )
                 )
         return messages

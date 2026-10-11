@@ -2,19 +2,21 @@
 
 import asyncio
 import logging
-import os
 import signal
 from datetime import UTC, datetime
 
+from opentelemetry import trace
+from opentelemetry.propagate import extract
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionFactory
+from core.telemetry import record_outbox_dispatch
 from domain.models import RunDispatch
 from runtime.queue import RedisRunQueue
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("agentflow.orchestrator")
+tracer = trace.get_tracer("agentflow.orchestrator")
 
 
 async def dispatch_batch(
@@ -31,14 +33,40 @@ async def dispatch_batch(
     dispatched_count = 0
     for dispatch in dispatches:
         dispatch.attempts = (dispatch.attempts or 0) + 1
-        try:
-            await queue.enqueue(str(dispatch.run_id))
-            dispatch.dispatched_at = datetime.now(UTC)
-            dispatch.last_error = None
-            dispatched_count += 1
-        except Exception as exc:  # noqa: BLE001 - outbox failures stay retryable.
-            dispatch.last_error = str(exc)[:500]
-            logger.warning("Could not dispatch run %s: %s", dispatch.run_id, exc)
+        carrier = {
+            key: value
+            for key, value in {
+                "traceparent": dispatch.traceparent,
+                "tracestate": dispatch.tracestate,
+            }.items()
+            if value
+        }
+        parent_context = extract(carrier)
+        with tracer.start_as_current_span(
+            "workflow.dispatch",
+            context=parent_context,
+            attributes={"agentflow.run.id": str(dispatch.run_id)},
+        ):
+            try:
+                # Inject the current dispatch span into Redis so the worker becomes
+                # its child while the original API context remains the trace root.
+                await queue.enqueue(str(dispatch.run_id))
+                dispatch.dispatched_at = datetime.now(UTC)
+                dispatch.last_error = None
+                dispatched_count += 1
+                record_outbox_dispatch("succeeded")
+            except Exception as exc:  # noqa: BLE001 - outbox stays retryable.
+                dispatch.last_error = str(exc)[:500]
+                record_outbox_dispatch("failed")
+                logger.warning(
+                    "Could not dispatch run %s: %s",
+                    dispatch.run_id,
+                    exc,
+                    extra={
+                        "event": "workflow.dispatch.failed",
+                        "run_id": dispatch.run_id,
+                    },
+                )
     await session.commit()
     return dispatched_count
 

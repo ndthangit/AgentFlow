@@ -1,16 +1,22 @@
 """DAG workflow runtime with conditional and parallel branch support."""
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+from core.telemetry import record_node_attempt
 from domain.errors import WorkflowExecutionError
 from runtime.restricted_python import execute_restricted_python
 
 AgentExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 LlmExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
+tracer = trace.get_tracer("agentflow.workflow")
 
 
 @dataclass(frozen=True)
@@ -250,11 +256,20 @@ async def execute_workflow(
         steps_by_id[node_id] = step
         await observe(step)
 
+    @tracer.start_as_current_span("workflow.node")
     async def execute_node(node_id: str) -> tuple[str, dict[str, Any] | None]:
         node = by_id[node_id]
         sequence = sequence_by_id[node_id]
         node_id = node["id"]
         node_type = node.get("type", "unknown")
+        span = trace.get_current_span()
+        span.set_attributes(
+            {
+                "agentflow.node.id": node_id,
+                "agentflow.node.type": node_type,
+            }
+        )
+        metric_started = time.perf_counter()
         async with semaphore:
             started_at = datetime.now(UTC)
             node_input: dict[str, Any] | None = None
@@ -376,6 +391,10 @@ async def execute_workflow(
                 )
                 steps_by_id[node_id] = completed_step
                 await observe(completed_step)
+                record_node_attempt(
+                    node_type, "succeeded", time.perf_counter() - metric_started
+                )
+                span.set_attribute("agentflow.node.status", "succeeded")
                 return node_id, node_output
             except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
                 states[node_id] = "failed"
@@ -398,6 +417,15 @@ async def execute_workflow(
                 )
                 steps_by_id[node_id] = failed_step
                 await observe(failed_step)
+                record_node_attempt(
+                    node_type,
+                    "failed",
+                    time.perf_counter() - metric_started,
+                    error_code,
+                )
+                span.set_attribute("agentflow.node.status", "failed")
+                span.set_attribute("error.type", error_code)
+                span.set_status(Status(StatusCode.ERROR, error_code))
                 return node_id, None
 
     while any(state == "pending" for state in states.values()):

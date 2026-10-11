@@ -46,6 +46,27 @@ Các endpoint local:
 | Redis | `127.0.0.1:6379` |
 | Filesystem MCP | `127.0.0.1:8002` |
 
+### Bật observability local
+
+Stack giám sát là Compose override tùy chọn, gồm OpenTelemetry Collector,
+Prometheus, Loki, Tempo, Alloy, Grafana và exporter cho PostgreSQL/Redis:
+
+```powershell
+docker compose -f compose.yaml -f compose.observability.yaml config
+docker compose -f compose.yaml -f compose.observability.yaml up -d --build
+docker compose -f compose.yaml -f compose.observability.yaml ps
+```
+
+| Service | URL local |
+| --- | --- |
+| Grafana | `http://localhost:3001` |
+| Prometheus | `http://localhost:9090` |
+
+Grafana dùng `GRAFANA_ADMIN_USER` và `GRAFANA_ADMIN_PASSWORD` trong file env.
+Datasource và dashboard AgentFlow được provision tự động. Dừng stack nhưng giữ dữ
+liệu bằng đúng danh sách file Compose và lệnh `down`; chỉ thêm `--volumes` khi chủ
+động xóa cả dữ liệu telemetry.
+
 Dừng local nhưng giữ dữ liệu:
 
 ```powershell
@@ -205,4 +226,5 @@ Có thể kiểm tra cả ba file mà không khởi động container:
 docker compose config --quiet
 docker compose --env-file .env.dev.example -f compose.yaml -f compose.dev.yaml config --quiet
 docker compose --env-file .env.prod.example -f compose.yaml -f compose.prod.yaml config --quiet
+docker compose --env-file .env.example -f compose.yaml -f compose.observability.yaml config --quiet
 ```

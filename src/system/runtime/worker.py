@@ -5,19 +5,32 @@ import logging
 import os
 import signal
 import socket
+import time
 import uuid
 
+from opentelemetry import trace
+from opentelemetry.propagate import extract
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select, update
 
 from core.database import SessionFactory
+from core.database import engine as database_engine
+from core.telemetry import (
+    configure_telemetry,
+    record_run_completed,
+    record_worker_heartbeat,
+)
 from domain.models import FlowRun, LlmProvider, McpServer, RunStep, WorkflowVersion
 from providers.secrets import ProviderSecretStore
 from runtime.agent_executor import create_agent_executor, create_llm_executor
 from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
 from runtime.queue import RedisRunQueue, RunQueueMessage
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+configure_telemetry(
+    "agentflow-workflow-worker", sqlalchemy_engine=database_engine.sync_engine
+)
 logger = logging.getLogger("agentflow.worker")
+tracer = trace.get_tracer("agentflow.worker")
 
 
 async def claim_run(run_id: uuid.UUID, *, reclaimed: bool) -> bool:
@@ -137,19 +150,56 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
         await queue.acknowledge(message.message_id)
         return
 
-    try:
-        should_execute = await claim_run(run_id, reclaimed=message.reclaimed)
-        if not should_execute:
-            logger.info("Acknowledging duplicate or terminal run %s", run_id)
+    parent_context = extract(message.trace_context or {})
+    with tracer.start_as_current_span(
+        "workflow.run",
+        context=parent_context,
+        attributes={
+            "agentflow.run.id": str(run_id),
+            "messaging.system": "redis",
+            "messaging.operation": "process",
+        },
+    ) as span:
+        started = time.perf_counter()
+        try:
+            should_execute = await claim_run(run_id, reclaimed=message.reclaimed)
+            if not should_execute:
+                logger.info(
+                    "Acknowledging duplicate or terminal run %s",
+                    run_id,
+                    extra={"event": "workflow.run.duplicate", "run_id": run_id},
+                )
+                await queue.acknowledge(message.message_id)
+                return
+            logger.info(
+                "Executing workflow run %s",
+                run_id,
+                extra={"event": "workflow.run.started", "run_id": run_id},
+            )
+            execution = await load_and_execute(run_id)
+            await persist_execution(run_id, execution)
             await queue.acknowledge(message.message_id)
-            return
-        logger.info("Executing workflow run %s", run_id)
-        execution = await load_and_execute(run_id)
-        await persist_execution(run_id, execution)
-        await queue.acknowledge(message.message_id)
-        logger.info("Workflow run %s finished with %s", run_id, execution.status)
-    except Exception:  # Leave the message pending for XAUTOCLAIM.
-        logger.exception("Workflow run %s crashed; message will be reclaimed", run_id)
+            duration = time.perf_counter() - started
+            span.set_attribute("agentflow.run.status", execution.status)
+            record_run_completed(execution.status, duration)
+            logger.info(
+                "Workflow run %s finished with %s",
+                run_id,
+                execution.status,
+                extra={
+                    "event": "workflow.run.completed",
+                    "run_id": run_id,
+                    "status": execution.status,
+                },
+            )
+        except Exception as exc:  # Leave the message pending for XAUTOCLAIM.
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+            logger.exception(
+                "Workflow run %s crashed; message will be reclaimed",
+                run_id,
+                extra={"event": "workflow.run.crashed", "run_id": run_id},
+            )
 
 
 async def run_worker() -> None:
@@ -167,6 +217,7 @@ async def run_worker() -> None:
     next_reclaim = 0.0
     try:
         while not stop.is_set():
+            record_worker_heartbeat()
             now = loop.time()
             messages: list[RunQueueMessage] = []
             if now >= next_reclaim:

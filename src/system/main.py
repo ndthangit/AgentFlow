@@ -15,8 +15,12 @@ from api.runs import router as runs_router
 from api.skills import router as skills_router
 from api.workflows import router as workflows_router
 from core.database import SessionFactory
+from core.database import engine as database_engine
+from core.telemetry import configure_telemetry, instrument_fastapi
 from runtime.orchestrator import orchestrate
 from services.skills import sync_builtin_skills
+
+configure_telemetry("agentflow-system", sqlalchemy_engine=database_engine.sync_engine)
 
 
 @asynccontextmanager
@@ -56,6 +60,7 @@ def create_app() -> FastAPI:
     application.include_router(skills_router)
     application.include_router(workflows_router)
     application.include_router(runs_router)
+    instrument_fastapi(application)
     return application
 
 

@@ -1,0 +1,42 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "System health probes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "probe_success{job=\"agentflow-system-health\"}", "legendFormat": "{{instance}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "PostgreSQL connections",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "pg_stat_database_numbackends{datname=\"agentflow\"}", "legendFormat": "connections", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis memory",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "redis_memory_used_bytes", "legendFormat": "used", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
+    },
+    {
+      "type": "logs",
+      "title": "System errors",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{service_name=~\"system|workflow-worker\",level=~\"ERROR|CRITICAL\"}", "refId": "A"}],
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 8}
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["agentflow", "system"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "AgentFlow / System overview",
+  "uid": "agentflow-system-overview",
+  "version": 1
+}

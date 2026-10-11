@@ -1,0 +1,49 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Runs started",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(agentflow_runs_started_total[5m]))", "legendFormat": "runs/s", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Run completion by status",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (status) (rate(agentflow_runs_completed_total[5m]))", "legendFormat": "{{status}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Node failures by type",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (node_type, error_code) (rate(agentflow_node_attempts_total{status=\"failed\"}[5m]))", "legendFormat": "{{node_type}} / {{error_code}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker heartbeat age",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "time() - max(agentflow_worker_heartbeat_timestamp_seconds)", "legendFormat": "seconds", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "type": "logs",
+      "title": "Workflow worker logs",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{service_name=\"workflow-worker\"}", "refId": "A"}],
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 8}
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["agentflow", "workflow"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "AgentFlow / Workflow runtime",
+  "uid": "agentflow-workflow-runtime",
+  "version": 1
+}

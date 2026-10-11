@@ -31,7 +31,18 @@ class RunQueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_reads_new_and_reclaimed_stream_messages(self):
         client = AsyncMock()
         client.xreadgroup.return_value = [
-            ["agentflow:workflow-runs", [["1-0", {"run_id": "run-new"}]]]
+            [
+                "agentflow:workflow-runs",
+                [
+                    [
+                        "1-0",
+                        {
+                            "run_id": "run-new",
+                            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                        },
+                    ]
+                ],
+            ]
         ]
         client.xautoclaim.return_value = [
             "0-0",
@@ -45,6 +56,10 @@ class RunQueueTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(new_messages[0].run_id, "run-new")
         self.assertFalse(new_messages[0].reclaimed)
+        self.assertEqual(
+            new_messages[0].trace_context,
+            {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+        )
         self.assertEqual(reclaimed[0].run_id, "run-reclaimed")
         self.assertTrue(reclaimed[0].reclaimed)
 

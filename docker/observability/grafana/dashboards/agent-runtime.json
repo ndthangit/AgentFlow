@@ -1,0 +1,35 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Agent and LLM node throughput",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by (node_type, status) (rate(agentflow_node_attempts_total{node_type=~\"agent|llm.call\"}[5m]))", "legendFormat": "{{node_type}} / {{status}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent and LLM p95 duration",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, node_type) (rate(agentflow_node_duration_seconds_bucket{node_type=~\"agent|llm.call\"}[5m])))", "legendFormat": "{{node_type}}", "refId": "A"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "logs",
+      "title": "Agent/runtime errors",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{"expr": "{service_name=\"workflow-worker\",level=~\"WARNING|ERROR|CRITICAL\"}", "refId": "A"}],
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 8}
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["agentflow", "agent", "llm"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "title": "AgentFlow / Agent runtime and LLM",
+  "uid": "agentflow-agent-runtime",
+  "version": 1
+}
