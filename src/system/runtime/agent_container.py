@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.propagate import inject
 
+from core.telemetry import annotate_langfuse_span
 from domain.errors import WorkflowExecutionError
 from runtime.container_process import (
     ContainerRunner,
@@ -19,7 +21,7 @@ from runtime.container_process import (
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("agentflow.agent-container")
 
-PASSTHROUGH_ENV = (
+MODEL_PASSTHROUGH_ENV = (
     "AGENT_PROVIDER",
     "AGENT_MODEL",
     "AGENT_MCP_SERVERS",
@@ -27,7 +29,20 @@ PASSTHROUGH_ENV = (
     "OPENROUTER_API_KEY",
 )
 
-MODEL_ENV = PASSTHROUGH_ENV + (
+TELEMETRY_ENV = (
+    "TRACEPARENT",
+    "TRACESTATE",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_SERVICE_NAME",
+    "DEPLOYMENT_ENVIRONMENT",
+    "OPENINFERENCE_HIDE_INPUTS",
+    "OPENINFERENCE_HIDE_OUTPUTS",
+)
+
+PASSTHROUGH_ENV = MODEL_PASSTHROUGH_ENV + TELEMETRY_ENV
+
+MODEL_ENV = MODEL_PASSTHROUGH_ENV + (
     "OPENAI_COMPATIBLE_BASE_URL",
     "OPENAI_COMPATIBLE_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -199,6 +214,15 @@ class AgentContainerExecutor:
                 "agentflow.agent.runtime": self.settings.image,
             }
         )
+        annotate_langfuse_span(
+            span,
+            "span",
+            input_data=request,
+            metadata={
+                "agent_job_id": job_id,
+                "agent_runtime": self.settings.image,
+            },
+        )
         command = build_agent_docker_command(self.settings, container_name)
         environment = dict(os.environ)
         # Model credentials must come from the workflow/provider selection for
@@ -207,6 +231,13 @@ class AgentContainerExecutor:
             environment.pop(name, None)
         if environment_overrides:
             environment.update(environment_overrides)
+        environment["OTEL_SERVICE_NAME"] = "agentflow-agent-runtime"
+        carrier: dict[str, str] = {}
+        inject(carrier)
+        if traceparent := carrier.get("traceparent"):
+            environment["TRACEPARENT"] = traceparent
+        if tracestate := carrier.get("tracestate"):
+            environment["TRACESTATE"] = tracestate
         async with self._semaphore:
             result = await self._runner(
                 command,
@@ -245,4 +276,6 @@ class AgentContainerExecutor:
             raise WorkflowExecutionError(
                 "Agent runtime must return a RunResult JSON object"
             )
-        return result_document["output"]
+        output = result_document["output"]
+        annotate_langfuse_span(span, "span", output_data=output)
+        return output

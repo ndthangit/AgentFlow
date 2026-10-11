@@ -1,6 +1,6 @@
 # Tích hợp giám sát và observability cho AgentFlow
 
-Ngày cập nhật: **11/10/2026**. Trạng thái: **đã triển khai lát cắt đầu tiên cho local/Compose và instrumentation backend; production hardening và Langfuse chưa triển khai**.
+Ngày cập nhật: **11/10/2026**. Trạng thái: **đã triển khai stack observability và Langfuse self-host cho local/Compose, gồm trace xuyên API/queue/worker/node/Agent runtime; production hardening chưa hoàn tất**.
 
 Tài liệu này mô tả cách bổ sung metrics, logs, traces, dashboard và cảnh báo cho AgentFlow. Mục tiêu là trả lời được bốn câu hỏi vận hành:
 
@@ -63,7 +63,7 @@ flowchart LR
     LOKI --> GRAFANA
     PROM --> ALERT[Alertmanager hoặc Grafana Alerting]
 
-    WORKER -. LLM observations tùy chọn .-> LANGFUSE[Langfuse]
+    OTEL -->|OTLP/HTTP: workflow và LLM observations| LANGFUSE[Langfuse]
 ```
 
 OpenTelemetry Collector là ranh giới thu nhận để ứng dụng không phụ thuộc trực tiếp vào một backend. Collector nhận OTLP, batch/lọc telemetry rồi xuất metrics cho Prometheus và traces cho Tempo. OpenTelemetry cung cấp instrumentation và đường truyền telemetry, không phải nơi lưu trữ hay dashboard; xem [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) và [cấu hình OTLP exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
@@ -79,7 +79,7 @@ OpenTelemetry Collector là ranh giới thu nhận để ứng dụng không ph�
 | Dashboard và alert | Grafana; Alertmanager khi cần routing độc lập | Provision cấu hình từ Git, không cấu hình tay ở production |
 | Hạ tầng | Keycloak metrics, postgres/Redis exporter, cAdvisor/node exporter | Node Exporter dùng cho Linux; Windows host dùng Windows Exporter |
 | Synthetic health | Prometheus Blackbox Exporter hoặc probe của nền tảng | Kiểm tra `/health` và `/ready` từ bên ngoài process |
-| Quan sát LLM tùy chọn | Langfuse | Chỉ cho generation/token/cost/latency đã qua policy dữ liệu |
+| Quan sát workflow và LLM | Langfuse | Run/node input-output, generation/token/latency đã redaction và giới hạn kích thước |
 
 Có thể thay Prometheus/Loki/Tempo bằng dịch vụ managed hỗ trợ OTLP mà không đổi semantic instrumentation trong ứng dụng. Grafana hỗ trợ provision data source và dashboard bằng file để version-control; xem [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).
 
@@ -362,18 +362,38 @@ Alert khởi đầu:
 
 Dùng `for` để tránh alert chập chờn và ghi annotation có dashboard/runbook URL. Prometheus alerting rules hỗ trợ điều kiện giữ trong một khoảng trước khi firing; xem [Prometheus alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/). Không gửi `run_id` vào notification tổng quát; người trực truy từ trace/log theo thời gian và service.
 
-### Giai đoạn 5 — Langfuse tùy chọn
+### Giai đoạn 5 — Langfuse self-host (đã triển khai cho local)
 
-Chỉ thêm Langfuse khi cần phân tích chất lượng/cost của LLM sâu hơn dashboard vận hành:
+`docker/compose.langfuse.yaml` bổ sung Langfuse web/worker, PostgreSQL riêng,
+ClickHouse, Redis và MinIO. Đây vẫn là override tùy chọn để Compose lõi không phải
+chịu chi phí tài nguyên khi không cần quan sát workflow/LLM.
 
-- một AgentFlow run ánh xạ thành Langfuse trace;
-- node/attempt ánh xạ thành span;
-- mỗi LLM request ánh xạ thành generation;
-- gửi provider, model, latency, usage, cost estimate, error code và các tag hữu hạn;
-- prompt/completion/tool content mặc định tắt; chỉ bật theo project khi có consent, redaction và retention phù hợp;
-- lỗi Langfuse không được làm fail node hoặc thay trạng thái `run_steps`.
+Ánh xạ đang dùng:
 
-Langfuse self-host bổ sung đáng kể thành phần lưu trữ/vận hành, vì vậy không ghép vào Compose mặc định. Có thể dùng deployment riêng hoặc managed service sau đánh giá dữ liệu. Xem [Langfuse observability data model](https://langfuse.com/docs/observability/data-model).
+- request tạo run và `workflow.run` là chain/root observation, tương quan bằng
+  `run_id`, `workflow_id` và `workflow_version_id`;
+- mỗi node là observation; Agent node dùng type `agent`, node thông thường dùng
+  `span` và cả input/output/status/error đều được đính kèm;
+- lời gọi provider trực tiếp là `generation`, kèm provider/model và token usage;
+- LangChain/LangGraph trong disposable Agent container được OpenInference tự động
+  instrument, đồng thời nhận `traceparent`/`tracestate` từ worker;
+- Collector lọc theo `agentflow.langfuse.export` hoặc
+  `openinference.span.kind`, rồi gửi OTLP/HTTP đến `/api/public/otel`; mọi trace vẫn
+  được gửi sang Tempo;
+- key giống credential được thay bằng `[REDACTED]`, chuỗi và collection bị giới
+  hạn, payload quá `LANGFUSE_MAX_IO_BYTES` chỉ còn kích thước và SHA-256;
+- exporter dùng queue/retry bất đồng bộ; lỗi Langfuse không làm fail node hoặc thay
+  trạng thái `run_steps`.
+
+Override local/dev đặt `LANGFUSE_TRACES_SAMPLER_ARG=1.0` để lưu mọi workflow run.
+Nếu giảm giá trị này thì sampling được quyết định tại root API và toàn bộ cây span
+của run đó cùng được giữ hoặc bỏ; không nên kỳ vọng Langfuse vẫn có đủ mọi run.
+
+Khởi động và kiểm tra theo phần “Bật Langfuse local” trong `docker/README.md`.
+`LANGFUSE_ENABLED=false` tắt xuất workflow observation. Production nên bắt đầu với
+`LANGFUSE_ENABLED=false`, `OPENINFERENCE_HIDE_INPUTS=true` và
+`OPENINFERENCE_HIDE_OUTPUTS=true`, chỉ bật sau khi chốt phân loại dữ liệu, quyền
+truy cập và retention. Xem [Langfuse OpenTelemetry integration](https://langfuse.com/integrations/native/opentelemetry) và [OpenInference data configuration](https://arize-ai.github.io/openinference/spec/configuration.html).
 
 ## 7. Readiness, liveness và dependency policy
 

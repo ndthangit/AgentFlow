@@ -10,13 +10,20 @@ from typing import Any
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from core.telemetry import record_node_attempt
+from core.telemetry import annotate_langfuse_span, record_node_attempt
 from domain.errors import WorkflowExecutionError
 from runtime.restricted_python import execute_restricted_python
 
 AgentExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 LlmExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 tracer = trace.get_tracer("agentflow.workflow")
+
+
+def _langfuse_node_type(node_type: str) -> str:
+    return {
+        "agent": "agent",
+        "llm.call": "chain",
+    }.get(node_type, "span")
 
 
 @dataclass(frozen=True)
@@ -269,6 +276,21 @@ async def execute_workflow(
                 "agentflow.node.type": node_type,
             }
         )
+        annotate_langfuse_span(
+            span,
+            _langfuse_node_type(node_type),
+            metadata={
+                "node_id": node_id,
+                "node_type": node_type,
+                "node_name": node.get("name", node_id),
+                "sequence": sequence,
+            },
+            model=(
+                str(node.get("config", {}).get("model"))
+                if node_type == "llm.call" and node.get("config", {}).get("model")
+                else None
+            ),
+        )
         metric_started = time.perf_counter()
         async with semaphore:
             started_at = datetime.now(UTC)
@@ -395,6 +417,13 @@ async def execute_workflow(
                     node_type, "succeeded", time.perf_counter() - metric_started
                 )
                 span.set_attribute("agentflow.node.status", "succeeded")
+                annotate_langfuse_span(
+                    span,
+                    _langfuse_node_type(node_type),
+                    input_data=node_input,
+                    output_data=node_output,
+                    metadata={"status": "succeeded"},
+                )
                 return node_id, node_output
             except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
                 states[node_id] = "failed"
@@ -426,6 +455,14 @@ async def execute_workflow(
                 span.set_attribute("agentflow.node.status", "failed")
                 span.set_attribute("error.type", error_code)
                 span.set_status(Status(StatusCode.ERROR, error_code))
+                annotate_langfuse_span(
+                    span,
+                    _langfuse_node_type(node_type),
+                    input_data=node_input,
+                    metadata={"status": "failed", "error_code": error_code},
+                    level="ERROR",
+                    status_message=str(exc),
+                )
                 return node_id, None
 
     while any(state == "pending" for state in states.values()):

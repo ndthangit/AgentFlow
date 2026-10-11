@@ -8,10 +8,11 @@ import sys
 from pydantic import ValidationError
 
 from agent.contracts import AgentRunError, RunRequest
-from agent.runtime import run_agent
+from agent.telemetry import configure_agent_telemetry, shutdown_agent_telemetry
 
 
 def main() -> None:
+    telemetry = configure_agent_telemetry()
     parser = argparse.ArgumentParser(description="Run the AgentFlow sample planner")
     parser.add_argument(
         "--task", help="Task to plan; omit to read a JSON request from stdin"
@@ -21,6 +22,9 @@ def main() -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     try:
+        # Import after instrumentation is installed so LangChain callbacks are traced.
+        from agent.runtime import run_agent
+
         request = (
             RunRequest(task=args.task)
             if args.task is not None
@@ -43,6 +47,8 @@ def main() -> None:
     except AgentRunError as exc:
         print(json.dumps({"error": {"code": exc.code, "message": exc.message}}))
         raise SystemExit(1) from None
+    finally:
+        shutdown_agent_telemetry(telemetry)
 
 
 if __name__ == "__main__":

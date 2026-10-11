@@ -187,7 +187,7 @@ Các bảng trên vẫn thuộc schema `system` trong môi trường hiện tạ
 
 ### Langfuse và lịch sử nghiệp vụ
 
-`run_steps` là nguồn dữ liệu chính cho màn hình lịch sử vì nó cùng quyền sở hữu và vòng đời với workflow run. Langfuse phù hợp làm lớp observability tùy chọn cho LLM generation, token, cost và latency: một AgentFlow run ánh xạ thành trace, mỗi node/LLM call thành observation. Không dùng Langfuse thay cho `run_steps`, và không tự đưa secret hoặc payload nhạy cảm vào trace. Bản self-host hiện cần thêm web/worker, Redis hoặc Valkey, ClickHouse và blob storage, nên chưa được thêm vào Compose MVP. Tham khảo [Langfuse data model](https://langfuse.com/docs/observability/data-model) và [self-hosting sizing](https://langfuse.com/self-hosting/configuration/scaling).
+`run_steps` là nguồn dữ liệu chính cho màn hình lịch sử vì nó cùng quyền sở hữu và vòng đời với workflow run. Langfuse là lớp observability tùy chọn: một AgentFlow run ánh xạ thành trace, mỗi node/LLM call thành observation. Không dùng Langfuse thay cho `run_steps`, và không tự đưa secret hoặc payload nhạy cảm vào trace. Local self-host được triển khai bằng override `docker/compose.langfuse.yaml`; xem cách vận hành và policy input/output trong [tài liệu observability](observability.md). Tham khảo [Langfuse data model](https://langfuse.com/docs/observability/data-model) và [self-hosting sizing](https://langfuse.com/self-hosting/configuration/scaling).
 
 Kiến trúc metrics/logs/traces, quy tắc correlation và các bước triển khai monitoring stack được mô tả tại [tích hợp giám sát và observability](observability.md).
 

@@ -3,11 +3,12 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException
+from opentelemetry import trace
 from opentelemetry.propagate import inject
 from sqlalchemy import select
 
 from api.dependencies import Claims, DatabaseSession, get_owned_workflow
-from core.telemetry import record_run_started
+from core.telemetry import annotate_langfuse_span, record_run_started
 from domain.models import FlowRun, RunDispatch, RunStep, WorkflowVersion
 from domain.schemas import FlowRunCreate, FlowRunView, RunStepView
 from runtime.engine import ordered_nodes
@@ -56,6 +57,19 @@ async def enqueue_flow_run(
             status="pending",
         )
         for sequence, node in enumerate(ordered, start=1)
+    )
+    annotate_langfuse_span(
+        trace.get_current_span(),
+        "chain",
+        input_data=request.input,
+        metadata={
+            "run_id": flow_run.id,
+            "workflow_id": workflow_id,
+            "workflow_version_id": version.id,
+            "workflow_version": version.version,
+            "trace_name": "workflow.run",
+            "trigger_type": "api",
+        },
     )
     trace_context: dict[str, str] = {}
     inject(trace_context)

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import logging
 import os
 import re
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,13 +29,171 @@ from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
 _configured = False
 _instruments: dict[str, Any] = {}
+_langfuse_context: ContextVar[dict[str, str] | None] = ContextVar(
+    "agentflow_langfuse_context", default=None
+)
 _SECRET_PATTERN = re.compile(
     r"(?i)(authorization|api[_-]?key|token|password)(\s*[:=]\s*)([^\s,;]+)"
 )
+_SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?i)(authorization|cookie|secret|token|password|api[_-]?key|access[_-]?key)"
+)
+_LANGFUSE_TYPES = {
+    "span",
+    "generation",
+    "event",
+    "embedding",
+    "agent",
+    "tool",
+    "chain",
+    "retriever",
+    "guardrail",
+    "evaluator",
+}
 
 
 def _redact(value: str) -> str:
     return _SECRET_PATTERN.sub(r"\1\2[REDACTED]", value)
+
+
+def _sanitize_payload(value: Any, *, depth: int = 0) -> Any:
+    """Return bounded JSON data with credential-like fields removed."""
+    if depth >= 12:
+        return "[MAX_DEPTH]"
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 200:
+                sanitized["__truncated_items__"] = len(value) - index
+                break
+            key_text = str(key)[:256]
+            sanitized[key_text] = (
+                "[REDACTED]"
+                if _SENSITIVE_KEY_PATTERN.search(key_text)
+                else _sanitize_payload(item, depth=depth + 1)
+            )
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        sanitized_items = [
+            _sanitize_payload(item, depth=depth + 1) for item in items[:200]
+        ]
+        if len(items) > 200:
+            sanitized_items.append({"__truncated_items__": len(items) - 200})
+        return sanitized_items
+    if isinstance(value, str):
+        return _redact(value)[:16_384]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _redact(str(value))[:16_384]
+
+
+def _payload_attribute(value: Any) -> str:
+    sanitized = _sanitize_payload(value)
+    encoded = json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+    max_bytes = max(1024, int(os.getenv("LANGFUSE_MAX_IO_BYTES", "65536")))
+    raw = encoded.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return encoded
+    return json.dumps(
+        {
+            "truncated": True,
+            "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        },
+        separators=(",", ":"),
+    )
+
+
+def langfuse_enabled() -> bool:
+    return os.getenv("LANGFUSE_ENABLED", "false").lower() == "true"
+
+
+@contextmanager
+def langfuse_trace_context(**metadata: Any) -> Iterator[None]:
+    """Propagate non-sensitive trace metadata through concurrent async tasks."""
+    current = dict(_langfuse_context.get() or {})
+    current.update(
+        {key: str(value)[:500] for key, value in metadata.items() if value is not None}
+    )
+    token = _langfuse_context.set(current)
+    try:
+        yield
+    finally:
+        _langfuse_context.reset(token)
+
+
+def annotate_langfuse_span(
+    span: Any,
+    observation_type: str,
+    *,
+    input_data: Any = None,
+    output_data: Any = None,
+    metadata: Mapping[str, Any] | None = None,
+    model: str | None = None,
+    usage: Mapping[str, Any] | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+) -> None:
+    """Add Langfuse OTLP attributes without coupling runtime code to its SDK."""
+    if not langfuse_enabled():
+        return
+    if observation_type not in _LANGFUSE_TYPES:
+        observation_type = "span"
+    span.set_attribute("agentflow.langfuse.export", True)
+    span.set_attribute("langfuse.observation.type", observation_type)
+    span.set_attribute(
+        "langfuse.environment", os.getenv("DEPLOYMENT_ENVIRONMENT", "local")
+    )
+    if input_data is not None:
+        span.set_attribute("langfuse.observation.input", _payload_attribute(input_data))
+    if output_data is not None:
+        span.set_attribute(
+            "langfuse.observation.output", _payload_attribute(output_data)
+        )
+    combined_metadata: dict[str, Any] = dict(_langfuse_context.get() or {})
+    if metadata:
+        combined_metadata.update(metadata)
+    for key, value in combined_metadata.items():
+        safe_key = re.sub(r"[^A-Za-z0-9_]", "_", str(key))[:100]
+        if safe_key and value is not None:
+            span.set_attribute(
+                f"langfuse.observation.metadata.{safe_key}",
+                _redact(str(value))[:500],
+            )
+            span.set_attribute(
+                f"langfuse.trace.metadata.{safe_key}",
+                _redact(str(value))[:500],
+            )
+    trace_name = combined_metadata.get("trace_name", "workflow.run")
+    span.set_attribute("langfuse.trace.name", str(trace_name)[:200])
+    span.set_attribute(
+        "langfuse.trace.tags",
+        [
+            "agentflow",
+            os.getenv("DEPLOYMENT_ENVIRONMENT", "local"),
+        ],
+    )
+    if model:
+        span.set_attribute("langfuse.observation.model.name", model[:300])
+    if usage:
+        normalized_usage = {
+            key: int(value)
+            for key, value in usage.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        if normalized_usage:
+            span.set_attribute(
+                "langfuse.observation.usage_details",
+                json.dumps(normalized_usage, separators=(",", ":")),
+            )
+    if level:
+        span.set_attribute("langfuse.observation.level", level.upper())
+    if status_message:
+        span.set_attribute(
+            "langfuse.observation.status_message",
+            _redact(status_message)[:1000],
+        )
 
 
 class JsonFormatter(logging.Formatter):

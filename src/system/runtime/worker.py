@@ -16,7 +16,9 @@ from sqlalchemy import select, update
 from core.database import SessionFactory
 from core.database import engine as database_engine
 from core.telemetry import (
+    annotate_langfuse_span,
     configure_telemetry,
+    langfuse_trace_context,
     record_run_completed,
     record_worker_heartbeat,
 )
@@ -83,6 +85,20 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
         graph = version.graph
         run_input = flow_run.input
 
+    trace_metadata = {
+        "run_id": run_id,
+        "workflow_id": version.workflow_id,
+        "workflow_version_id": version.id,
+        "workflow_version": version.version,
+        "trace_name": "workflow.run",
+    }
+    annotate_langfuse_span(
+        trace.get_current_span(),
+        "chain",
+        input_data=run_input,
+        metadata=trace_metadata,
+    )
+
     secret_store = ProviderSecretStore.from_config()
     execute_agent = create_agent_executor(
         graph, providers, secret_store, mcp_servers=mcp_servers
@@ -92,13 +108,14 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
     async def persist_progress(step: ExecutionStep) -> None:
         await persist_step(run_id, step)
 
-    return await execute_workflow(
-        graph,
-        run_input,
-        execute_agent,
-        on_step_update=persist_progress,
-        execute_llm=execute_llm,
-    )
+    with langfuse_trace_context(**trace_metadata):
+        return await execute_workflow(
+            graph,
+            run_input,
+            execute_agent,
+            on_step_update=persist_progress,
+            execute_llm=execute_llm,
+        )
 
 
 async def persist_step(run_id: uuid.UUID, step: ExecutionStep) -> None:
@@ -160,6 +177,15 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
             "messaging.operation": "process",
         },
     ) as span:
+        annotate_langfuse_span(
+            span,
+            "chain",
+            metadata={
+                "run_id": run_id,
+                "trace_name": "workflow.run",
+                "stage": "execution",
+            },
+        )
         started = time.perf_counter()
         try:
             should_execute = await claim_run(run_id, reclaimed=message.reclaimed)
@@ -181,6 +207,13 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
             await queue.acknowledge(message.message_id)
             duration = time.perf_counter() - started
             span.set_attribute("agentflow.run.status", execution.status)
+            annotate_langfuse_span(
+                span,
+                "chain",
+                output_data=execution.output,
+                metadata={"status": execution.status},
+                level="ERROR" if execution.status == "failed" else "DEFAULT",
+            )
             record_run_completed(execution.status, duration)
             logger.info(
                 "Workflow run %s finished with %s",
@@ -195,6 +228,13 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
         except Exception as exc:  # Leave the message pending for XAUTOCLAIM.
             span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+            annotate_langfuse_span(
+                span,
+                "chain",
+                metadata={"status": "crashed"},
+                level="ERROR",
+                status_message=type(exc).__name__,
+            )
             logger.exception(
                 "Workflow run %s crashed; message will be reclaimed",
                 run_id,

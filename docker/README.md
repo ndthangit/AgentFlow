@@ -52,9 +52,9 @@ Stack giám sát là Compose override tùy chọn, gồm OpenTelemetry Collector
 Prometheus, Loki, Tempo, Alloy, Grafana và exporter cho PostgreSQL/Redis:
 
 ```powershell
-docker compose -f compose.yaml -f compose.observability.yaml config
-docker compose -f compose.yaml -f compose.observability.yaml up -d --build
-docker compose -f compose.yaml -f compose.observability.yaml ps
+docker compose -f compose.yaml -f compose.langfuse.yaml -f compose.observability.yaml config
+docker compose -f compose.yaml -f compose.langfuse.yaml -f compose.observability.yaml up -d --build
+docker compose -f compose.yaml -f compose.langfuse.yaml -f compose.observability.yaml ps
 ```
 
 | Service | URL local |
@@ -66,6 +66,48 @@ Grafana dùng `GRAFANA_ADMIN_USER` và `GRAFANA_ADMIN_PASSWORD` trong file env.
 Datasource và dashboard AgentFlow được provision tự động. Dừng stack nhưng giữ dữ
 liệu bằng đúng danh sách file Compose và lệnh `down`; chỉ thêm `--volumes` khi chủ
 động xóa cả dữ liệu telemetry.
+
+### Bật Langfuse local
+
+Langfuse là override thứ ba, dùng Collector hiện có để nhân bản có chọn lọc các
+workflow span sang Langfuse. Tempo vẫn nhận toàn bộ distributed trace; Langfuse chỉ
+nhận run, node, Agent container và LLM observation đã được đánh dấu.
+
+```powershell
+docker compose `
+  -f compose.yaml `
+  -f compose.observability.yaml `
+  -f compose.langfuse.yaml `
+  config --quiet
+
+docker compose `
+  -f compose.yaml `
+  -f compose.observability.yaml `
+  -f compose.langfuse.yaml `
+  up -d --build
+```
+
+Mở `http://localhost:3002`, đăng nhập bằng `LANGFUSE_INIT_USER_EMAIL` và
+`LANGFUSE_INIT_USER_PASSWORD`. Project và API key được headless-init từ
+`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`; các key này đồng thời được Collector
+dùng để ingest OTLP. Các giá trị mặc định chỉ dành cho local. Với server dev hoặc
+production phải thay toàn bộ password, salt, key và `LANGFUSE_ENCRYPTION_KEY` trước
+khi khởi động lần đầu; `LANGFUSE_PUBLIC_URL` phải là URL HTTPS qua reverse proxy.
+
+Input/output được lọc các field giống credential, giới hạn bởi
+`LANGFUSE_MAX_IO_BYTES`, rồi mới gửi. Đặt `LANGFUSE_ENABLED=false` để ngừng xuất dữ
+liệu workflow; đặt `OPENINFERENCE_HIDE_INPUTS=true` và
+`OPENINFERENCE_HIDE_OUTPUTS=true` để ẩn payload do LangChain instrumentation sinh
+ra. Khi bật override, `LANGFUSE_TRACES_SAMPLER_ARG=1.0` bảo đảm mọi run được lấy
+mẫu; production có thể giảm tỷ lệ sau khi chốt retention và dung lượng. `runs` và
+`run_steps` vẫn là dữ liệu nghiệp vụ có thẩm quyền.
+
+Kiểm tra nhanh:
+
+```powershell
+docker compose -f compose.yaml -f compose.observability.yaml -f compose.langfuse.yaml ps
+docker compose -f compose.yaml -f compose.observability.yaml -f compose.langfuse.yaml logs --tail 100 otel-collector langfuse-web langfuse-worker
+```
 
 Dừng local nhưng giữ dữ liệu:
 
@@ -227,4 +269,5 @@ docker compose config --quiet
 docker compose --env-file .env.dev.example -f compose.yaml -f compose.dev.yaml config --quiet
 docker compose --env-file .env.prod.example -f compose.yaml -f compose.prod.yaml config --quiet
 docker compose --env-file .env.example -f compose.yaml -f compose.observability.yaml config --quiet
+docker compose --env-file .env.example -f compose.yaml -f compose.observability.yaml -f compose.langfuse.yaml config --quiet
 ```

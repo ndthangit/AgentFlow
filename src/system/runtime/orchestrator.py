@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionFactory
-from core.telemetry import record_outbox_dispatch
+from core.telemetry import annotate_langfuse_span, record_outbox_dispatch
 from domain.models import RunDispatch
 from runtime.queue import RedisRunQueue
 
@@ -46,7 +46,16 @@ async def dispatch_batch(
             "workflow.dispatch",
             context=parent_context,
             attributes={"agentflow.run.id": str(dispatch.run_id)},
-        ):
+        ) as span:
+            annotate_langfuse_span(
+                span,
+                "span",
+                metadata={
+                    "run_id": dispatch.run_id,
+                    "trace_name": "workflow.run",
+                    "stage": "dispatch",
+                },
+            )
             try:
                 # Inject the current dispatch span into Redis so the worker becomes
                 # its child while the original API context remains the trace root.

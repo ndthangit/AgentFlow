@@ -5,6 +5,9 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from opentelemetry import trace
+
+from core.telemetry import annotate_langfuse_span
 from domain.errors import WorkflowExecutionError
 from domain.models import LlmProvider, McpServer
 from providers.adapters import (
@@ -22,6 +25,7 @@ from runtime.agent_runtime_manager import (
 from runtime.engine import AgentExecutor, LlmExecutor
 
 PROMPT_INPUT_REFERENCE = re.compile(r"\{\{\s*input((?:\.[A-Za-z0-9_-]+)*)\s*\}\}")
+tracer = trace.get_tracer("agentflow.llm")
 
 
 def render_prompt(template: str, node_input: dict[str, Any]) -> str:
@@ -290,19 +294,53 @@ def _create_completion_executor(
             provider.settings,
             secret_store.decrypt(provider.api_key_encrypted),
         )
-        result = await adapter.complete(
-            ChatCompletionRequest(
-                model=model.strip(),
-                temperature=0,
-                messages=[
-                    ChatMessage(role="system", content="\n\n".join(system_parts)),
-                    ChatMessage(
-                        role="user",
-                        content=json.dumps(node_input, ensure_ascii=False),
-                    ),
-                ],
-            )
+        completion_request = ChatCompletionRequest(
+            model=model.strip(),
+            temperature=0,
+            messages=[
+                ChatMessage(role="system", content="\n\n".join(system_parts)),
+                ChatMessage(
+                    role="user",
+                    content=json.dumps(node_input, ensure_ascii=False),
+                ),
+            ],
         )
+        with tracer.start_as_current_span("llm.generation") as span:
+            annotate_langfuse_span(
+                span,
+                "generation",
+                input_data=[
+                    message.model_dump() for message in completion_request.messages
+                ],
+                metadata={
+                    "provider": provider.kind,
+                    "provider_id": provider.id,
+                    "node_id": node.get("id", "unknown"),
+                },
+                model=model.strip(),
+            )
+            result = await adapter.complete(completion_request)
+            usage = {
+                "input": result.usage.get("prompt_tokens", 0),
+                "output": result.usage.get("completion_tokens", 0),
+                "total": result.usage.get("total_tokens", 0),
+            }
+            prompt_details = result.usage.get("prompt_tokens_details")
+            if isinstance(prompt_details, dict) and isinstance(
+                prompt_details.get("cached_tokens"), (int, float)
+            ):
+                usage["cache_read_input_tokens"] = prompt_details["cached_tokens"]
+            annotate_langfuse_span(
+                span,
+                "generation",
+                output_data={
+                    "role": result.message.role,
+                    "content": result.message.content,
+                    "finish_reason": result.finish_reason,
+                },
+                model=result.model,
+                usage=usage,
+            )
         return parse_agent_output(result.message.content)
 
     return execute_completion
