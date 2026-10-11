@@ -216,9 +216,7 @@ class OpenRouterAdapter(LlmProviderAdapter):
                 name=item.get("name", item["id"]),
                 context_length=item.get("context_length"),
                 pricing=(
-                    item.get("pricing")
-                    if isinstance(item.get("pricing"), dict)
-                    else {}
+                    item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
                 ),
             )
             for item in payload.get("data", [])

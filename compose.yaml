@@ -148,6 +148,8 @@ services:
   workflow-worker:
     image: agentflow-system
     restart: unless-stopped
+    deploy:
+      replicas: ${WORKFLOW_WORKER_REPLICAS:-1}
     command: ["python", "-m", "runtime.worker"]
     # Local-only supervisor access. Production should use a dedicated hardened
     # runner instead of mounting the Docker socket into a workflow worker.

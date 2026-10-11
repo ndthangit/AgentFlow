@@ -1,294 +1,63 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "./api";
-import { keycloak } from "./auth";
-import { McpPage } from "./McpPage";
-import { ModelsPage } from "./ModelsPage";
-import type { FlowRun, LlmProvider, McpServer, NodeTypeDefinition, RunStep, Skill, Workflow, WorkflowVersion } from "./types";
-import { WorkflowEditor } from "./WorkflowEditor";
+import { McpPage } from "../features/mcp/McpPage";
+import { ModelsPage } from "../features/models/ModelsPage";
+import { WorkflowEditor } from "../features/workflows/editor/WorkflowEditor";
+import { workflowNodeLabel, workflowNodeTypes } from "../features/workflows/summary";
+import {
+  agentPythonMcpWorkflowDraft,
+  FILESYSTEM_DEMO_MCP,
+  starterDraft,
+  sumWorkflowDraft,
+} from "../features/workflows/templates";
+import { api } from "../shared/api";
+import { keycloak } from "../shared/auth";
+import type {
+  FlowRun,
+  LlmProvider,
+  McpServer,
+  NodeTypeDefinition,
+  RunStep,
+  Skill,
+  Workflow,
+  WorkflowVersion,
+} from "../shared/types";
 
 type AppTab = "workflows" | "skills" | "mcp" | "models";
 
-const FILESYSTEM_DEMO_MCP = {
-  slug: "filesystem-demo",
-  name: "Filesystem MCP demo",
-  description: "Đọc, ghi và liệt kê file trong volume cô lập của MCP container.",
-  transport: "streamable_http" as const,
-  url: "http://filesystem-mcp:8002/mcp",
-};
-
-const starterDraft = {
-  nodes: [
-    {
-      id: "start",
-      type: "input.schema",
-      name: "Bắt đầu",
-      note: "Định nghĩa các biến đầu vào ban đầu của workflow.",
-      schema: { type: "object", properties: {}, additionalProperties: false },
-    },
-    {
-      id: "agent",
-      type: "agent",
-      name: "Agent",
-      note: "Mô tả ngắn nhiệm vụ của agent.",
-      config: {
-        instructions: "",
-        skillIds: [],
-        mcpServerIds: [],
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
-        outputSchema: { type: "object", properties: {}, additionalProperties: false },
-      },
-    },
-    {
-      id: "end",
-      type: "output.schema",
-      name: "Kết thúc",
-      note: "Định nghĩa các biến workflow trả về.",
-      inputs: {},
-      schema: { type: "object", properties: {}, additionalProperties: false },
-    },
-  ],
-  edges: [
-    { from: "start", to: "agent", port: "success" },
-    { from: "agent", to: "end", port: "success" },
-  ],
-};
-
-const agentPythonWorkflowDraft = {
-  settings: { maxParallelNodes: 2 },
-  nodes: [
-    {
-      id: "start",
-      type: "input.schema",
-      name: "Bắt đầu",
-      note: "Nhận chủ đề ban đầu từ người dùng.",
-      schema: {
-        type: "object",
-        properties: { topic: { type: "string" } },
-        required: ["topic"],
-        additionalProperties: false,
-      },
-    },
-    {
-      id: "research_agent",
-      type: "agent",
-      name: "Agent phân tích",
-      note: "Phân tích chủ đề và tạo nội dung nháp có cấu trúc.",
-      inputs: { topic: { from: "$input.topic" } },
-      config: {
-        instructions: "Phân tích chủ đề người dùng cung cấp. Trả về draft là một đoạn nội dung ngắn, rõ ràng và có các ý chính.",
-        skillIds: [],
-        mcpServerIds: [],
-        inputSchema: {
-          type: "object",
-          properties: { topic: { type: "string" } },
-          required: ["topic"],
-          additionalProperties: false,
-        },
-        outputSchema: {
-          type: "object",
-          properties: { draft: { type: "string" } },
-          required: ["draft"],
-          additionalProperties: false,
-        },
-      },
-    },
-    {
-      id: "parallel_split",
-      type: "parallel",
-      name: "Chạy xử lý song song",
-      note: "Truyền cùng bản nháp cho Python chuẩn hóa và Agent phản biện.",
-    },
-    {
-      id: "python_formatter",
-      type: "code.python",
-      name: "Python chuẩn hóa",
-      note: "Chuẩn hóa khoảng trắng và thống kê số từ trong bản nháp.",
-      inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
-      config: {
-        language: "python",
-        code: [
-          "def main(inputs):",
-          "    cleaned_text = ' '.join(inputs['draft'].split())",
-          "    return {",
-          "        'cleaned_text': cleaned_text,",
-          "        'word_count': len(cleaned_text.split()),",
-          "    }",
-        ].join("\n"),
-        inputSchema: {
-          type: "object",
-          properties: { draft: { type: "string" } },
-          required: ["draft"],
-          additionalProperties: false,
-        },
-        outputSchema: {
-          type: "object",
-          properties: {
-            cleaned_text: { type: "string" },
-            word_count: { type: "integer" },
-          },
-          required: ["cleaned_text", "word_count"],
-          additionalProperties: false,
-        },
-      },
-    },
-    {
-      id: "review_agent",
-      type: "agent",
-      name: "Agent phản biện",
-      note: "Đánh giá bản nháp độc lập trong lúc Python đang chuẩn hóa.",
-      inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
-      config: {
-        instructions: "Đánh giá draft, chỉ ra điểm cần cải thiện ngắn gọn và trả về trường review.",
-        skillIds: [],
-        mcpServerIds: [],
-        inputSchema: {
-          type: "object",
-          properties: { draft: { type: "string" } },
-          required: ["draft"],
-          additionalProperties: false,
-        },
-        outputSchema: {
-          type: "object",
-          properties: { review: { type: "string" } },
-          required: ["review"],
-          additionalProperties: false,
-        },
-      },
-    },
-    {
-      id: "final_agent",
-      type: "agent",
-      name: "Agent tổng hợp",
-      note: "Đợi hai nhánh hoàn tất rồi tạo câu trả lời cuối cùng.",
-      inputs: {
-        content: { from: "$nodes.python_formatter.output.cleaned_text" },
-        word_count: { from: "$nodes.python_formatter.output.word_count" },
-        review: { from: "$nodes.review_agent.output.review" },
-      },
-      config: {
-        instructions: "Kết hợp content đã chuẩn hóa với review để tạo câu trả lời hoàn chỉnh bằng tiếng Việt. Bắt buộc dùng tool filesystem-demo_write_file để ghi câu trả lời vào demo/workflow-result.txt, sau đó dùng filesystem-demo_read_file đọc lại chính file đó. Trả nội dung đã đọc trong trường final_answer.",
-        skillIds: [],
-        mcpServerIds: [],
-        inputSchema: {
-          type: "object",
-          properties: {
-            content: { type: "string" },
-            word_count: { type: "integer" },
-            review: { type: "string" },
-          },
-          required: ["content", "word_count", "review"],
-          additionalProperties: false,
-        },
-        outputSchema: {
-          type: "object",
-          properties: { final_answer: { type: "string" } },
-          required: ["final_answer"],
-          additionalProperties: false,
-        },
-      },
-    },
-    {
-      id: "end",
-      type: "output.schema",
-      name: "Kết thúc",
-      note: "Trả về câu trả lời hoàn chỉnh.",
-      inputs: { final_answer: { from: "$nodes.final_agent.output.final_answer" } },
-      schema: {
-        type: "object",
-        properties: { final_answer: { type: "string" } },
-        required: ["final_answer"],
-        additionalProperties: false,
-      },
-    },
-  ],
-  edges: [
-    { from: "start", to: "research_agent", port: "success" },
-    { from: "research_agent", to: "parallel_split", port: "success" },
-    { from: "parallel_split", to: "python_formatter", port: "parallel" },
-    { from: "parallel_split", to: "review_agent", port: "parallel" },
-    { from: "python_formatter", to: "final_agent", port: "success" },
-    { from: "review_agent", to: "final_agent", port: "success" },
-    { from: "final_agent", to: "end", port: "success" },
-  ],
-};
-
-function agentPythonMcpWorkflowDraft(mcpServerId: string) {
-  const draft = structuredClone(agentPythonWorkflowDraft);
-  const finalAgent = draft.nodes.find((node) => node.id === "final_agent") as
-    | { config: { mcpServerIds: string[] } }
-    | undefined;
-  if (!finalAgent) throw new Error("Không tìm thấy Agent tổng hợp trong workflow demo");
-  finalAgent.config.mcpServerIds = [mcpServerId];
-  return draft;
-}
-
-const sumWorkflowDraft = {
-  nodes: [
-    {
-      id: "input",
-      type: "input.schema",
-      name: "Hai số đầu vào",
-      note: "Nhận num1 và num2 từ dữ liệu chạy.",
-      schema: {
-        type: "object",
-        properties: { num1: { type: "number" }, num2: { type: "number" } },
-        required: ["num1", "num2"],
-        additionalProperties: false,
-      },
-    },
-    {
-      id: "sum",
-      type: "math.add",
-      name: "Cộng hai số",
-      note: "Tính num1 + num2 mà không cần gọi LLM.",
-      inputs: { left: { from: "$input.num1" }, right: { from: "$input.num2" } },
-      config: { outputKey: "sum" },
-    },
-    {
-      id: "output",
-      type: "output.schema",
-      name: "Kết quả",
-      note: "Trả về tổng của hai số.",
-      inputs: { sum: { from: "$nodes.sum.output.sum" } },
-      schema: {
-        type: "object",
-        properties: { sum: { type: "number" } },
-        required: ["sum"],
-        additionalProperties: false,
-      },
-    },
-  ],
-  edges: [
-    { from: "input", to: "sum", port: "success" },
-    { from: "sum", to: "output", port: "success" },
-  ],
-};
-
 const emptySkill = { slug: "", name: "", description: "", instructions: "" };
 
-function workflowNodeTypes(workflow: Workflow) {
-  const nodes = workflow.draft.nodes;
-  if (!Array.isArray(nodes)) return [];
-  return nodes.flatMap((node) => (
-    node && typeof node === "object" && "type" in node && typeof node.type === "string"
-      ? [node.type]
-      : []
-  ));
+function comparableGraph(value: Record<string, unknown>) {
+  const graph = structuredClone(value);
+  delete graph.skills;
+  delete graph.mcpServers;
+  if (Array.isArray(graph.nodes)) {
+    graph.nodes = graph.nodes.map((rawNode) => {
+      if (!rawNode || typeof rawNode !== "object" || Array.isArray(rawNode)) return rawNode;
+      const node = { ...rawNode } as Record<string, unknown>;
+      delete node.typeVersion;
+      return node;
+    });
+  }
+  return graph;
 }
 
-function workflowNodeLabel(type: string) {
-  const labels: Record<string, string> = {
-    agent: "Agent",
-    "llm.call": "LLM Call",
-    "code.python": "Python",
-    "input.schema": "Start",
-    "output.schema": "End",
-    "math.add": "Math",
-    if: "If / Else",
-    parallel: "Parallel",
-  };
-  return labels[type] ?? type;
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+function isCurrentDraftPublished(workflow: Workflow, version: WorkflowVersion) {
+  return canonicalJson(comparableGraph(workflow.draft))
+    === canonicalJson(comparableGraph(version.graph));
 }
 
 export function App() {
@@ -316,6 +85,13 @@ export function App() {
   const [skillForm, setSkillForm] = useState(emptySkill);
   const [isAddingSkill, setIsAddingSkill] = useState(false);
   const [editingSkill, setEditingSkill] = useState<Skill>();
+  const draftRevisions = useRef(new Map<string, number>());
+  const queuedDrafts = useRef(new Map<string, string>());
+  const draftSaveOperations = useRef(new Map<string, Promise<void>>());
+  const draftSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const selectedIdRef = useRef<string | undefined>(undefined);
+
+  selectedIdRef.current = selectedId;
 
   const selected = useMemo(
     () => workflows.find((workflow) => workflow.id === selectedId),
@@ -383,7 +159,10 @@ export function App() {
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
-    setEditor(JSON.stringify(selected.draft, null, 2));
+    const serializedDraft = JSON.stringify(selected.draft, null, 2);
+    draftRevisions.current.set(selected.id, selected.revision);
+    queuedDrafts.current.set(selected.id, canonicalJson(selected.draft));
+    setEditor(serializedDraft);
     setVersion(undefined);
     setRun(undefined);
     setRuns([]);
@@ -404,7 +183,14 @@ export function App() {
     api.getCurrentWorkflowVersion(selected.id)
       .then((currentVersion) => {
         if (!cancelled) {
-          setVersion(currentVersion ?? undefined);
+          const published = currentVersion
+            && isCurrentDraftPublished(selected, currentVersion)
+            ? currentVersion
+            : undefined;
+          setVersion(published);
+          if (currentVersion && !published) {
+            setMessage("Draft đã lưu nhưng có thay đổi chưa được publish");
+          }
         }
       })
       .catch((error: Error) => {
@@ -506,12 +292,87 @@ export function App() {
     }
   }
 
-  function parseDraft() {
-    const parsed: unknown = JSON.parse(editor);
+  function parseDraft(value = editor) {
+    const parsed: unknown = JSON.parse(value);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Draft phải là một JSON object");
     }
     return parsed as Record<string, unknown>;
+  }
+
+  function changeEditor(value: string) {
+    setEditor(value);
+    setVersion(undefined);
+    setMessage("Có thay đổi đang chờ tự động lưu…");
+  }
+
+  function persistDraft(value: string): Promise<void> {
+    if (!selected) return Promise.resolve();
+
+    const workflowId = selected.id;
+    const fallbackRevision = selected.revision;
+    const draft = parseDraft(value);
+    const fingerprint = canonicalJson(draft);
+    if (queuedDrafts.current.get(workflowId) === fingerprint) {
+      return draftSaveOperations.current.get(workflowId) ?? Promise.resolve();
+    }
+
+    queuedDrafts.current.set(workflowId, fingerprint);
+    if (selectedIdRef.current === workflowId) {
+      setVersion(undefined);
+      setMessage("Đang tự động lưu draft…");
+    }
+
+    const operation = draftSaveQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (queuedDrafts.current.get(workflowId) !== fingerprint) return;
+        const expectedRevision = draftRevisions.current.get(workflowId) ?? fallbackRevision;
+        try {
+          const saved = await api.updateDraft(workflowId, expectedRevision, draft);
+          draftRevisions.current.set(workflowId, saved.revision);
+          setWorkflows((items) => items.map((item) => (
+            item.id === saved.id ? saved : item
+          )));
+          if (selectedIdRef.current === workflowId) {
+            setMessage(`Đã tự động lưu revision ${saved.revision} · cần publish lại`);
+          }
+        } catch (error) {
+          if (queuedDrafts.current.get(workflowId) === fingerprint) {
+            queuedDrafts.current.delete(workflowId);
+          }
+          throw error;
+        }
+      });
+
+    draftSaveOperations.current.set(workflowId, operation);
+    draftSaveQueue.current = operation.catch(() => undefined);
+    return operation;
+  }
+
+  function queueDraftSave(value: string) {
+    try {
+      void persistDraft(value).catch((error: unknown) => {
+        setMessage(error instanceof Error ? error.message : "Không thể tự động lưu draft");
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Không thể tự động lưu draft");
+    }
+  }
+
+  async function validateCurrentDraft() {
+    if (!selected) return;
+    await persistDraft(editor);
+    const result = await api.validate(selected.id);
+    setMessage(result.valid ? "Graph hợp lệ" : result.errors.join(" · "));
+  }
+
+  async function publishCurrentDraft() {
+    if (!selected) return;
+    await persistDraft(editor);
+    const published = await api.publish(selected.id);
+    setVersion(published);
+    setMessage(`Đã lưu draft và publish version ${published.version}`);
   }
 
   function parseRunInput() {
@@ -739,7 +600,8 @@ export function App() {
               <WorkflowEditor
                 key={selected.id}
                 value={editor}
-                onChange={setEditor}
+                onChange={changeEditor}
+                onSave={queueDraftSave}
                 disabled={busy}
                 skills={enabledSkills}
                 providers={providers}
@@ -986,9 +848,8 @@ export function App() {
             <div className="actions">
               <button disabled={!selected || busy} onClick={() => setIsRunInputOpen(true)}>Dữ liệu chạy</button>
               <button disabled={!selected || busy} onClick={openRunHistory}>Lịch sử chạy</button>
-              <button disabled={!selected || busy} onClick={() => void perform(async () => { const result = await api.validate(selected!.id); setMessage(result.valid ? "Graph hợp lệ" : result.errors.join(" · ")); })}>Kiểm tra</button>
-              <button disabled={!selected || busy} onClick={() => void perform(async () => { const saved = await api.updateDraft(selected!, parseDraft()); const currentVersion = await api.getCurrentWorkflowVersion(saved.id); setWorkflows((items) => items.map((item) => item.id === saved.id ? saved : item)); setVersion(currentVersion ?? undefined); setMessage(currentVersion ? `Đã lưu revision ${saved.revision} · Published v${currentVersion.version}` : `Đã lưu revision ${saved.revision} · cần publish lại`); })}>Lưu draft</button>
-              <button className="primary" disabled={!selected || busy} onClick={() => void perform(async () => { const published = await api.publish(selected!.id); setVersion(published); setMessage(`Đã publish version ${published.version}`); })}>{version ? `Published v${version.version}` : "Publish"}</button>
+              <button disabled={!selected || busy} onClick={() => void perform(validateCurrentDraft)}>Kiểm tra</button>
+              <button className="primary" disabled={!selected || busy} onClick={() => void perform(publishCurrentDraft)}>{version ? `Published v${version.version}` : "Publish"}</button>
               <button className="run-button" disabled={!selected || !version || busy} onClick={() => void perform(async () => { const created = await api.createRun(selected!.id, version!.id, parseRunInput()); setRun(created); setRuns((items) => [created, ...items.filter((item) => item.id !== created.id)]); setMessage(created.status === "succeeded" ? `Đã chạy xong workflow: ${JSON.stringify(created.output)}` : `Run đang ở trạng thái ${created.status}`); })}>▶ Chạy</button>
             </div>
           </footer>

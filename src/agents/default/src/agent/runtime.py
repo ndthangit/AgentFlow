@@ -37,9 +37,7 @@ def _provider_failure(exc: Exception) -> AgentRunError:
     while current is not None and id(current) not in visited:
         visited.add(id(current))
         exception_names.add(type(current).__name__.lower())
-        status_code = status_code or _status_code(
-            getattr(current, "status_code", None)
-        )
+        status_code = status_code or _status_code(getattr(current, "status_code", None))
         response = getattr(current, "response", None)
         status_code = status_code or _status_code(
             getattr(response, "status_code", None)

@@ -1,4 +1,3 @@
-import asyncio
 import os
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -68,13 +67,11 @@ class AgentRuntimeCatalogTests(unittest.TestCase):
         )
 
     def test_rejects_an_invalid_catalog(self):
-        with patch.dict(
-            os.environ, {"AGENT_RUNTIME_IMAGES": "[]"}, clear=True
+        with (
+            patch.dict(os.environ, {"AGENT_RUNTIME_IMAGES": "[]"}, clear=True),
+            self.assertRaisesRegex(WorkflowExecutionError, "non-empty JSON object"),
         ):
-            with self.assertRaisesRegex(
-                WorkflowExecutionError, "non-empty JSON object"
-            ):
-                runtime_definitions_from_env()
+            runtime_definitions_from_env()
 
 
 class AgentRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
@@ -83,9 +80,7 @@ class AgentRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
         self.default_executor.execute.return_value = {"runtime": "default"}
         self.reviewer_executor = AsyncMock()
         self.reviewer_executor.execute.return_value = {"runtime": "reviewer"}
-        self.factory = Mock(
-            side_effect=[self.default_executor, self.reviewer_executor]
-        )
+        self.factory = Mock(side_effect=[self.default_executor, self.reviewer_executor])
         self.manager = AgentRuntimeManager(
             [
                 AgentRuntimeDefinition("default", "agentflow-agent-default:1.0"),
@@ -133,9 +128,7 @@ class AgentRuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
         self.factory.assert_not_called()
 
     def test_lists_available_runtime_ids(self):
-        self.assertEqual(
-            self.manager.available_runtime_ids(), ("default", "reviewer")
-        )
+        self.assertEqual(self.manager.available_runtime_ids(), ("default", "reviewer"))
 
 
 if __name__ == "__main__":

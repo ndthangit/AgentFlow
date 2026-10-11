@@ -57,7 +57,10 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertEqual(validate_agent_mcp_selections(graph, servers), [])
         self.assertEqual(
             validate_agent_mcp_selections(graph, [SimpleNamespace(id="docs")]),
-            ["agent node researcher references unavailable MCP servers: shared", "agent node writer references unavailable MCP servers: shared"],
+            [
+                "agent node researcher references unavailable MCP servers: shared",
+                "agent node writer references unavailable MCP servers: shared",
+            ],
         )
 
     def test_direct_agent_runtime_rejects_mcp_servers(self):
@@ -209,9 +212,7 @@ class WorkflowValidationTests(unittest.TestCase):
         self.assertIn(
             "node agent input missing references unknown node missing", errors
         )
-        self.assertIn(
-            "node agent input future must reference an upstream node", errors
-        )
+        self.assertIn("node agent input future must reference an upstream node", errors)
 
     def test_rejects_cycle(self):
         graph = {

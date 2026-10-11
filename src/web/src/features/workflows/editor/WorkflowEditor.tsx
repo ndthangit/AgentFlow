@@ -3,632 +3,57 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  Handle,
   MarkerType,
   MiniMap,
-  Position,
   ReactFlow,
   applyNodeChanges,
   type Connection,
-  type Edge,
-  type Node,
-  type NodeProps,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { LlmProvider, McpServer, NodeTypeDefinition, Skill } from "./types";
+import {
+  availableNodePosition,
+  createsCycle,
+  defaultCanvasNodeSize,
+  formFromNode,
+  inputSchemaFields,
+  isNodePosition,
+  isRecord,
+  layoutNodePositions,
+  newNode,
+  nodeInsertIndex,
+  outputReferenceOptions,
+  parseGraph,
+  parseSchema,
+  portsForType,
+  type OccupiedCanvasNode,
+  uniqueNodeId,
+} from "./graph";
+import { SchemaBuilder } from "./SchemaBuilder";
+import type {
+  EditableNodeType,
+  Graph,
+  GraphEdge,
+  GraphNode,
+  IfOperator,
+  NodeForm,
+  WorkflowEditorProps,
+  WorkflowFlowEdge,
+  WorkflowFlowNode,
+} from "./types";
+import { workflowNodeTypes } from "./WorkflowCanvasNode";
 
-type WorkflowEditorProps = {
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-  skills?: Skill[];
-  providers?: LlmProvider[];
-  mcpServers?: McpServer[];
-  nodeTypes?: NodeTypeDefinition[];
-};
-
-type GraphNode = Record<string, unknown> & {
-  id: string;
-  type?: string;
-  position?: { x: number; y: number };
-};
-
-type GraphEdge = Record<string, unknown> & {
-  from: string;
-  to: string;
-  port?: string;
-};
-
-type Graph = Record<string, unknown> & {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-};
-
-type WorkflowNodeData = Record<string, unknown> & {
-  graphNode: GraphNode;
-  ports: string[];
-  disabled: boolean;
-  onConfigure: (nodeId: string) => void;
-  onDelete: (node: GraphNode) => void;
-};
-
-type WorkflowFlowNode = Node<WorkflowNodeData, "workflowNode">;
-type WorkflowFlowEdge = Edge<{ graphEdge: GraphEdge; index: number }>;
-
-type EditableNodeType = "input.schema" | "agent" | "llm.call" | "code.python" | "if" | "parallel" | "output.schema";
-type SchemaType = "string" | "number" | "integer" | "boolean" | "object" | "array";
-type IfOperator = "equals" | "notEquals" | "greaterThan" | "greaterThanOrEqual" | "lessThan" | "lessThanOrEqual" | "truthy" | "falsy";
-
-type NodeForm = {
-  id: string;
-  name: string;
-  note: string;
-  schema: string;
-  instructions: string;
-  runtime: string;
-  providerId: string;
-  model: string;
-  code: string;
-  inputSchema: string;
-  outputSchema: string;
-  skillIds: string[];
-  mcpServerIds: string[];
-  conditionFrom: string;
-  operator: IfOperator;
-  expected: string;
-  outputBindings: Record<string, string>;
-};
-
-const emptyObjectSchema = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-};
-
-const nodeMetadata: Record<string, { label: string; className: string }> = {
-  "input.schema": { label: "START", className: "input-node" },
-  agent: { label: "AI AGENT", className: "agent-node" },
-  "llm.call": { label: "LLM CALL", className: "llm-node" },
-  "code.python": { label: "PYTHON", className: "code-node" },
-  "math.add": { label: "MATH", className: "math-node" },
-  if: { label: "IF / ELSE", className: "if-node" },
-  parallel: { label: "PARALLEL", className: "parallel-node" },
-  "output.schema": { label: "END", className: "output-node" },
-  "trigger.manual": { label: "TRIGGER", className: "trigger" },
-  end: { label: "OUTPUT", className: "end" },
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseGraph(value: string): { graph?: Graph; error?: string } {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-      return { error: "Draft phải có hai mảng nodes và edges." };
-    }
-    if (!parsed.nodes.every((node) => isRecord(node) && typeof node.id === "string" && (node.type === undefined || typeof node.type === "string"))) {
-      return { error: "Mỗi node phải là object, có id dạng chuỗi và type hợp lệ." };
-    }
-    if (!parsed.edges.every((edge) => isRecord(edge) && typeof edge.from === "string" && typeof edge.to === "string")) {
-      return { error: "Mỗi edge phải có from và to dạng chuỗi." };
-    }
-    return { graph: parsed as Graph };
-  } catch {
-    return { error: "JSON chưa hợp lệ. Hãy sửa JSON để tiếp tục dùng trình thiết kế." };
-  }
-}
-
-function graphLayers(graph: Graph): GraphNode[][] {
-  const order = new Map(graph.nodes.map((node, index) => [node.id, index]));
-  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
-  const indegree = new Map(graph.nodes.map((node) => [node.id, 0]));
-  const children = new Map(graph.nodes.map((node) => [node.id, [] as string[]]));
-  const level = new Map(graph.nodes.map((node) => [node.id, 0]));
-
-  for (const edge of graph.edges) {
-    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
-    children.get(edge.from)?.push(edge.to);
-    indegree.set(edge.to, (indegree.get(edge.to) ?? 0) + 1);
-  }
-
-  const ready = graph.nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
-  const visited: string[] = [];
-  while (ready.length) {
-    ready.sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
-    const nodeId = ready.shift()!;
-    visited.push(nodeId);
-    for (const childId of children.get(nodeId) ?? []) {
-      level.set(childId, Math.max(level.get(childId) ?? 0, (level.get(nodeId) ?? 0) + 1));
-      const nextIndegree = (indegree.get(childId) ?? 0) - 1;
-      indegree.set(childId, nextIndegree);
-      if (nextIndegree === 0) ready.push(childId);
-    }
-  }
-
-  if (visited.length !== graph.nodes.length) return graph.nodes.map((node) => [node]);
-  const layers: GraphNode[][] = [];
-  for (const nodeId of visited) {
-    const node = byId.get(nodeId)!;
-    const nodeLevel = level.get(nodeId) ?? 0;
-    (layers[nodeLevel] ??= []).push(node);
-  }
-  return layers;
-}
-
-function isNodePosition(value: unknown): value is { x: number; y: number } {
-  return isRecord(value) && Number.isFinite(value.x) && Number.isFinite(value.y);
-}
-
-function layoutNodePositions(graph: Graph) {
-  const positions = new Map<string, { x: number; y: number }>();
-  const layers = graphLayers(graph);
-  const horizontalStep = 370;
-  const verticalStep = 245;
-  for (const [layerIndex, layer] of layers.entries()) {
-    const layerWidth = Math.max(0, (layer.length - 1) * horizontalStep);
-    for (const [nodeIndex, node] of layer.entries()) {
-      positions.set(node.id, {
-        x: nodeIndex * horizontalStep - layerWidth / 2,
-        y: layerIndex * verticalStep,
-      });
-    }
-  }
-  return positions;
-}
-
-const defaultCanvasNodeSize = { width: 322, height: 165 };
-
-type OccupiedCanvasNode = {
-  position: { x: number; y: number };
-  width: number;
-  height: number;
-};
-
-function availableNodePosition(
-  desired: { x: number; y: number },
-  occupied: OccupiedCanvasNode[],
-) {
-  const horizontalStep = 370;
-  const verticalStep = 215;
-  const gap = 24;
-  const isFree = (candidate: { x: number; y: number }) => occupied.every((node) => (
-    candidate.x + defaultCanvasNodeSize.width + gap <= node.position.x
-    || node.position.x + node.width + gap <= candidate.x
-    || candidate.y + defaultCanvasNodeSize.height + gap <= node.position.y
-    || node.position.y + node.height + gap <= candidate.y
-  ));
-
-  if (isFree(desired)) return desired;
-  for (let ring = 1; ring <= 12; ring += 1) {
-    const offsets = [
-      { x: ring, y: 0 },
-      { x: 0, y: ring },
-      { x: -ring, y: 0 },
-      { x: 0, y: -ring },
-    ];
-    for (let y = -ring; y <= ring; y += 1) {
-      for (let x = -ring; x <= ring; x += 1) {
-        if (Math.abs(x) !== ring && Math.abs(y) !== ring) continue;
-        if ((x === 0 || y === 0) && Math.abs(x + y) === ring) continue;
-        offsets.push({ x, y });
-      }
-    }
-    for (const offset of offsets) {
-      const candidate = {
-        x: desired.x + offset.x * horizontalStep,
-        y: desired.y + offset.y * verticalStep,
-      };
-      if (isFree(candidate)) return candidate;
-    }
-  }
-  return { x: desired.x + occupied.length * 32, y: desired.y + occupied.length * 32 };
-}
-
-function createsCycle(graph: Graph, from: string, to: string) {
-  const children = new Map<string, string[]>();
-  for (const edge of graph.edges) {
-    const targets = children.get(edge.from) ?? [];
-    targets.push(edge.to);
-    children.set(edge.from, targets);
-  }
-  const pending = [to];
-  const visited = new Set<string>();
-  while (pending.length) {
-    const nodeId = pending.pop()!;
-    if (nodeId === from) return true;
-    if (visited.has(nodeId)) continue;
-    visited.add(nodeId);
-    pending.push(...(children.get(nodeId) ?? []));
-  }
-  return false;
-}
-
-function portsForType(type?: string) {
-  if (type === "output.schema" || type === "end") return [];
-  if (type === "if") return ["true", "false"];
-  if (type === "parallel") return ["parallel"];
-  return ["success"];
-}
-
-function WorkflowCanvasNode({ data, selected }: NodeProps<WorkflowFlowNode>) {
-  const node = data.graphNode;
-  const metadata = nodeMetadata[node.type ?? ""] ?? { label: (node.type ?? "NODE").toUpperCase(), className: "" };
-  const acceptsInput = node.type !== "input.schema" && node.type !== "trigger.manual";
-  const protectedNode = node.type === "input.schema" || node.type === "output.schema";
-
-  return (
-    <div className={`workflow-flow-node${selected ? " selected" : ""}`}>
-      {acceptsInput && <Handle className="workflow-target-handle" type="target" position={Position.Top} id="target" />}
-      <div className="flow-node-row">
-        <div className={`node ${metadata.className}`}>
-          <small>{metadata.label}</small>
-          <strong>{typeof node.name === "string" ? node.name : node.id}</strong>
-          <span>{typeof node.note === "string" && node.note ? node.note : `ID: ${node.id}`}</span>
-        </div>
-        <div className="node-row-actions nodrag nowheel">
-          <button type="button" title="Cấu hình node" onClick={() => data.onConfigure(node.id)}>Cấu hình</button>
-          <button
-            type="button"
-            className="danger"
-            title={protectedNode ? "Start và End là node bắt buộc" : "Xóa node"}
-            disabled={data.disabled || protectedNode}
-            onClick={() => data.onDelete(node)}
-          >Xóa</button>
-        </div>
-      </div>
-      {!!data.ports.length && (
-        <div className="node-connection-labels" aria-label={`Điểm nối của node ${node.id}`}>
-          {data.ports.map((port) => <span className={`port-${port}`} key={port}>{port}</span>)}
-        </div>
-      )}
-      {data.ports.map((port, index) => (
-        <Handle
-          className={`workflow-source-handle port-${port}`}
-          type="source"
-          position={Position.Bottom}
-          id={port}
-          key={port}
-          style={{ left: `${((index + 1) * 100) / (data.ports.length + 1)}%` }}
-          isConnectable={!data.disabled}
-        />
-      ))}
-    </div>
-  );
-}
-
-const workflowNodeTypes = { workflowNode: WorkflowCanvasNode };
-
-function schemaText(value: unknown) {
-  return JSON.stringify(isRecord(value) ? value : emptyObjectSchema, null, 2);
-}
-
-function formFromNode(node: GraphNode): NodeForm {
-  const config = isRecord(node.config) ? node.config : {};
-  const inputs = isRecord(node.inputs) ? node.inputs : {};
-  return {
-    id: node.id,
-    name: typeof node.name === "string" ? node.name : node.id,
-    note: typeof node.note === "string" ? node.note : "",
-    schema: schemaText(node.schema),
-    instructions: typeof config.instructions === "string"
-      ? config.instructions
-      : typeof config.prompt === "string"
-        ? config.prompt
-        : "",
-    runtime: typeof config.runtime === "string" && config.runtime ? config.runtime : "default",
-    providerId: typeof config.providerId === "string" ? config.providerId : "",
-    model: typeof config.model === "string" ? config.model : "",
-    code: typeof config.code === "string" ? config.code : "",
-    inputSchema: schemaText(config.inputSchema),
-    outputSchema: schemaText(config.outputSchema),
-    skillIds: Array.isArray(config.skillIds)
-      ? config.skillIds.filter((item): item is string => typeof item === "string")
-      : [],
-    mcpServerIds: Array.isArray(config.mcpServerIds)
-      ? config.mcpServerIds.filter((item): item is string => typeof item === "string")
-      : [],
-    conditionFrom: isRecord(node.inputs) && isRecord(node.inputs.value) && typeof node.inputs.value.from === "string"
-      ? node.inputs.value.from
-      : "$input.condition",
-    operator: typeof config.operator === "string" ? config.operator as IfOperator : "truthy",
-    expected: JSON.stringify(config.expected ?? true),
-    outputBindings: Object.fromEntries(
-      Object.entries(inputs).flatMap(([field, binding]) => (
-        isRecord(binding) && typeof binding.from === "string" ? [[field, binding.from]] : []
-      )),
-    ),
-  };
-}
-
-function parseSchema(value: string, label: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new Error(`${label} phải là JSON hợp lệ.`);
-  }
-  if (!isRecord(parsed)) throw new Error(`${label} phải là một JSON object.`);
-  return parsed;
-}
-
-function inputSchemaFields(value: string): string[] {
-  try {
-    const schema: unknown = JSON.parse(value);
-    if (!isRecord(schema) || !isRecord(schema.properties)) return [];
-    return Object.keys(schema.properties);
-  } catch {
-    return [];
-  }
-}
-
-function outputReferenceOptions(graph: Graph, selectedNodeId: string) {
-  const references: string[] = [];
-  for (const node of graph.nodes) {
-    if (node.id === selectedNodeId) continue;
-    if (node.type === "input.schema") {
-      for (const field of inputSchemaFields(schemaText(node.schema))) references.push(`$input.${field}`);
-      continue;
-    }
-    const config = isRecord(node.config) ? node.config : {};
-    const outputSchema = node.type === "output.schema" ? node.schema : config.outputSchema;
-    const fields = inputSchemaFields(schemaText(outputSchema));
-    if (node.type === "math.add") {
-      const outputKey = typeof config.outputKey === "string" ? config.outputKey : "sum";
-      fields.push(outputKey);
-    }
-    references.push(`$nodes.${node.id}.output`);
-    for (const field of new Set(fields)) references.push(`$nodes.${node.id}.output.${field}`);
-  }
-  return [...new Set(references)];
-}
-
-const schemaTypes: { value: SchemaType; label: string }[] = [
-  { value: "string", label: "Văn bản (string)" },
-  { value: "number", label: "Số (number)" },
-  { value: "integer", label: "Số nguyên (integer)" },
-  { value: "boolean", label: "Đúng / sai (boolean)" },
-  { value: "object", label: "Đối tượng (object)" },
-  { value: "array", label: "Danh sách (array)" },
-];
-
-function schemaForType(type: SchemaType): Record<string, unknown> {
-  if (type === "object") return { type, properties: {}, additionalProperties: false };
-  if (type === "array") return { type, items: { type: "string" } };
-  return { type };
-}
-
-function SchemaBuilder({
-  label,
+function WorkflowEditorView({
   value,
   onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const parsed = useMemo<{ schema: Record<string, unknown>; error?: string }>(() => {
-    try {
-      const schema: unknown = JSON.parse(value);
-      return isRecord(schema)
-        ? { schema }
-        : { schema: emptyObjectSchema, error: "Schema phải là một JSON object." };
-    } catch {
-      return { schema: emptyObjectSchema, error: "JSON nâng cao chưa hợp lệ." };
-    }
-  }, [value]);
-  const properties = isRecord(parsed.schema.properties) ? parsed.schema.properties : {};
-  const required = Array.isArray(parsed.schema.required)
-    ? parsed.schema.required.filter((item): item is string => typeof item === "string")
-    : [];
-
-  function commit(nextProperties: Record<string, unknown>, nextRequired = required) {
-    const nextSchema: Record<string, unknown> = {
-      ...parsed.schema,
-      type: "object",
-      properties: nextProperties,
-      additionalProperties: false,
-    };
-    if (nextRequired.length) nextSchema.required = nextRequired;
-    else delete nextSchema.required;
-    onChange(JSON.stringify(nextSchema, null, 2));
-  }
-
-  function addField() {
-    let suffix = Object.keys(properties).length + 1;
-    let name = `field_${suffix}`;
-    while (name in properties) name = `field_${++suffix}`;
-    commit({ ...properties, [name]: { type: "string" } });
-  }
-
-  function renameField(currentName: string, nextName: string) {
-    if (nextName !== currentName && nextName in properties) return;
-    const nextProperties: Record<string, unknown> = {};
-    for (const [name, definition] of Object.entries(properties)) {
-      nextProperties[name === currentName ? nextName : name] = definition;
-    }
-    commit(
-      nextProperties,
-      required.map((name) => name === currentName ? nextName : name),
-    );
-  }
-
-  function setFieldType(name: string, type: SchemaType) {
-    commit({ ...properties, [name]: schemaForType(type) });
-  }
-
-  function setArrayItemType(name: string, type: SchemaType) {
-    const definition = isRecord(properties[name]) ? properties[name] : {};
-    commit({ ...properties, [name]: { ...definition, items: schemaForType(type) } });
-  }
-
-  function setRequired(name: string, checked: boolean) {
-    commit(
-      properties,
-      checked ? [...new Set([...required, name])] : required.filter((item) => item !== name),
-    );
-  }
-
-  function removeField(name: string) {
-    const nextProperties = { ...properties };
-    delete nextProperties[name];
-    commit(nextProperties, required.filter((item) => item !== name));
-  }
-
-  return (
-    <section className="schema-builder">
-      <div className="schema-builder-heading">
-        <div><strong>{label}</strong><span>Khai báo các trường dữ liệu JSON</span></div>
-        <button type="button" onClick={addField}>+ Thêm trường</button>
-      </div>
-      <div className="schema-field-list">
-        {Object.entries(properties).map(([name, rawDefinition], index) => {
-          const definition = isRecord(rawDefinition) ? rawDefinition : {};
-          const type = schemaTypes.some((item) => item.value === definition.type)
-            ? definition.type as SchemaType
-            : "string";
-          const items = isRecord(definition.items) ? definition.items : {};
-          const itemType = schemaTypes.some((item) => item.value === items.type)
-            ? items.type as SchemaType
-            : "string";
-          return (
-            <div className={type === "array" ? "schema-field with-items" : "schema-field"} key={index}>
-              <label>Tên trường<input value={name} placeholder="Ví dụ: email" onChange={(event) => renameField(name, event.target.value)} /></label>
-              <label>Kiểu dữ liệu<select value={type} onChange={(event) => setFieldType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-              {type === "array" && (
-                <label>Kiểu phần tử<select value={itemType} onChange={(event) => setArrayItemType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-              )}
-              <label className="schema-required"><input type="checkbox" checked={required.includes(name)} onChange={(event) => setRequired(name, event.target.checked)} /> Bắt buộc</label>
-              <button type="button" className="schema-remove" aria-label={`Xóa trường ${name}`} onClick={() => removeField(name)}>Xóa</button>
-            </div>
-          );
-        })}
-        {!Object.keys(properties).length && <p className="schema-empty">Chưa có trường dữ liệu. Chọn “Thêm trường” để bắt đầu.</p>}
-      </div>
-      <details className="schema-advanced">
-        <summary>JSON Schema nâng cao</summary>
-        <textarea className="schema-textarea" value={value} spellCheck={false} onChange={(event) => onChange(event.target.value)} />
-        {parsed.error && <p>{parsed.error}</p>}
-      </details>
-    </section>
-  );
-}
-
-function uniqueNodeId(nodes: GraphNode[], type: EditableNodeType) {
-  const base = type === "input.schema"
-    ? "start"
-    : type === "output.schema"
-      ? "end"
-      : type === "code.python"
-        ? "python"
-        : type === "llm.call"
-          ? "llm"
-        : type === "if"
-          ? "decision"
-          : type === "parallel"
-            ? "parallel"
-            : "agent";
-  let candidate = base;
-  let suffix = 2;
-  while (nodes.some((node) => node.id === candidate)) candidate = `${base}_${suffix++}`;
-  return candidate;
-}
-
-function newNode(type: EditableNodeType, id: string, typeVersion: number): GraphNode {
-  if (type === "if") {
-    return {
-      id,
-      type,
-      typeVersion,
-      name: "Điều kiện If / Else",
-      note: "Chỉ chạy nhánh true hoặc false theo điều kiện.",
-      inputs: { value: { from: "$input.condition" } },
-      config: { operator: "truthy" },
-    };
-  }
-  if (type === "parallel") {
-    return {
-      id,
-      type,
-      typeVersion,
-      name: "Rẽ nhánh song song",
-      note: "Chạy đồng thời tất cả nhánh con và truyền output cha cho từng nhánh.",
-    };
-  }
-  if (type === "agent") {
-    return {
-      id,
-      type,
-      typeVersion,
-      name: "Agent",
-      note: "Mô tả ngắn nhiệm vụ của agent.",
-      config: {
-        runtime: "default",
-        instructions: "",
-        skillIds: [],
-        mcpServerIds: [],
-        inputSchema: emptyObjectSchema,
-        outputSchema: emptyObjectSchema,
-      },
-    };
-  }
-  if (type === "llm.call") {
-    return {
-      id,
-      type,
-      typeVersion,
-      name: "LLM Call",
-      note: "Gọi model đúng một lần, không dùng skill hay vòng lặp Agent.",
-      config: {
-        prompt: "Xử lý dữ liệu đầu vào và trả về kết quả theo output schema.",
-        inputSchema: emptyObjectSchema,
-        outputSchema: emptyObjectSchema,
-      },
-    };
-  }
-  if (type === "code.python") {
-    return {
-      id,
-      type,
-      typeVersion,
-      name: "Python code",
-      note: "Xử lý dữ liệu bằng một hàm Python thuần.",
-      config: {
-        language: "python",
-        code: "def main(inputs):\n    return inputs\n",
-        inputSchema: emptyObjectSchema,
-        outputSchema: emptyObjectSchema,
-      },
-    };
-  }
-  const input = type === "input.schema";
-  return {
-    id,
-    type,
-    typeVersion,
-    name: input ? "Bắt đầu" : "Kết thúc",
-    note: input ? "Định nghĩa các biến đầu vào ban đầu của workflow." : "Định nghĩa các biến workflow trả về.",
-    schema: emptyObjectSchema,
-    ...(input ? {} : { inputs: {} }),
-  };
-}
-
-function nodeInsertIndex(nodes: GraphNode[], type: EditableNodeType) {
-  if (type === "input.schema") {
-    const firstNonInput = nodes.findIndex((node) => node.type !== "input.schema");
-    return firstNonInput < 0 ? nodes.length : firstNonInput;
-  }
-  if (type === "agent" || type === "llm.call" || type === "code.python" || type === "if" || type === "parallel") {
-    const firstOutput = nodes.findIndex((node) => node.type === "output.schema" || node.type === "end");
-    return firstOutput < 0 ? nodes.length : firstOutput;
-  }
-  return nodes.length;
-}
-
-function WorkflowEditorView({ value, onChange, disabled = false, skills = [], providers = [], mcpServers = [], nodeTypes = [] }: WorkflowEditorProps) {
+  onSave,
+  disabled = false,
+  skills = [],
+  providers = [],
+  mcpServers = [],
+  nodeTypes = [],
+}: WorkflowEditorProps) {
   const parsed = useMemo(() => parseGraph(value), [value]);
   const graph = parsed.graph;
   const [selectedId, setSelectedId] = useState<string>();
@@ -750,7 +175,9 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
   }
 
   function commit(next: Graph) {
-    onChange(JSON.stringify(next, null, 2));
+    const serialized = JSON.stringify(next, null, 2);
+    onChange(serialized);
+    onSave(serialized);
   }
 
   function connectNodes(from: string, to: string, requestedPort: string) {
@@ -1253,7 +680,12 @@ function WorkflowEditorView({ value, onChange, disabled = false, skills = [], pr
               <div><strong id="json-panel-title">Graph definition</strong><span>Chỉnh trực tiếp JSON nâng cao của workflow.</span></div>
               <button type="button" aria-label="Đóng trình chỉnh JSON" onClick={() => setIsJsonOpen(false)}>×</button>
             </div>
-            <textarea value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} />
+            <textarea
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              onBlur={() => onSave(value)}
+              spellCheck={false}
+            />
           </section>
         </div>
       )}

@@ -91,9 +91,7 @@ async def _version_snapshot(
     )
     mcp_by_id = {str(server.id): server for server in available_mcp_servers}
     selected_mcp_servers = [
-        mcp_by_id[server_id]
-        for server_id in selected_mcp_ids
-        if server_id in mcp_by_id
+        mcp_by_id[server_id] for server_id in selected_mcp_ids if server_id in mcp_by_id
     ]
     graph = deepcopy(workflow.draft)
     for node in graph.get("nodes", []):

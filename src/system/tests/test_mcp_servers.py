@@ -15,8 +15,9 @@ class McpServerTests(unittest.IsolatedAsyncioTestCase):
             ("https://example.com/mcp", {"Host": "internal"}),
             ("https://example.com/mcp", {"Authorization": "bad\r\nvalue"}),
         ):
-            with self.subTest(url=url, headers=headers), self.assertRaises(
-                ValidationError
+            with (
+                self.subTest(url=url, headers=headers),
+                self.assertRaises(ValidationError),
             ):
                 McpServerCreate(
                     slug="docs",
@@ -58,9 +59,7 @@ class McpServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server.owner_subject, "test-user")
         self.assertEqual(server.headers_encrypted, "ciphertext")
         self.assertTrue(server.has_headers)
-        encrypt.assert_called_once_with(
-            {"Authorization": "Bearer test-secret"}
-        )
+        encrypt.assert_called_once_with({"Authorization": "Bearer test-secret"})
 
     async def test_delete_is_scoped_to_the_authenticated_owner(self):
         server_id = uuid.uuid4()

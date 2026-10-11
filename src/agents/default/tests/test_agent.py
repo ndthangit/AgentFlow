@@ -7,13 +7,12 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
-from langgraph.errors import GraphRecursionError
-
 from agent.api import create_app
 from agent.contracts import AgentRunError, AgentSkill, RunRequest
 from agent.graph import build_configured_model, get_node_catalog
 from agent.mcp import _connections_from_env, load_mcp_tools
 from agent.runtime import AgentRuntime, run_agent
+from langgraph.errors import GraphRecursionError
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):

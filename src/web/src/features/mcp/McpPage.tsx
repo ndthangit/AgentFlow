@@ -1,7 +1,7 @@
 import { useState } from "react";
 
-import { api } from "./api";
-import type { McpServer } from "./types";
+import { api } from "../../shared/api";
+import type { McpServer } from "../../shared/types";
 
 type Props = {
   servers: McpServer[];

@@ -145,7 +145,9 @@ class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "STEP_EXECUTION_FAILED")
         self.assertNotIn("secret", str(raised.exception))
 
-    async def test_applies_per_node_model_environment_without_putting_secret_in_argv(self):
+    async def test_applies_per_node_model_environment_without_putting_secret_in_argv(
+        self,
+    ):
         calls = []
 
         async def runner(command, name, payload, environment, timeout):
@@ -417,9 +419,7 @@ class AgentRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agent_container_requires_a_workflow_provider(self):
         container = AsyncMock()
-        execute = create_agent_executor(
-            {}, [], Mock(), container_executor=container
-        )
+        execute = create_agent_executor({}, [], Mock(), container_executor=container)
         node = {
             "id": "agent",
             "type": "agent",

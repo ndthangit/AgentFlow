@@ -42,9 +42,7 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
         settings = OpenRouterSettings(
             selected_models=[" openai/test ", "openai/test", "anthropic/test"]
         )
-        self.assertEqual(
-            settings.selected_models, ["openai/test", "anthropic/test"]
-        )
+        self.assertEqual(settings.selected_models, ["openai/test", "anthropic/test"])
 
     async def test_new_provider_is_saved_inactive_without_network_verification(self):
         class FakeSession:

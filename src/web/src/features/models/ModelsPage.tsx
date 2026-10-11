@@ -1,7 +1,7 @@
 import { useState } from "react";
 
-import { api } from "./api";
-import type { LlmProvider, OpenRouterSettings, ProviderModel } from "./types";
+import { api } from "../../shared/api";
+import type { LlmProvider, OpenRouterSettings, ProviderModel } from "../../shared/types";
 
 type Props = {
   providers: LlmProvider[];

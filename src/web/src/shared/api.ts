@@ -115,10 +115,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, ...(draft ? { draft } : {}) }),
     }),
-  updateDraft: (workflow: Workflow, draft: Record<string, unknown>) =>
-    request<Workflow>(`/v1/workflows/${workflow.id}/draft`, {
+  updateDraft: (
+    workflowId: string,
+    expectedRevision: number,
+    draft: Record<string, unknown>,
+  ) =>
+    request<Workflow>(`/v1/workflows/${workflowId}/draft`, {
       method: "PUT",
-      body: JSON.stringify({ expected_revision: workflow.revision, draft }),
+      body: JSON.stringify({ expected_revision: expectedRevision, draft }),
     }),
   validate: (workflowId: string) =>
     request<{ valid: boolean; errors: string[] }>(

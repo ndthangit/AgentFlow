@@ -27,6 +27,7 @@ flowchart LR
 | Tài liệu | Nội dung |
 | --- | --- |
 | [Kiến trúc và công nghệ](docs/architecture.md) | Phạm vi sản phẩm, stack, thành phần, dữ liệu và lựa chọn workflow engine |
+| [Bản đồ codebase](docs/codebase-map.md) | Luồng chạy hiện tại, quyền sở hữu module và nơi bắt đầu cho từng loại thay đổi |
 | [Thiết kế event-driven](docs/event-driven.md) | Command/event, outbox, retry, idempotency, khôi phục và trạng thái |
 | [Các Agent runtime](src/agents/README.md) | Quy ước thư mục runtime tùy biến và contract container |
 | [Agent mặc định chạy được](src/agents/default/README.md) | Deep Agents, CLI, HTTP, input/output JSON và cấu hình LLM thật |

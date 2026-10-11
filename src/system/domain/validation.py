@@ -201,7 +201,11 @@ def _validate_node(node: dict[str, Any], errors: list[str]) -> None:
                 errors.append(
                     f"agent node {node_id} skillIds must be unique non-empty strings"
                 )
-        if node_type == "agent" and isinstance(config, dict) and "mcpServerIds" in config:
+        if (
+            node_type == "agent"
+            and isinstance(config, dict)
+            and "mcpServerIds" in config
+        ):
             server_ids = config["mcpServerIds"]
             if (
                 not isinstance(server_ids, list)
@@ -252,7 +256,9 @@ def _validate_input_bindings(
             continue
         match = NODE_REFERENCE_PATTERN.fullmatch(reference)
         if match is None:
-            errors.append(f"node {node_id} input {field} has invalid reference {reference}")
+            errors.append(
+                f"node {node_id} input {field} has invalid reference {reference}"
+            )
             continue
         source = match.group(1)
         if source not in nodes_by_id:

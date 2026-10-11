@@ -43,9 +43,7 @@ class ExecutionLedgerModelTests(unittest.TestCase):
             if isinstance(constraint, CheckConstraint)
         }
 
-        self.assertIn(
-            ("owner_subject", "scope", "idempotency_key"), unique_columns
-        )
+        self.assertIn(("owner_subject", "scope", "idempotency_key"), unique_columns)
         self.assertEqual(
             check_names, {"ck_run_commands_type", "ck_run_commands_status"}
         )

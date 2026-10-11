@@ -29,6 +29,12 @@ docker compose up -d
 docker compose ps
 ```
 
+Số process/container thực thi workflow được cấu hình bằng
+`WORKFLOW_WORKER_REPLICAS` trong `.env` (mặc định `1`). Sau khi thay đổi giá trị,
+chạy lại `docker compose up -d` để Compose tăng hoặc giảm số replica của service
+`workflow-worker`. Các replica dùng chung Redis consumer group nhưng có consumer
+name riêng, nên mỗi message chỉ được một worker nhận xử lý.
+
 Agent node mới mặc định dùng runtime trong `src/agents/default`. Có thể chọn **Agent container** trong editor; graph được lưu với cấu hình:
 
 ```json

@@ -47,9 +47,7 @@ PUBLIC_AGENT_ERROR_CODES = {
 }
 
 
-def _public_agent_error(
-    stdout: bytes, max_output_bytes: int
-) -> tuple[str, str] | None:
+def _public_agent_error(stdout: bytes, max_output_bytes: int) -> tuple[str, str] | None:
     """Read only the Agent runtime's bounded, explicitly public error contract."""
     if not stdout or len(stdout) > max_output_bytes:
         return None
