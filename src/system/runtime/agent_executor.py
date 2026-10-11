@@ -217,11 +217,16 @@ def _agent_container_environment(
         raise WorkflowExecutionError(
             f"Provider {provider.name} is not supported by the Agent container"
         )
+    api_key = secret_store.decrypt(provider.api_key_encrypted)
     return {
         "AGENT_PROVIDER": "openrouter",
         "AGENT_MODEL": model.strip(),
+        # Runtime-neutral names are the contract for new adapters. Keep the
+        # OpenRouter aliases while the default runtime still consumes them.
+        "AGENT_PROVIDER_BASE_URL": OPENROUTER_BASE_URL,
+        "AGENT_PROVIDER_API_KEY": api_key,
         "OPENROUTER_BASE_URL": OPENROUTER_BASE_URL,
-        "OPENROUTER_API_KEY": secret_store.decrypt(provider.api_key_encrypted),
+        "OPENROUTER_API_KEY": api_key,
     }
 
 

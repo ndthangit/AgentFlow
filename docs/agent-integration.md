@@ -1,5 +1,7 @@
 # Tích hợp agent vào flow
 
+> Phần mapping từ code hiện tại sang image, credential, contract v1/v2 và kế hoạch triển khai Codex/OpenCode được tách tại [Tích hợp Codex và OpenCode vào AgentFlow](codex-opencode-runtime-integration.md).
+
 ## Hướng triển khai hiện tại: Deep Agents trước
 
 > **Cập nhật kiến trúc:** đường production mục tiêu không dùng một agent HTTP service lâu dài. Mỗi attempt của agent node sẽ chạy trong một container dùng một lần; xem [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md). HTTP/CLI ở tài liệu này vẫn là bề mặt thử nghiệm contract và adapter.
@@ -10,19 +12,19 @@ Theo phạm vi mới, dùng [agent Python mặc định trong `src/agents/defaul
 
 Mẫu chưa triển khai contract `startOrAttach`, session, streaming, approval hay recovery ở các phần dưới. Worker có thể gọi HTTP/CLI để thử ranh giới tích hợp trước. Chi tiết Codex/OpenCode bên dưới được giữ làm **thiết kế mở rộng sau**, không còn là việc cần tích hợp ngay trong PoC đầu tiên.
 
-Ngày kiểm chứng tài liệu nhà cung cấp: **05/09/2026**. Các interface và chính sách AgentFlow dưới đây là thiết kế đề xuất, chưa phải adapter đã chạy thử.
+Ngày kiểm chứng tài liệu nhà cung cấp: **11/10/2026**. Các interface và chính sách AgentFlow dưới đây là thiết kế đề xuất, chưa phải adapter đã chạy thử.
 
 ## 1. Chọn bề mặt tích hợp
 
 | Runtime | Cách tích hợp đã được tài liệu chính thức mô tả | Đề xuất cho AgentFlow |
 | --- | --- | --- |
-| Codex SDK | TypeScript package `@openai/codex-sdk`, tạo/tiếp tục/resume thread | MVP cho tác vụ tự động có đầu vào/đầu ra rõ |
+| Codex SDK | TypeScript/Python SDK, tạo/tiếp tục/resume thread | Lựa chọn typed thay cho CLI khi adapter cần điều khiển thread |
 | Codex App Server | JSON-RPC hai chiều, thread/turn, streamed events và approvals | Giai đoạn cần UI tương tác giữa turn; ưu tiên stdio nội bộ runner |
-| Codex CLI | `codex exec --json`; `--output-schema` cho kết quả có cấu trúc | PoC hoặc adapter CLI thay thế khi phù hợp |
+| Codex CLI | `codex exec --json`; `--output-schema` cho kết quả có cấu trúc | Contract v1 one-shot hiện tại |
 | OpenCode server | `opencode serve`, HTTP/OpenAPI | Runtime chạy trong sandbox, không public endpoint trực tiếp |
 | OpenCode SDK | `@opencode-ai/sdk`, quản lý session, gửi prompt, abort và stream sự kiện SSE | MVP qua SDK kết nối server trong runner |
 
-Nguồn cho Codex SDK: [Codex SDK](https://learn.chatgpt.com/docs/codex-sdk). Tài liệu cũng ghi `codex mcp-server` đã deprecated; không chọn nó làm nền tích hợp mới.
+Nguồn cho Codex SDK: [Codex SDK](https://developers.openai.com/codex/sdk/). `codex mcp-server` đã bị loại bỏ; không chọn nó làm nền tích hợp mới.
 
 Agent runtime hiện nạp các MCP được chọn bằng `langchain-mcp-adapters`. Worker truyền cấu hình qua `AGENT_MCP_SERVERS` cho đúng một container, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin.
 
@@ -128,7 +130,7 @@ Khoảng hở tạo session/gửi turn rồi mất ACK có thể gây session m�
 
 ### Codex
 
-Với MVP, bắt đầu bằng SDK trong worker/runner được kiểm soát; dùng thread ID cụ thể khi tiếp tục công việc. Nếu dùng CLI, khởi process bằng executable + argv với `shell: false`, truyền prompt như dữ liệu/stdin theo phiên bản CLI, parse JSONL từng dòng và tách stderr. Không nối input người dùng thành lệnh shell.
+Với contract v1 hiện tại, bắt đầu bằng `codex exec` trong image adapter vì bề mặt này khớp job one-shot và hỗ trợ output schema. Khởi process bằng executable + argv với `shell: false`, truyền prompt như dữ liệu/stdin, parse JSONL từng dòng, đọc final output riêng và tách stderr. SDK là lựa chọn typed khi cần điều khiển thread; dùng thread ID cụ thể khi tiếp tục công việc. Không nối input người dùng thành lệnh shell.
 
 Khi thêm App Server: hoàn thành handshake `initialize`/`initialized`, quản lý request ID, thread ID, turn ID và permission requests. Approval response phải gắn với request đang chờ trên đúng connection. Sinh schema theo binary đã khóa và kiểm tra adapter với schema đó. Đây là kế hoạch triển khai dựa trên [App Server protocol và message schema](https://learn.chatgpt.com/docs/app-server).
 

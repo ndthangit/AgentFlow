@@ -2,6 +2,8 @@
 
 Ngày cập nhật: **05/10/2026**. Trạng thái: **thiết kế mục tiêu cho lát cắt triển khai hiện tại**.
 
+Hướng dẫn triển khai cụ thể cho runtime bên ngoài nằm tại [Tích hợp Codex và OpenCode vào AgentFlow](codex-opencode-runtime-integration.md).
+
 ## 1. Mục tiêu
 
 AgentFlow cho phép tích hợp nhiều Agent runtime độc lập. Mỗi runtime có source, dependency và image container riêng; workflow chọn runtime theo từng node thay vì buộc toàn bộ stack dùng chung một image.
@@ -104,7 +106,7 @@ Worker không tự quét filesystem và không tự build image. Nó chỉ chạ
 
 ```dotenv
 AGENT_RUNTIME_DEFAULT=default
-AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0"}
+AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0","codex":"agentflow-agent-codex:0.1.0"}
 ```
 
 Catalog là allow-list. Node yêu cầu runtime không có trong catalog phải fail trước khi Docker được gọi. Cách này tách quyền build/publish image khỏi quyền thực thi workflow và tránh để graph tùy ý chọn image reference.

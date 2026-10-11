@@ -54,6 +54,7 @@ class AgentDockerCommandTests(unittest.TestCase):
         self.assertIn("no-new-privileges", command)
         self.assertIn("ALL", command)
         self.assertIn("agent", command)
+        self.assertIn("AGENT_PROVIDER_API_KEY", command)
         self.assertIn("OPENROUTER_API_KEY", command)
         self.assertNotIn("OPENAI_COMPATIBLE_API_KEY", command)
         self.assertNotIn("ANTHROPIC_API_KEY", command)
@@ -173,12 +174,15 @@ class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
                 environment_overrides={
                     "AGENT_PROVIDER": "openrouter",
                     "AGENT_MODEL": "openai/test-model",
+                    "AGENT_PROVIDER_BASE_URL": "https://openrouter.ai/api/v1",
+                    "AGENT_PROVIDER_API_KEY": "secret-key",
                     "OPENROUTER_API_KEY": "secret-key",
                 },
             )
 
         command, environment = calls[0]
         self.assertEqual(environment["AGENT_MODEL"], "openai/test-model")
+        self.assertEqual(environment["AGENT_PROVIDER_API_KEY"], "secret-key")
         self.assertEqual(environment["OPENROUTER_API_KEY"], "secret-key")
         self.assertNotIn("OPENAI_COMPATIBLE_API_KEY", environment)
         self.assertNotIn("secret-key", command)
@@ -289,6 +293,8 @@ class AgentRoutingTests(unittest.IsolatedAsyncioTestCase):
             environment_overrides={
                 "AGENT_PROVIDER": "openrouter",
                 "AGENT_MODEL": "openai/test-model",
+                "AGENT_PROVIDER_BASE_URL": "https://openrouter.ai/api/v1",
+                "AGENT_PROVIDER_API_KEY": "secret-key",
                 "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
                 "OPENROUTER_API_KEY": "secret-key",
             },
@@ -365,6 +371,8 @@ class AgentRoutingTests(unittest.IsolatedAsyncioTestCase):
             environment_overrides={
                 "AGENT_PROVIDER": "openrouter",
                 "AGENT_MODEL": "openai/test-model",
+                "AGENT_PROVIDER_BASE_URL": "https://openrouter.ai/api/v1",
+                "AGENT_PROVIDER_API_KEY": "secret-key",
                 "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
                 "OPENROUTER_API_KEY": "secret-key",
             },
@@ -412,6 +420,8 @@ class AgentRoutingTests(unittest.IsolatedAsyncioTestCase):
             environment_overrides={
                 "AGENT_PROVIDER": "openrouter",
                 "AGENT_MODEL": "openai/default-model",
+                "AGENT_PROVIDER_BASE_URL": "https://openrouter.ai/api/v1",
+                "AGENT_PROVIDER_API_KEY": "secret-key",
                 "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
                 "OPENROUTER_API_KEY": "secret-key",
             },

@@ -218,7 +218,8 @@ Direct Access Grant của CLI local.
 | `keycloak` | OIDC, user và client web PKCE |
 | `system` | FastAPI control plane, migration và outbox orchestrator |
 | `workflow-worker` | Claim queue, thực thi graph và ghi run/step |
-| `agent-runtime-image` | Đảm bảo image runtime tồn tại trước khi worker chạy |
+| `agent-runtime-default-image` | Build/pull image Deep Agents mặc định trước khi worker chạy |
+| `agent-runtime-codex-image` | Build/pull image Codex CLI trước khi worker chạy |
 | `filesystem-mcp` | MCP demo trên network runtime riêng |
 | `web` | React UI được phục vụ bởi Nginx |
 
@@ -232,9 +233,11 @@ Số worker được cấu hình bằng `WORKFLOW_WORKER_REPLICAS`. Các replica
 Redis consumer group nhưng có consumer name riêng, nên một message chỉ được một
 worker claim tại một thời điểm.
 
-Agent node tạo container dùng một lần từ `AGENTFLOW_AGENT_RUNTIME_IMAGE`. Provider,
-model và API key được lấy từ workflow/provider đã đăng ký rồi inject tạm thời vào
-container; chúng không nằm trong file env deploy.
+Agent node chọn image theo runtime id trong `AGENT_RUNTIME_IMAGES` (`default` hoặc
+`codex` trong stack hiện tại). Provider, model và API key được lấy từ Models và
+workflow đã đăng ký rồi inject tạm thời vào container qua contract
+`AGENT_PROVIDER_*`; chúng không nằm trong file env deploy. Runtime Codex dùng
+Responses API của provider được chọn và không dùng tài khoản đăng nhập Codex cá nhân.
 
 Worker hiện cần Docker socket để tạo Agent container:
 

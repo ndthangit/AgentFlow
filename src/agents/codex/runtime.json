@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "codex",
+  "image": "agentflow-agent-codex:0.1.0",
+  "description": "OpenAI Codex CLI one-shot runtime for AgentFlow"
+}
