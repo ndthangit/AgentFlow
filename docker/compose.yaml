@@ -67,6 +67,7 @@ services:
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
       KC_HOSTNAME: http://localhost:8080
+      KEYCLOAK_START_MODE: dev
       KEYCLOAK_DEV_USER: ${KEYCLOAK_DEV_USER:?Set KEYCLOAK_DEV_USER in .env}
       KEYCLOAK_DEV_USER_ID: ${KEYCLOAK_DEV_USER_ID:?Set KEYCLOAK_DEV_USER_ID in .env}
       KEYCLOAK_DEV_USER_PASSWORD: ${KEYCLOAK_DEV_USER_PASSWORD:?Set KEYCLOAK_DEV_USER_PASSWORD in .env}
@@ -74,8 +75,8 @@ services:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9000:9000"
     volumes:
-      - ./infra/keycloak/agentflow-realm.json:/opt/keycloak/data/import/agentflow-realm.json:ro
-      - ./infra/keycloak/entrypoint.sh:/opt/keycloak/bin/agentflow-entrypoint.sh:ro
+      - ./keycloak/agentflow-realm.json:/opt/keycloak/data/import/agentflow-realm.json:ro
+      - ./keycloak/entrypoint.sh:/opt/keycloak/bin/agentflow-entrypoint.sh:ro
     depends_on:
       db-init:
         condition: service_completed_successfully
@@ -94,7 +95,7 @@ services:
   system:
     image: agentflow-system
     build:
-      context: ./src/system
+      context: ../src/system
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
@@ -123,7 +124,7 @@ services:
   agent-runtime-image:
     image: agentflow-agent-runtime:${AGENT_RUNTIME_IMAGE_VERSION:-0.1.0}
     build:
-      context: ./src/agents/${AGENT_RUNTIME_NAME:-default}
+      context: ../src/agents/${AGENT_RUNTIME_NAME:-default}
       dockerfile: Dockerfile
     entrypoint: ["/bin/true"]
     restart: "no"
@@ -132,7 +133,7 @@ services:
   filesystem-mcp:
     image: agentflow-filesystem-mcp
     build:
-      context: ./src/mcp-filesystem
+      context: ../src/mcp-filesystem
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
@@ -188,7 +189,7 @@ services:
 
   web:
     build:
-      context: ./src/web
+      context: ../src/web
       dockerfile: Dockerfile
       args:
         VITE_SYSTEM_API_URL: http://localhost:8000
@@ -215,5 +216,5 @@ networks:
   backend:
     driver: bridge
   runtime:
-    name: agentflow-runtime
+    name: ${AGENT_RUNTIME_NETWORK:-agentflow-runtime}
     driver: bridge

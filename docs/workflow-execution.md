@@ -18,7 +18,7 @@ Môi trường phát triển dùng một PostgreSQL database `agentflow`, nhưng
 
 Hai schema dùng chung PostgreSQL server/database để vận hành development đơn giản. Không tạo foreign key giữa `system` và `keycloak`; System chỉ tin danh tính `sub` sau khi xác minh JWT. Việc dùng chung database không cho phép System đọc hoặc sửa bảng nội bộ của Keycloak.
 
-`db-init` trong `compose.yaml` tạo idempotent schema `system` và `keycloak`. Sau đó Keycloak quản lý bảng của schema `keycloak`, còn Alembic của System quản lý bảng và `alembic_version` trong schema `system`.
+`db-init` trong `docker/compose.yaml` tạo idempotent schema `system` và `keycloak`. Sau đó Keycloak quản lý bảng của schema `keycloak`, còn Alembic của System quản lý bảng và `alembic_version` trong schema `system`.
 
 ```mermaid
 flowchart LR

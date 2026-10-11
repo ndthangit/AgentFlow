@@ -1,0 +1,66 @@
+{
+  "realm": "agentflow",
+  "enabled": true,
+  "displayName": "AgentFlow Dev",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "agentflow-api",
+      "name": "AgentFlow API",
+      "enabled": true,
+      "bearerOnly": true,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "agentflow-web",
+      "name": "AgentFlow Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "${KEYCLOAK_WEB_REDIRECT_URI}"
+      ],
+      "webOrigins": [
+        "${KEYCLOAK_WEB_ORIGIN}"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "agentflow-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "agentflow-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "${KEYCLOAK_DEV_USER_ID}",
+      "username": "${KEYCLOAK_DEV_USER}",
+      "enabled": true,
+      "firstName": "AgentFlow",
+      "lastName": "Developer",
+      "email": "${KEYCLOAK_USER_EMAIL}",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_DEV_USER_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

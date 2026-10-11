@@ -1,0 +1,74 @@
+name: agentflow-dev
+
+x-server-logging: &server-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    ports: !override
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    logging: *server-logging
+
+  redis:
+    ports: !override
+      - "${REDIS_BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    logging: *server-logging
+
+  keycloak:
+    environment:
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.dev}
+      KEYCLOAK_START_MODE: dev
+      KEYCLOAK_WEB_REDIRECT_URI: ${WEB_PUBLIC_URL:?Set WEB_PUBLIC_URL in .env.dev}/*
+      KEYCLOAK_WEB_ORIGIN: ${WEB_PUBLIC_URL:?Set WEB_PUBLIC_URL in .env.dev}
+      KEYCLOAK_USER_EMAIL: ${KEYCLOAK_USER_EMAIL:?Set KEYCLOAK_USER_EMAIL in .env.dev}
+    ports: !override
+      - "${KEYCLOAK_BIND_ADDRESS:-0.0.0.0}:${KEYCLOAK_PORT:-8080}:8080"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${KEYCLOAK_MANAGEMENT_PORT:-9000}:9000"
+    volumes: !override
+      - ./keycloak/agentflow-realm-dev.json:/opt/keycloak/data/import/agentflow-realm.json:ro
+      - ./keycloak/entrypoint.sh:/opt/keycloak/bin/agentflow-entrypoint.sh:ro
+    logging: *server-logging
+
+  system:
+    image: ${AGENTFLOW_SYSTEM_IMAGE:-agentflow-system:dev}
+    environment:
+      OIDC_ISSUER: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.dev}/realms/agentflow
+      WEB_ORIGINS: ${WEB_PUBLIC_URL:?Set WEB_PUBLIC_URL in .env.dev}
+    ports: !override
+      - "${SYSTEM_BIND_ADDRESS:-0.0.0.0}:${SYSTEM_PORT:-8000}:8000"
+    logging: *server-logging
+
+  agent-runtime-image:
+    image: ${AGENTFLOW_AGENT_RUNTIME_IMAGE:-agentflow-agent-runtime:dev}
+
+  filesystem-mcp:
+    image: ${AGENTFLOW_FILESYSTEM_MCP_IMAGE:-agentflow-filesystem-mcp:dev}
+    ports: !override
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-8002}:8002"
+    logging: *server-logging
+
+  workflow-worker:
+    image: ${AGENTFLOW_SYSTEM_IMAGE:-agentflow-system:dev}
+    environment:
+      AGENT_RUNTIME_IMAGE: ${AGENTFLOW_AGENT_RUNTIME_IMAGE:-agentflow-agent-runtime:dev}
+      AGENT_RUNTIME_NETWORK: ${AGENT_RUNTIME_NETWORK:-agentflow-dev-runtime}
+    logging: *server-logging
+
+  web:
+    image: ${AGENTFLOW_WEB_IMAGE:-agentflow-web:dev}
+    build:
+      args:
+        VITE_SYSTEM_API_URL: ${SYSTEM_PUBLIC_URL:?Set SYSTEM_PUBLIC_URL in .env.dev}
+        VITE_KEYCLOAK_URL: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.dev}
+        VITE_KEYCLOAK_REALM: agentflow
+        VITE_KEYCLOAK_CLIENT_ID: agentflow-web
+    ports: !override
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:80"
+    logging: *server-logging
+
+networks:
+  runtime:
+    name: ${AGENT_RUNTIME_NETWORK:-agentflow-dev-runtime}

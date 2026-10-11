@@ -208,7 +208,7 @@ infra/observability/
     dashboards/workflow-runtime.json
 ```
 
-Giữ stack trong file Compose override để `compose.yaml` cốt lõi vẫn nhẹ. Các service nên cùng network `backend`; chỉ Grafana (`127.0.0.1:3001`) và Prometheus UI khi cần debug (`127.0.0.1:9090`) được bind ra localhost. Không public cổng OTLP, Loki, Tempo, exporter hoặc management port trong production.
+Giữ stack trong file Compose override để `docker/compose.yaml` cốt lõi vẫn nhẹ. Các service nên cùng network `backend`; chỉ Grafana (`127.0.0.1:3001`) và Prometheus UI khi cần debug (`127.0.0.1:9090`) được bind ra localhost. Không public cổng OTLP, Loki, Tempo, exporter hoặc management port trong production.
 
 Collector tối thiểu cho traces và application metrics:
 
@@ -272,9 +272,9 @@ Keycloak hiện đã bật `KC_METRICS_ENABLED=true`; endpoint `/metrics` dùng 
 Lệnh dự kiến sau khi các file trên được triển khai:
 
 ```powershell
-docker compose -f compose.yaml -f compose.observability.yaml config
-docker compose -f compose.yaml -f compose.observability.yaml up -d --build
-docker compose -f compose.yaml -f compose.observability.yaml ps
+docker compose -f docker/compose.yaml -f docker/compose.observability.yaml config
+docker compose -f docker/compose.yaml -f docker/compose.observability.yaml up -d --build
+docker compose -f docker/compose.yaml -f docker/compose.observability.yaml ps
 ```
 
 Tiêu chí nghiệm thu: Grafana tự có ba data source Prometheus/Loki/Tempo; Prometheus target Collector và Keycloak đều `UP`; restart stack không làm mất provisioning.

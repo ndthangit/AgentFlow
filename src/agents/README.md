@@ -18,8 +18,8 @@ AGENT_RUNTIME_NAME=default
 ```
 
 ```powershell
-docker compose build agent-runtime-image
-docker compose up -d workflow-worker
+docker compose --env-file docker/.env -f docker/compose.yaml build agent-runtime-image
+docker compose --env-file docker/.env -f docker/compose.yaml up -d workflow-worker
 ```
 
 Ví dụ để dùng `src/agents/my-runtime`, đặt `AGENT_RUNTIME_NAME=my-runtime`. Mỗi stack Compose hiện chọn một runtime image; workflow worker vẫn tạo một container dùng một lần cho mỗi Agent node attempt.
