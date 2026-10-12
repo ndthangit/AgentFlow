@@ -9,6 +9,10 @@ import { randomUUID } from "node:crypto";
 
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_CAPTURE_BYTES = 1024 * 1024;
+const MAX_MCP_CONFIG_BYTES = 128 * 1024;
+const MAX_MCP_SERVERS = 20;
+const MCP_SERVER_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MCP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 class PublicAgentError extends Error {
   constructor(code, message) {
@@ -19,6 +23,12 @@ class PublicAgentError extends Error {
 
 function tomlString(value) {
   return JSON.stringify(value);
+}
+
+function tomlInlineStringMap(value) {
+  return `{ ${Object.entries(value)
+    .map(([key, item]) => `${tomlString(key)} = ${tomlString(item)}`)
+    .join(", ")} }`;
 }
 
 function requireEnvironment(env, name) {
@@ -103,7 +113,104 @@ export function buildPrompt(request) {
   ].join("\n");
 }
 
-export function buildCodexArgs({ model, baseUrl, schemaPath, outputPath }) {
+export function buildMcpConfiguration(rawValue, baseEnvironment = {}) {
+  const environment = { ...baseEnvironment };
+  delete environment.AGENT_MCP_SERVERS;
+  if (!rawValue?.trim()) return { args: [], environment, serverNames: [] };
+  if (Buffer.byteLength(rawValue, "utf8") > MAX_MCP_CONFIG_BYTES) {
+    throw new PublicAgentError(
+      "CONFIGURATION_ERROR",
+      "MCP server configuration exceeds 128 KiB.",
+    );
+  }
+
+  let connections;
+  try {
+    connections = JSON.parse(rawValue);
+  } catch {
+    throw new PublicAgentError("CONFIGURATION_ERROR", "MCP server configuration is invalid JSON.");
+  }
+  if (
+    !connections
+    || typeof connections !== "object"
+    || Array.isArray(connections)
+    || Object.keys(connections).length > MAX_MCP_SERVERS
+  ) {
+    throw new PublicAgentError("CONFIGURATION_ERROR", "MCP server configuration is invalid.");
+  }
+
+  const args = [];
+  const serverNames = [];
+  for (const [name, connection] of Object.entries(connections)) {
+    if (
+      !MCP_SERVER_NAME_PATTERN.test(name)
+      || !connection
+      || typeof connection !== "object"
+      || Array.isArray(connection)
+    ) {
+      throw new PublicAgentError("CONFIGURATION_ERROR", "MCP server configuration is invalid.");
+    }
+    if (connection.transport !== "streamable_http") {
+      throw new PublicAgentError(
+        "CONFIGURATION_ERROR",
+        "The Codex runtime supports only Streamable HTTP MCP servers.",
+      );
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(connection.url);
+    } catch {
+      throw new PublicAgentError("CONFIGURATION_ERROR", "MCP server configuration is invalid.");
+    }
+    if (
+      !["http:", "https:"].includes(parsedUrl.protocol)
+      || parsedUrl.username
+      || parsedUrl.password
+      || parsedUrl.hash
+    ) {
+      throw new PublicAgentError("CONFIGURATION_ERROR", "MCP server configuration is invalid.");
+    }
+
+    const headers = connection.headers ?? {};
+    if (
+      !headers
+      || typeof headers !== "object"
+      || Array.isArray(headers)
+      || Object.keys(headers).length > 20
+      || Object.entries(headers).some(([headerName, headerValue]) => (
+        !MCP_HEADER_NAME_PATTERN.test(headerName)
+        || typeof headerValue !== "string"
+        || !headerValue
+        || headerValue.includes("\r")
+        || headerValue.includes("\n")
+      ))
+    ) {
+      throw new PublicAgentError("CONFIGURATION_ERROR", "MCP server headers are invalid.");
+    }
+
+    args.push("-c", `mcp_servers.${name}.url=${tomlString(connection.url)}`);
+    args.push("-c", `mcp_servers.${name}.required=true`);
+    const headerEnvironment = {};
+    let headerIndex = 0;
+    for (const [headerName, headerValue] of Object.entries(headers)) {
+      const variableName = `AGENTFLOW_MCP_${serverNames.length}_HEADER_${headerIndex}`;
+      environment[variableName] = headerValue;
+      headerEnvironment[headerName] = variableName;
+      headerIndex += 1;
+    }
+    if (Object.keys(headerEnvironment).length) {
+      args.push(
+        "-c",
+        `mcp_servers.${name}.env_http_headers=${tomlInlineStringMap(headerEnvironment)}`,
+      );
+    }
+    serverNames.push(name);
+  }
+  return { args, environment, serverNames };
+}
+
+export function buildCodexArgs({ model, baseUrl, schemaPath, outputPath, mcpArgs = [] }) {
   return [
     "exec",
     "--ephemeral",
@@ -135,6 +242,7 @@ export function buildCodexArgs({ model, baseUrl, schemaPath, outputPath }) {
     "model_providers.agentflow.requires_openai_auth=false",
     "-c",
     "model_providers.agentflow.supports_websockets=false",
+    ...mcpArgs,
     "-",
   ];
 }
@@ -187,6 +295,30 @@ function mapCodexFailure(result) {
     return new PublicAgentError("AGENT_FAILED", "Codex runtime output exceeded its safety limit.");
   }
   const diagnostic = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  if (
+    diagnostic.includes("mcp")
+    && (
+      diagnostic.includes("failed")
+      || diagnostic.includes("could not connect")
+      || diagnostic.includes("initialize")
+      || diagnostic.includes("timed out")
+    )
+  ) {
+    return new PublicAgentError(
+      "MCP_CONNECTION_FAILED",
+      "Could not connect to one or more selected MCP servers.",
+    );
+  }
+  if (
+    diagnostic.includes("402")
+    || diagnostic.includes("payment required")
+    || diagnostic.includes("more credits")
+  ) {
+    return new PublicAgentError(
+      "RATE_LIMITED",
+      "The model provider credit or quota limit was reached.",
+    );
+  }
   if (diagnostic.includes("429") || diagnostic.includes("rate limit")) {
     return new PublicAgentError("RATE_LIMITED", "The model provider rate limit was reached. Retry later.");
   }
@@ -220,12 +352,7 @@ export async function executeRequest(requestValue, env = process.env, commandRun
   requireEnvironment(env, "AGENT_PROVIDER_API_KEY");
   const model = requireEnvironment(env, "AGENT_MODEL");
   const baseUrl = validateBaseUrl(requireEnvironment(env, "AGENT_PROVIDER_BASE_URL"));
-  if (env.AGENT_MCP_SERVERS?.trim()) {
-    throw new PublicAgentError(
-      "CONFIGURATION_ERROR",
-      "The Codex runtime does not support AgentFlow MCP connections yet.",
-    );
-  }
+  const mcp = buildMcpConfiguration(env.AGENT_MCP_SERVERS, env);
 
   const workDirectory = await mkdtemp(join(tmpdir(), "agentflow-codex-"));
   const schemaPath = join(workDirectory, "schema.json");
@@ -234,12 +361,18 @@ export async function executeRequest(requestValue, env = process.env, commandRun
     await mkdir(env.HOME || join(workDirectory, "home"), { recursive: true });
     await mkdir(env.CODEX_HOME || join(workDirectory, "codex-home"), { recursive: true });
     await writeFile(schemaPath, JSON.stringify(request.output_schema), { encoding: "utf8", mode: 0o600 });
-    const args = buildCodexArgs({ model, baseUrl, schemaPath, outputPath });
+    const args = buildCodexArgs({
+      model,
+      baseUrl,
+      schemaPath,
+      outputPath,
+      mcpArgs: mcp.args,
+    });
     const result = await commandRunner(
       env.CODEX_BINARY || "codex",
       args,
       buildPrompt(request),
-      env,
+      mcp.environment,
     );
     if (result.code !== 0) throw mapCodexFailure(result);
 

@@ -23,6 +23,7 @@ from runtime.agent_runtime_manager import (
     AgentRuntimeManager,
 )
 from runtime.engine import AgentExecutor, LlmExecutor
+from runtime.execution_context import bind_node_execution
 
 PROMPT_INPUT_REFERENCE = re.compile(r"\{\{\s*input((?:\.[A-Za-z0-9_-]+)*)\s*\}\}")
 tracer = trace.get_tracer("agentflow.llm")
@@ -430,11 +431,12 @@ def create_agent_executor(
             "skills": skill_snapshots,
             "output_schema": config.get("outputSchema", {}),
         }
-        return await selected_runtime_manager.execute(
-            runtime,
-            request,
-            environment_overrides=environment_overrides,
-        )
+        with bind_node_execution(str(node.get("id", "unknown"))):
+            return await selected_runtime_manager.execute(
+                runtime,
+                request,
+                environment_overrides=environment_overrides,
+            )
 
     return execute_agent
 

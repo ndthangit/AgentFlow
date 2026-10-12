@@ -218,6 +218,7 @@ Direct Access Grant của CLI local.
 | `keycloak` | OIDC, user và client web PKCE |
 | `system` | FastAPI control plane, migration và outbox orchestrator |
 | `workflow-worker` | Claim queue, thực thi graph và ghi run/step |
+| `workflow-recovery` | Fail run mất heartbeat và thu hồi Agent container mồ côi |
 | `agent-runtime-default-image` | Build/pull image Deep Agents mặc định trước khi worker chạy |
 | `agent-runtime-codex-image` | Build/pull image Codex CLI trước khi worker chạy |
 | `filesystem-mcp` | MCP demo trên network runtime riêng |
@@ -232,6 +233,13 @@ thao tác này không thể hoàn tác.
 Số worker được cấu hình bằng `WORKFLOW_WORKER_REPLICAS`. Các replica dùng chung
 Redis consumer group nhưng có consumer name riêng, nên một message chỉ được một
 worker claim tại một thời điểm.
+
+Worker giữ lease trong PostgreSQL và gia hạn theo `WORKFLOW_HEARTBEAT_SECONDS`.
+Nếu quá `WORKFLOW_LEASE_TTL_SECONDS`, `workflow-recovery` chuyển run/step đang chạy
+sang `failed` với mã `WORKER_LOST`, rồi dọn container theo label. Chu kỳ đối soát
+được cấu hình bằng `WORKFLOW_RECOVERY_INTERVAL_SECONDS`. Outbox phát lại run vẫn
+`pending` sau `WORKFLOW_OUTBOX_REDISPATCH_SECONDS`, vì vậy Redis restart hoặc mất
+dữ liệu stream không làm run bị kẹt vĩnh viễn.
 
 Agent node chọn image theo runtime id trong `AGENT_RUNTIME_IMAGES` (`default` hoặc
 `codex` trong stack hiện tại). Provider, model và API key được lấy từ Models và

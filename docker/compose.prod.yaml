@@ -74,6 +74,12 @@ services:
       AGENT_RUNTIME_PULL_POLICY: never
     logging: *server-logging
 
+  workflow-recovery:
+    image: ${AGENTFLOW_SYSTEM_IMAGE:?Set AGENTFLOW_SYSTEM_IMAGE in .env.prod}
+    pull_policy: always
+    restart: always
+    logging: *server-logging
+
   web:
     image: ${AGENTFLOW_WEB_IMAGE:?Set AGENTFLOW_WEB_IMAGE in .env.prod}
     build: !reset null

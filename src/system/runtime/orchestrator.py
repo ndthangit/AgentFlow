@@ -2,17 +2,18 @@
 
 import asyncio
 import logging
+import os
 import signal
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from opentelemetry import trace
 from opentelemetry.propagate import extract
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import SessionFactory
 from core.telemetry import annotate_langfuse_span, record_outbox_dispatch
-from domain.models import RunDispatch
+from domain.models import FlowRun, RunDispatch
 from runtime.queue import RedisRunQueue
 
 logger = logging.getLogger("agentflow.orchestrator")
@@ -22,9 +23,23 @@ tracer = trace.get_tracer("agentflow.orchestrator")
 async def dispatch_batch(
     session: AsyncSession, queue: RedisRunQueue, batch_size: int = 50
 ) -> int:
+    redispatch_before = datetime.now(UTC) - timedelta(
+        seconds=max(
+            10.0, float(os.getenv("WORKFLOW_OUTBOX_REDISPATCH_SECONDS", "60"))
+        )
+    )
     result = await session.scalars(
         select(RunDispatch)
-        .where(RunDispatch.dispatched_at.is_(None))
+        .join(FlowRun, FlowRun.id == RunDispatch.run_id)
+        .where(
+            or_(
+                RunDispatch.dispatched_at.is_(None),
+                (
+                    (FlowRun.status == "pending")
+                    & (RunDispatch.dispatched_at < redispatch_before)
+                ),
+            )
+        )
         .order_by(RunDispatch.created_at)
         .limit(batch_size)
         .with_for_update(skip_locked=True)

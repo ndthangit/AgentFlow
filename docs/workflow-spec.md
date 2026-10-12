@@ -26,7 +26,7 @@ Editor lưu draft với optimistic revision. Khi publish, server validate graph,
 
 Trong lát cắt M0b hiện tại, Agent node chọn đường chạy bằng `config.runtime`: `default`/`agent` (Deep Agents container), `codex` (Codex CLI container) hoặc `direct` (đường tương thích gọi provider adapter trong worker). Runtime container được resolve từ allow-list `AGENT_RUNTIME_IMAGES`; graph không được truyền image tùy ý. Các đường chạy chọn `providerId` và `model` đã đăng ký. Worker giải mã credential khi thực thi và truyền base URL/API key từ Models vào environment của đúng container attempt; runtime không lấy API key từ `.env`. Workflow mẫu và workflow production đều gọi model thật. Xem [contract tích hợp Agent runtime](../src/agents/README.md) và [thiết kế, giới hạn của ephemeral runtime](ephemeral-agent-runtime.md).
 
-`config.mcpServerIds` chọn các remote MCP server đã bật cho riêng node Agent. Tính năng này chỉ dùng với runtime `agent`. Version workflow snapshot slug, transport và URL; header xác thực vẫn được mã hóa trong registry và chỉ giải mã vào environment của container lúc thực thi.
+`config.mcpServerIds` chọn các remote MCP server đã bật cho riêng node Agent. Runtime `agent` hỗ trợ Streamable HTTP và SSE; runtime `codex` hỗ trợ Streamable HTTP. Version workflow snapshot slug, transport và URL; header xác thực vẫn được mã hóa trong registry và chỉ giải mã vào environment của container lúc thực thi.
 
 MVP dùng một object JSON cho mỗi invocation, không mặc định tự lặp qua mảng như mọi hệ workflow khác. `Map`, bounded loop và subflow bổ sung sau với iteration ID và giới hạn fan-out rõ ràng.
 

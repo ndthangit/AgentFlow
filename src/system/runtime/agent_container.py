@@ -17,6 +17,7 @@ from runtime.container_process import (
     ContainerRunner,
     run_container_process,
 )
+from runtime.execution_context import current_execution_context
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("agentflow.agent-container")
@@ -134,7 +135,9 @@ def _shared_semaphore() -> asyncio.Semaphore:
 
 
 def build_agent_docker_command(
-    settings: AgentContainerSettings, container_name: str
+    settings: AgentContainerSettings,
+    container_name: str,
+    execution_labels: dict[str, str] | None = None,
 ) -> list[str]:
     """Build argv without embedding credentials or user-controlled input."""
     command = [
@@ -168,6 +171,8 @@ def build_agent_docker_command(
         "--tmpfs",
         "/tmp:rw,nosuid,nodev,noexec,size=128m",
     ]
+    for name, value in sorted((execution_labels or {}).items()):
+        command.extend(("--label", f"io.agentflow.{name}={value}"))
     command.extend(("--add-host", "host.docker.internal:host-gateway"))
     for name in PASSTHROUGH_ENV:
         command.extend(("--env", name))
@@ -225,7 +230,18 @@ class AgentContainerExecutor:
                 "agent_runtime": self.settings.image,
             },
         )
-        command = build_agent_docker_command(self.settings, container_name)
+        execution = current_execution_context()
+        execution_labels = None
+        if execution is not None:
+            execution_labels = {
+                "run-id": str(execution.run_id),
+                "lease-generation": str(execution.lease_generation),
+            }
+            if execution.node_id:
+                execution_labels["node-id"] = execution.node_id
+        command = build_agent_docker_command(
+            self.settings, container_name, execution_labels
+        )
         environment = dict(os.environ)
         # Model credentials must come from the workflow/provider selection for
         # this invocation, never from stale defaults on the worker process.

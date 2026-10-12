@@ -116,6 +116,50 @@ class FlowRun(Base):
     events: Mapped[list["RunEvent"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    execution_lease: Mapped["RunExecutionLease | None"] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class RunExecutionLease(Base):
+    """Database ownership and cleanup state for one workflow execution."""
+
+    __tablename__ = "run_execution_leases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'released', 'expired')",
+            name="ck_run_execution_leases_status",
+        ),
+        CheckConstraint(
+            "cleanup_status IN ('pending', 'cleaned')",
+            name="ck_run_execution_leases_cleanup_status",
+        ),
+        CheckConstraint("generation > 0", name="ck_run_execution_leases_generation"),
+        {"schema": "system"},
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("system.runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner_id: Mapped[str] = mapped_column(String(255), index=True)
+    generation: Mapped[int] = mapped_column(Integer, default=1)
+    message_id: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    cleanup_status: Mapped[str] = mapped_column(
+        String(32), default="pending", index=True
+    )
+    cleanup_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    run: Mapped[FlowRun] = relationship(back_populates="execution_lease")
 
 
 class RunDispatch(Base):

@@ -59,3 +59,19 @@ class ExecutionLedgerModelTests(unittest.TestCase):
         }
 
         self.assertIn(("run_id", "sequence"), unique_columns)
+
+    def test_run_execution_lease_has_fencing_and_cleanup_constraints(self):
+        table = Base.metadata.tables["system.run_execution_leases"]
+        check_names = {
+            constraint.name
+            for constraint in table.constraints
+            if isinstance(constraint, CheckConstraint)
+        }
+
+        self.assertEqual(table.primary_key.columns.keys(), ["run_id"])
+        self.assertFalse(table.c.owner_id.nullable)
+        self.assertFalse(table.c.generation.nullable)
+        self.assertFalse(table.c.lease_expires_at.nullable)
+        self.assertIn("ck_run_execution_leases_status", check_names)
+        self.assertIn("ck_run_execution_leases_cleanup_status", check_names)
+        self.assertIn("ck_run_execution_leases_generation", check_names)

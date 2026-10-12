@@ -1,6 +1,7 @@
 """Workflow worker consuming Redis Stream jobs and executing persisted versions."""
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -11,6 +12,7 @@ import uuid
 from opentelemetry import trace
 from opentelemetry.propagate import extract
 from opentelemetry.trace import Status, StatusCode
+from redis.exceptions import RedisError
 from sqlalchemy import select, update
 
 from core.database import SessionFactory
@@ -26,6 +28,15 @@ from domain.models import FlowRun, LlmProvider, McpServer, RunStep, WorkflowVers
 from providers.secrets import ProviderSecretStore
 from runtime.agent_executor import create_agent_executor, create_llm_executor
 from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
+from runtime.execution_context import bind_run_execution
+from runtime.leases import (
+    LeaseLostError,
+    RunLeaseClaim,
+    claim_run,
+    fail_owned_run,
+    lock_owned_lease,
+    renew_run_lease,
+)
 from runtime.queue import RedisRunQueue, RunQueueMessage
 
 configure_telemetry(
@@ -35,24 +46,9 @@ logger = logging.getLogger("agentflow.worker")
 tracer = trace.get_tracer("agentflow.worker")
 
 
-async def claim_run(run_id: uuid.UUID, *, reclaimed: bool) -> bool:
-    async with SessionFactory() as session:
-        claimed = await session.scalar(
-            update(FlowRun)
-            .where(FlowRun.id == run_id, FlowRun.status == "pending")
-            .values(status="running")
-            .returning(FlowRun.id)
-        )
-        if claimed is not None:
-            await session.commit()
-            return True
-        status = await session.scalar(
-            select(FlowRun.status).where(FlowRun.id == run_id)
-        )
-        return reclaimed and status == "running"
-
-
-async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
+async def load_and_execute(
+    run_id: uuid.UUID, claim: RunLeaseClaim
+) -> WorkflowExecution:
     async with SessionFactory() as session:
         flow_run = await session.scalar(select(FlowRun).where(FlowRun.id == run_id))
         if flow_run is None:
@@ -106,9 +102,12 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
     execute_llm = create_llm_executor(graph, providers, secret_store)
 
     async def persist_progress(step: ExecutionStep) -> None:
-        await persist_step(run_id, step)
+        await persist_step(run_id, step, claim)
 
-    with langfuse_trace_context(**trace_metadata):
+    with (
+        bind_run_execution(run_id, claim.generation),
+        langfuse_trace_context(**trace_metadata),
+    ):
         return await execute_workflow(
             graph,
             run_input,
@@ -118,9 +117,12 @@ async def load_and_execute(run_id: uuid.UUID) -> WorkflowExecution:
         )
 
 
-async def persist_step(run_id: uuid.UUID, step: ExecutionStep) -> None:
+async def persist_step(
+    run_id: uuid.UUID, step: ExecutionStep, claim: RunLeaseClaim
+) -> None:
     """Commit one node transition so the run viewer can show live progress."""
     async with SessionFactory() as session:
+        await lock_owned_lease(session, claim)
         await session.execute(
             update(RunStep)
             .where(RunStep.run_id == run_id, RunStep.sequence == step.sequence)
@@ -136,13 +138,18 @@ async def persist_step(run_id: uuid.UUID, step: ExecutionStep) -> None:
         await session.commit()
 
 
-async def persist_execution(run_id: uuid.UUID, execution: WorkflowExecution) -> None:
+async def persist_execution(
+    run_id: uuid.UUID, execution: WorkflowExecution, claim: RunLeaseClaim
+) -> None:
     async with SessionFactory() as session:
-        flow_run = await session.scalar(select(FlowRun).where(FlowRun.id == run_id))
-        if flow_run is None:
-            return
-        flow_run.status = execution.status
-        flow_run.output = execution.output
+        lease = await lock_owned_lease(session, claim)
+        result = await session.execute(
+            update(FlowRun)
+            .where(FlowRun.id == run_id, FlowRun.status == "running")
+            .values(status=execution.status, output=execution.output)
+        )
+        if not result.rowcount:
+            raise LeaseLostError(f"Run {run_id} is no longer running")
         for step in execution.steps:
             await session.execute(
                 update(RunStep)
@@ -156,10 +163,84 @@ async def persist_execution(run_id: uuid.UUID, execution: WorkflowExecution) -> 
                     completed_at=step.completed_at,
                 )
             )
+        lease.status = "released"
+        lease.cleanup_status = "pending"
         await session.commit()
 
 
-async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> None:
+async def _heartbeat_lease(
+    claim: RunLeaseClaim,
+    *,
+    ttl_seconds: float,
+    interval_seconds: float,
+    lease_lost: asyncio.Event,
+) -> None:
+    loop = asyncio.get_running_loop()
+    last_success = loop.time()
+    while not lease_lost.is_set():
+        await asyncio.sleep(interval_seconds)
+        try:
+            renewed = await renew_run_lease(claim, ttl_seconds)
+        except Exception:
+            logger.exception("Could not renew execution lease for run %s", claim.run_id)
+            if loop.time() - last_success >= ttl_seconds:
+                lease_lost.set()
+            continue
+        if not renewed:
+            lease_lost.set()
+            return
+        last_success = loop.time()
+
+
+async def _execute_with_heartbeat(
+    run_id: uuid.UUID,
+    claim: RunLeaseClaim,
+    *,
+    ttl_seconds: float,
+    heartbeat_seconds: float,
+) -> WorkflowExecution:
+    lease_lost = asyncio.Event()
+    heartbeat = asyncio.create_task(
+        _heartbeat_lease(
+            claim,
+            ttl_seconds=ttl_seconds,
+            interval_seconds=heartbeat_seconds,
+            lease_lost=lease_lost,
+        )
+    )
+    execution = asyncio.create_task(load_and_execute(run_id, claim))
+    lost_waiter = asyncio.create_task(lease_lost.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {execution, lost_waiter}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if lost_waiter in done and lease_lost.is_set():
+            execution.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await execution
+            raise LeaseLostError(f"Execution lease for run {run_id} was lost")
+        return await execution
+    finally:
+        if not execution.done():
+            execution.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await execution
+        heartbeat.cancel()
+        lost_waiter.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+        with contextlib.suppress(asyncio.CancelledError):
+            await lost_waiter
+
+
+async def process_message(
+    queue: RedisRunQueue,
+    message: RunQueueMessage,
+    *,
+    owner_id: str,
+    lease_ttl_seconds: float,
+    heartbeat_seconds: float,
+) -> None:
     try:
         run_id = uuid.UUID(message.run_id)
     except ValueError:
@@ -187,9 +268,16 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
             },
         )
         started = time.perf_counter()
+        claim: RunLeaseClaim | None = None
         try:
-            should_execute = await claim_run(run_id, reclaimed=message.reclaimed)
-            if not should_execute:
+            claim = await claim_run(
+                run_id,
+                owner_id=owner_id,
+                message_id=message.message_id,
+                reclaimed=message.reclaimed,
+                ttl_seconds=lease_ttl_seconds,
+            )
+            if claim is None:
                 logger.info(
                     "Acknowledging duplicate or terminal run %s",
                     run_id,
@@ -202,9 +290,13 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
                 run_id,
                 extra={"event": "workflow.run.started", "run_id": run_id},
             )
-            execution = await load_and_execute(run_id)
-            await persist_execution(run_id, execution)
-            await queue.acknowledge(message.message_id)
+            execution = await _execute_with_heartbeat(
+                run_id,
+                claim,
+                ttl_seconds=lease_ttl_seconds,
+                heartbeat_seconds=heartbeat_seconds,
+            )
+            await persist_execution(run_id, execution, claim)
             duration = time.perf_counter() - started
             span.set_attribute("agentflow.run.status", execution.status)
             annotate_langfuse_span(
@@ -225,7 +317,26 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
                     "status": execution.status,
                 },
             )
-        except Exception as exc:  # Leave the message pending for XAUTOCLAIM.
+        except asyncio.CancelledError:
+            if claim is not None:
+                await asyncio.shield(
+                    fail_owned_run(
+                        claim,
+                        code="WORKER_SHUTDOWN",
+                        message="The workflow worker shut down before completion.",
+                    )
+                )
+            raise
+        except LeaseLostError as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, "LEASE_LOST"))
+            logger.error(
+                "Workflow run %s lost its execution lease; recovery will reconcile it",
+                run_id,
+                extra={"event": "workflow.run.lease_lost", "run_id": run_id},
+            )
+            return
+        except Exception as exc:  # Persist a terminal state before ACK when possible.
             span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
             annotate_langfuse_span(
@@ -235,11 +346,25 @@ async def process_message(queue: RedisRunQueue, message: RunQueueMessage) -> Non
                 level="ERROR",
                 status_message=type(exc).__name__,
             )
+            failed = False
+            if claim is not None:
+                try:
+                    failed = await fail_owned_run(
+                        claim,
+                        code="WORKER_EXECUTION_FAILED",
+                        message="The workflow worker could not complete the task.",
+                    )
+                except Exception:
+                    logger.exception("Could not persist failure for run %s", run_id)
             logger.exception(
-                "Workflow run %s crashed; message will be reclaimed",
+                "Workflow run %s crashed; terminal failure persisted=%s",
                 run_id,
+                failed,
                 extra={"event": "workflow.run.crashed", "run_id": run_id},
             )
+            if not failed:
+                return
+        await queue.acknowledge(message.message_id)
 
 
 async def run_worker() -> None:
@@ -248,28 +373,77 @@ async def run_worker() -> None:
         "WORKFLOW_WORKER_NAME", f"{socket.gethostname()}-{os.getpid()}"
     )
     reclaim_idle_ms = int(os.getenv("WORKFLOW_RECLAIM_IDLE_MS", "300000"))
+    lease_ttl_seconds = max(
+        10.0, float(os.getenv("WORKFLOW_LEASE_TTL_SECONDS", "60"))
+    )
+    heartbeat_seconds = max(
+        1.0,
+        min(
+            float(os.getenv("WORKFLOW_HEARTBEAT_SECONDS", "10")),
+            lease_ttl_seconds / 2,
+        ),
+    )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for name in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(name, stop.set)
-    await queue.ensure_group()
     logger.info("Workflow worker %s started", consumer)
     next_reclaim = 0.0
+    reconnect_delay = 1.0
     try:
         while not stop.is_set():
-            record_worker_heartbeat()
-            now = loop.time()
-            messages: list[RunQueueMessage] = []
-            if now >= next_reclaim:
-                messages = await queue.reclaim(consumer, min_idle_ms=reclaim_idle_ms)
-                next_reclaim = now + 60
-            if not messages:
-                messages = await queue.read(consumer)
-            for message in messages:
-                await process_message(queue, message)
+            try:
+                await queue.ensure_group()
+                record_worker_heartbeat()
+                now = loop.time()
+                messages: list[RunQueueMessage] = []
+                if now >= next_reclaim:
+                    messages = await queue.reclaim(
+                        consumer, min_idle_ms=reclaim_idle_ms
+                    )
+                    next_reclaim = now + 60
+                if not messages:
+                    messages = await queue.read(consumer)
+                reconnect_delay = 1.0
+                for message in messages:
+                    processing = asyncio.create_task(
+                        process_message(
+                            queue,
+                            message,
+                            owner_id=consumer,
+                            lease_ttl_seconds=lease_ttl_seconds,
+                            heartbeat_seconds=heartbeat_seconds,
+                        )
+                    )
+                    stop_waiter = asyncio.create_task(stop.wait())
+                    done, _pending = await asyncio.wait(
+                        {processing, stop_waiter},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stop_waiter in done and stop.is_set():
+                        processing.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await processing
+                    stop_waiter.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stop_waiter
+                    if stop.is_set():
+                        break
+            except (RedisError, OSError):
+                logger.exception(
+                    "Redis unavailable; worker will reconnect in %.1f seconds",
+                    reconnect_delay,
+                )
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=reconnect_delay)
+                except TimeoutError:
+                    pass
+                reconnect_delay = min(reconnect_delay * 2, 30.0)
     finally:
-        await queue.remove_consumer(consumer)
-        await queue.close()
+        with contextlib.suppress(Exception):
+            await queue.remove_consumer(consumer)
+        with contextlib.suppress(Exception):
+            await queue.close()
         logger.info("Workflow worker %s stopped", consumer)
 
 

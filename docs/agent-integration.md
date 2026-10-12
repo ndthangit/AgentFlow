@@ -26,7 +26,7 @@ Ngày kiểm chứng tài liệu nhà cung cấp: **11/10/2026**. Các interface
 
 Nguồn cho Codex SDK: [Codex SDK](https://developers.openai.com/codex/sdk/). `codex mcp-server` đã bị loại bỏ; không chọn nó làm nền tích hợp mới.
 
-Agent runtime hiện nạp các MCP được chọn bằng `langchain-mcp-adapters`. Worker truyền cấu hình qua `AGENT_MCP_SERVERS` cho đúng một container, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin.
+Worker truyền các MCP được chọn qua `AGENT_MCP_SERVERS` cho đúng một container. Runtime mặc định nạp tool bằng `langchain-mcp-adapters`, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Runtime Codex ánh xạ cùng contract sang `mcp_servers.<slug>`, hỗ trợ Streamable HTTP và dùng `env_http_headers` để không đặt secret trong argv. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin. Cấu hình Codex MCP được đối chiếu theo [tài liệu MCP chính thức](https://developers.openai.com/codex/mcp/).
 
 App Server dùng JSON-RPC với định dạng wire có khác biệt: bỏ trường `jsonrpc`; stdio dùng JSONL. Transport WebSocket hiện được ghi experimental/unsupported. AgentFlow nên bọc stdio bằng gateway của mình khi cần truy cập từ xa. Nguồn: [Codex App Server](https://learn.chatgpt.com/docs/app-server).
 

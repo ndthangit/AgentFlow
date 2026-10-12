@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -13,6 +14,7 @@ from runtime.agent_container import (
 )
 from runtime.agent_executor import create_agent_executor
 from runtime.container_process import ContainerResult
+from runtime.execution_context import bind_node_execution, bind_run_execution
 
 
 def settings() -> AgentContainerSettings:
@@ -64,8 +66,50 @@ class AgentDockerCommandTests(unittest.TestCase):
         self.assertNotIn("--demo", command)
         self.assertEqual(command[-1], "agentflow-agent-runtime:test")
 
+    def test_command_identifies_the_leased_run_for_orphan_cleanup(self):
+        run_id = uuid.uuid4()
+        command = build_agent_docker_command(
+            settings(),
+            "agentflow-agent-0123456789abcdef",
+            {
+                "run-id": str(run_id),
+                "lease-generation": "7",
+                "node-id": "agent-node",
+            },
+        )
+
+        labels = [
+            command[index + 1]
+            for index, value in enumerate(command[:-1])
+            if value == "--label"
+        ]
+        self.assertIn(f"io.agentflow.run-id={run_id}", labels)
+        self.assertIn("io.agentflow.lease-generation=7", labels)
+        self.assertIn("io.agentflow.node-id=agent-node", labels)
+
 
 class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_injects_current_run_lease_labels_into_the_container(self):
+        calls = []
+
+        async def runner(command, *_args):
+            calls.append(command)
+            return ContainerResult(0, b'{"output":{"summary":"ok"}}', b"")
+
+        run_id = uuid.uuid4()
+        executor = AgentContainerExecutor(settings(), runner=runner)
+        with bind_run_execution(run_id, 7), bind_node_execution("agent-node"):
+            await executor.execute({"task": "Plan", "context": "", "skills": []})
+
+        labels = [
+            calls[0][index + 1]
+            for index, value in enumerate(calls[0][:-1])
+            if value == "--label"
+        ]
+        self.assertIn(f"io.agentflow.run-id={run_id}", labels)
+        self.assertIn("io.agentflow.lease-generation=7", labels)
+        self.assertIn("io.agentflow.node-id=agent-node", labels)
+
     async def test_runs_one_container_and_returns_run_output(self):
         calls = []
 

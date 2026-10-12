@@ -108,6 +108,7 @@ services:
       WORKFLOW_QUEUE_STREAM: agentflow:workflow-runs
       WORKFLOW_QUEUE_GROUP: workflow-workers
       WORKFLOW_QUEUE_MAXLEN: ${WORKFLOW_QUEUE_MAXLEN:-10000}
+      WORKFLOW_OUTBOX_REDISPATCH_SECONDS: ${WORKFLOW_OUTBOX_REDISPATCH_SECONDS:-60}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       WEB_ORIGINS: http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
     ports:
@@ -170,6 +171,8 @@ services:
       WORKFLOW_QUEUE_STREAM: agentflow:workflow-runs
       WORKFLOW_QUEUE_GROUP: workflow-workers
       WORKFLOW_RECLAIM_IDLE_MS: ${WORKFLOW_RECLAIM_IDLE_MS:-300000}
+      WORKFLOW_LEASE_TTL_SECONDS: ${WORKFLOW_LEASE_TTL_SECONDS:-60}
+      WORKFLOW_HEARTBEAT_SECONDS: ${WORKFLOW_HEARTBEAT_SECONDS:-10}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       AGENT_RUNTIME_DEFAULT: ${AGENT_RUNTIME_DEFAULT:-default}
       AGENT_RUNTIME_IMAGES: '{"default":"agentflow-agent-default:${AGENT_RUNTIME_DEFAULT_IMAGE_VERSION:-0.1.0}","codex":"agentflow-agent-codex:${AGENT_RUNTIME_CODEX_IMAGE_VERSION:-0.1.0}"}'
@@ -194,6 +197,23 @@ services:
       agent-runtime-codex-image:
         condition: service_completed_successfully
       filesystem-mcp:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks: [backend]
+
+  workflow-recovery:
+    image: agentflow-system
+    restart: unless-stopped
+    command: ["python", "-m", "runtime.recovery"]
+    user: "0:0"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      WORKFLOW_RECOVERY_INTERVAL_SECONDS: ${WORKFLOW_RECOVERY_INTERVAL_SECONDS:-10}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      system:
         condition: service_healthy
     healthcheck:
       disable: true

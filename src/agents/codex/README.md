@@ -19,6 +19,11 @@ Adapter cấu hình một custom Codex model provider dùng Responses API. Phiê
 chạy `--ephemeral`, bỏ qua user config, dùng sandbox `read-only`, không xin quyền
 và trả kết quả theo `output_schema` của node.
 
+MCP được chọn cho node được ánh xạ từ `AGENT_MCP_SERVERS` sang cấu hình Codex
+`mcp_servers.<slug>`. Runtime hỗ trợ Streamable HTTP; SSE bị từ chối vì Codex CLI
+không hỗ trợ transport này. Header xác thực được đặt trong biến môi trường tạm và
+Codex chỉ nhận ánh xạ `env_http_headers`, nên giá trị secret không xuất hiện trong argv.
+
 Model được chọn phải hỗ trợ Responses API và tool semantics mà Codex CLI sử dụng.
 Với OpenRouter, nên chọn model Codex/GPT tương thích Responses; adapter sẽ trả lỗi
 public nếu provider từ chối model thay vì fallback sang model khác.
@@ -31,6 +36,5 @@ docker run --rm --entrypoint codex agentflow-agent-codex:0.1.0 --version
 cd src/agents/codex && npm test
 ```
 
-Khi chạy qua AgentFlow, chọn runtime `codex` trong Agent node. Bản đầu tiên chưa
-ánh xạ cấu hình MCP của AgentFlow sang Codex; một node `codex` có MCP sẽ dừng với
-lỗi cấu hình rõ ràng thay vì âm thầm bỏ qua tool.
+Khi chạy qua AgentFlow, chọn runtime `codex` trong Agent node. Nếu dùng MCP, hãy
+chọn server có transport Streamable HTTP trong cùng cấu hình node.

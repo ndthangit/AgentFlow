@@ -56,7 +56,7 @@ Nên triển khai v1 trước cho tác vụ phân tích, lập kế hoạch ho�
 | Khoảng trống | Ảnh hưởng đến Codex/OpenCode |
 | --- | --- |
 | Model management hiện chỉ đăng ký provider loại `openrouter` | Runtime nhận credential theo contract chung, nhưng chưa thể chọn provider OpenAI/Anthropic trực tiếp cho đến khi trang Models hỗ trợ thêm provider kind |
-| Codex v1 chưa ánh xạ `AGENT_MCP_SERVERS` sang cấu hình Codex | Node chọn runtime `codex` cùng MCP sẽ bị từ chối rõ ràng; không âm thầm bỏ qua tool |
+| Codex ánh xạ `AGENT_MCP_SERVERS` sang `mcp_servers.<slug>` | Hỗ trợ Streamable HTTP; header dùng `env_http_headers` để secret không xuất hiện trong argv; SSE bị từ chối rõ ràng |
 | Container không mount repository/workspace | Runtime chỉ có thể xử lý `task` và `context`; chưa thể sửa code thật |
 | Root filesystem chỉ đọc, chỉ `/tmp` là tmpfs `noexec` | Runtime phải đặt state tạm, schema và output trong `/tmp`; không được giả định có home ghi được |
 | Contract chưa có session, artifact, event, approval hoặc runtime-native cancel | Không thể dùng đầy đủ App Server hoặc OpenCode server qua một lần JSON stdin/stdout |
@@ -180,10 +180,11 @@ Adapter Codex nên thực hiện luồng sau:
 1. Đọc và validate `RunRequest`.
 2. Ghi `output_schema` vào file ngẫu nhiên dưới `/tmp`.
 3. Tạo prompt gồm nhiệm vụ, context không tin cậy, skill instructions và yêu cầu chỉ trả JSON.
-4. Chạy `codex exec` với argv cố định, prompt qua stdin, sandbox `read-only` cho use case chưa có workspace, schema và output file dưới `/tmp`.
-5. Parse file kết quả; không lấy dòng cuối của log làm kết quả.
-6. Validate JSON Schema rồi bọc thành `RunResult`.
-7. Xóa auth state/file tạm khi kết thúc; container dùng một lần tiếp tục là ranh giới cleanup cuối.
+4. Parse `AGENT_MCP_SERVERS`; ánh xạ server Streamable HTTP sang `mcp_servers.<slug>`, đặt `required=true`, và đưa header secret qua `env_http_headers` thay vì argv.
+5. Chạy `codex exec` với argv cố định, prompt qua stdin, sandbox `read-only` cho use case chưa có workspace, schema và output file dưới `/tmp`.
+6. Parse file kết quả; không lấy dòng cuối của log làm kết quả.
+7. Validate JSON Schema rồi bọc thành `RunResult`.
+8. Xóa auth state/file tạm khi kết thúc; container dùng một lần tiếp tục là ranh giới cleanup cuối.
 
 Không dùng `--dangerously-bypass-approvals-and-sandbox`. Khi AgentFlow có workspace, chuyển sang `workspace-write` chỉ trong checkout riêng của attempt; quyền network và connector vẫn do policy AgentFlow kiểm soát.
 
@@ -424,6 +425,8 @@ Mỗi image phải chạy cùng một suite:
 - Schema/output dùng file tạm có tên ngẫu nhiên.
 - Auth headless hoạt động với home tạm và không còn credential sau cleanup.
 - CLI exit thành công nhưng thiếu/invalid output vẫn bị coi là lỗi.
+- MCP Streamable HTTP được khởi tạo, liệt kê tool và không đặt header secret trong argv; SSE bị từ chối bằng `CONFIGURATION_ERROR`.
+- MCP bắt buộc không kết nối được trả `MCP_CONNECTION_FAILED`, không âm thầm chạy tiếp mà thiếu tool.
 - App Server v2 chỉ hoàn thành khi nhận terminal event có status thành công.
 
 ### Test riêng OpenCode
@@ -442,14 +445,15 @@ Không chạy trong mọi CI. Dùng job opt-in, repository fixture nhỏ, budget
 
 1. Hoàn tất: thêm `src/agents/codex`, contract v1, contract test và image pin phiên bản.
 2. Hoàn tất: thêm credential trung lập lấy từ Models và nối catalog nhiều image vào Compose.
-3. Tiếp theo: thêm JSON Schema validation tập trung cho output của mọi Agent runtime.
-4. Mở rộng runtime manifest/capability và API catalog để UI chỉ hiển thị runtime đã deploy.
-5. Mở rộng Models nếu cần provider kind ngoài OpenRouter.
-6. Thêm `src/agents/opencode` theo SDK/server local, policy deny-by-default và contract test.
-7. Chạy E2E Codex có model thật bằng secret/budget riêng của môi trường thử nghiệm.
-8. Thiết kế/migrate contract v2, workspace/artifact store và durable agent job.
-9. Thêm event/session/cancel/approval cho Codex App Server và OpenCode server.
-10. Chỉ sau đó bật coding task có workspace write và luồng tạo PR qua connector.
+3. Hoàn tất: ánh xạ MCP Streamable HTTP và header theo environment vào runtime Codex.
+4. Tiếp theo: thêm JSON Schema validation tập trung cho output của mọi Agent runtime.
+5. Mở rộng runtime manifest/capability và API catalog để UI chỉ hiển thị runtime đã deploy.
+6. Mở rộng Models nếu cần provider kind ngoài OpenRouter.
+7. Thêm `src/agents/opencode` theo SDK/server local, policy deny-by-default và contract test.
+8. Chạy E2E Codex tool-call có model tương thích, quota ổn định và secret/budget riêng của môi trường thử nghiệm.
+9. Thiết kế/migrate contract v2, workspace/artifact store và durable agent job.
+10. Thêm event/session/cancel/approval cho Codex App Server và OpenCode server.
+11. Chỉ sau đó bật coding task có workspace write và luồng tạo PR qua connector.
 
 Codex v1 hiện đã có thể được chọn cùng runtime mặc định trong một deployment. Điều kiện hoàn thành v1 cho OpenCode vẫn là nhận cùng contract, trả output đã validate và không làm yếu isolation hiện tại. Điều kiện hoàn thành v2 là job có thể phục hồi sau worker/runtime disconnect, mọi side effect được audit/approval đúng action, và workspace/artifact không bị chia sẻ giữa các attempt.
 

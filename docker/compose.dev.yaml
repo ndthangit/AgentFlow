@@ -60,6 +60,10 @@ services:
       AGENT_RUNTIME_NETWORK: ${AGENT_RUNTIME_NETWORK:-agentflow-dev-runtime}
     logging: *server-logging
 
+  workflow-recovery:
+    image: ${AGENTFLOW_SYSTEM_IMAGE:-agentflow-system:dev}
+    logging: *server-logging
+
   web:
     image: ${AGENTFLOW_WEB_IMAGE:-agentflow-web:dev}
     build:

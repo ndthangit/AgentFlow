@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import test from "node:test";
 
-import { buildCodexArgs, buildPrompt, executeRequest } from "../agent.mjs";
+import {
+  buildCodexArgs,
+  buildMcpConfiguration,
+  buildPrompt,
+  executeRequest,
+} from "../agent.mjs";
 
 const environment = {
   AGENT_PROVIDER: "openrouter",
@@ -45,6 +50,49 @@ test("prompt includes the workflow task, context, and assigned skill", () => {
   assert.match(prompt, /Be concise/);
   assert.match(prompt, /Required JSON output schema/);
   assert.match(prompt, /"required":\["summary"\]/);
+});
+
+test("MCP configuration uses environment-backed headers without putting secrets in argv", () => {
+  const raw = JSON.stringify({
+    "filesystem-demo": {
+      transport: "streamable_http",
+      url: "http://filesystem-mcp:8002/mcp",
+      headers: {
+        Authorization: "Bearer managed-secret",
+        "X-Tenant": "tenant-1",
+      },
+    },
+  });
+  const mcp = buildMcpConfiguration(raw, { ...environment, AGENT_MCP_SERVERS: raw });
+  const serializedArgs = mcp.args.join(" ");
+
+  assert.match(serializedArgs, /mcp_servers\.filesystem-demo\.url/);
+  assert.match(serializedArgs, /mcp_servers\.filesystem-demo\.required=true/);
+  assert.match(serializedArgs, /env_http_headers/);
+  assert.ok(!serializedArgs.includes("managed-secret"));
+  assert.equal(mcp.environment.AGENTFLOW_MCP_0_HEADER_0, "Bearer managed-secret");
+  assert.equal(mcp.environment.AGENTFLOW_MCP_0_HEADER_1, "tenant-1");
+  assert.equal(mcp.environment.AGENT_MCP_SERVERS, undefined);
+  assert.deepEqual(mcp.serverNames, ["filesystem-demo"]);
+
+  const codexArgs = buildCodexArgs({
+    model: environment.AGENT_MODEL,
+    baseUrl: environment.AGENT_PROVIDER_BASE_URL,
+    schemaPath: "/tmp/schema.json",
+    outputPath: "/tmp/output.json",
+    mcpArgs: mcp.args,
+  });
+  assert.ok(codexArgs.includes('mcp_servers.filesystem-demo.required=true'));
+});
+
+test("MCP configuration rejects the unsupported SSE transport", () => {
+  const raw = JSON.stringify({
+    legacy: { transport: "sse", url: "https://mcp.example.test/sse" },
+  });
+  assert.throws(
+    () => buildMcpConfiguration(raw, environment),
+    (error) => error.code === "CONFIGURATION_ERROR" && /Streamable HTTP/.test(error.message),
+  );
 });
 
 test("one-shot adapter returns the AgentFlow success envelope", async () => {
@@ -94,5 +142,33 @@ test("adapter maps a Codex transport failure to provider unavailable", async () 
   await assert.rejects(
     executeRequest(request, environment, fakeRunner),
     (error) => error.code === "PROVIDER_UNAVAILABLE" && !error.message.includes("request for url"),
+  );
+});
+
+test("adapter maps a required MCP startup failure to a public MCP error", async () => {
+  const fakeRunner = async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "Required MCP server filesystem-demo failed to initialize",
+    exceededLimit: false,
+  });
+
+  await assert.rejects(
+    executeRequest(request, environment, fakeRunner),
+    (error) => error.code === "MCP_CONNECTION_FAILED" && !error.message.includes("filesystem-demo"),
+  );
+});
+
+test("adapter maps provider credit exhaustion without exposing provider details", async () => {
+  const fakeRunner = async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "402 Payment Required: more credits needed at provider account 123",
+    exceededLimit: false,
+  });
+
+  await assert.rejects(
+    executeRequest(request, environment, fakeRunner),
+    (error) => error.code === "RATE_LIMITED" && !error.message.includes("account 123"),
   );
 });
