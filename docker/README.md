@@ -221,6 +221,7 @@ Direct Access Grant của CLI local.
 | `workflow-recovery` | Fail run mất heartbeat và thu hồi Agent container mồ côi |
 | `agent-runtime-default-image` | Build/pull image Deep Agents mặc định trước khi worker chạy |
 | `agent-runtime-codex-image` | Build/pull image Codex CLI trước khi worker chạy |
+| `agent-runtime-opencode-image` | Build/pull image OpenCode SDK/server trước khi worker chạy |
 | `filesystem-mcp` | MCP demo trên network runtime riêng |
 | `web` | React UI được phục vụ bởi Nginx |
 
@@ -241,11 +242,13 @@ sang `failed` với mã `WORKER_LOST`, rồi dọn container theo label. Chu k�
 `pending` sau `WORKFLOW_OUTBOX_REDISPATCH_SECONDS`, vì vậy Redis restart hoặc mất
 dữ liệu stream không làm run bị kẹt vĩnh viễn.
 
-Agent node chọn image theo runtime id trong `AGENT_RUNTIME_IMAGES` (`default` hoặc
-`codex` trong stack hiện tại). Provider, model và API key được lấy từ Models và
+Agent node chọn image theo runtime id trong `AGENT_RUNTIME_IMAGES` (`default`,
+`codex` hoặc `opencode` trong stack hiện tại). Provider, model và API key được lấy từ Models và
 workflow đã đăng ký rồi inject tạm thời vào container qua contract
 `AGENT_PROVIDER_*`; chúng không nằm trong file env deploy. Runtime Codex dùng
 Responses API của provider được chọn và không dùng tài khoản đăng nhập Codex cá nhân.
+Runtime OpenCode khởi server loopback trong container, deny các tool tích hợp sẵn, chỉ
+allow tool của MCP đã chọn và chỉ dùng provider OpenRouter/model đã chọn cho invocation.
 
 Worker hiện cần Docker socket để tạo Agent container:
 

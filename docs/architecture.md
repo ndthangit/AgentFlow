@@ -2,7 +2,7 @@
 
 Ngày nghiên cứu: **05/09/2026**. Trạng thái: **đề xuất để bắt đầu triển khai**.
 
-**Điều chỉnh phạm vi PoC:** runtime hiện tại là [agent Python dùng Deep Agents/LangGraph trong `src/agents/default`](../src/agents/default/README.md), có CLI/HTTP và output JSON; mỗi Agent node chạy CLI này trong container riêng. Các runtime khác có thể được thêm dưới dạng thư mục con theo [contract `src/agents`](../src/agents/README.md). Stack dưới đây là kiến trúc đích; Codex/OpenCode chỉ là khả năng mở rộng sau.
+**Điều chỉnh phạm vi PoC:** mỗi Agent node chạy một container dùng một lần theo [contract `src/agents`](../src/agents/README.md). Catalog hiện có agent Python Deep Agents/LangGraph trong `src/agents/default`, Codex CLI và OpenCode SDK/server; contract session/workspace bền vững trong phần dưới vẫn là kiến trúc đích.
 
 ## 1. Mục tiêu và giả định
 

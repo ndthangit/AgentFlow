@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "opencode",
+  "image": "agentflow-agent-opencode:0.1.0",
+  "description": "OpenCode SDK one-shot runtime for AgentFlow"
+}

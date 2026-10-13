@@ -58,6 +58,7 @@ class AgentDockerCommandTests(unittest.TestCase):
         self.assertIn("agent", command)
         self.assertIn("AGENT_PROVIDER_API_KEY", command)
         self.assertIn("OPENROUTER_API_KEY", command)
+        self.assertIn("AGENT_RUNTIME_TIMEOUT_SECONDS", command)
         self.assertNotIn("OPENAI_COMPATIBLE_API_KEY", command)
         self.assertNotIn("ANTHROPIC_API_KEY", command)
         self.assertEqual(command[command.index("--network") + 1], "bridge")
@@ -172,6 +173,22 @@ class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, "PROVIDER_OVERLOADED")
         self.assertIn("HTTP 503", str(raised.exception))
         self.assertNotIn("secret provider response", str(raised.exception))
+
+    async def test_propagates_capability_unsupported_from_a_runtime(self):
+        async def runner(*_args):
+            return ContainerResult(
+                1,
+                b'{"error":{"code":"CAPABILITY_UNSUPPORTED",'
+                b'"message":"Interactive approval is unavailable."}}',
+                b"runtime details",
+            )
+
+        executor = AgentContainerExecutor(settings(), runner=runner)
+        with self.assertRaises(WorkflowExecutionError) as raised:
+            await executor.execute({"task": "Plan", "context": "", "skills": []})
+
+        self.assertEqual(raised.exception.code, "CAPABILITY_UNSUPPORTED")
+        self.assertEqual(str(raised.exception), "Interactive approval is unavailable.")
 
     async def test_rejects_unrecognized_agent_error_contract(self):
         async def runner(*_args):

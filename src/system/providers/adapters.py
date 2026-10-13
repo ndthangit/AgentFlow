@@ -63,6 +63,8 @@ class OpenRouterSettings(BaseModel):
 
 class LlmProviderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=160)
+    kind: Literal["openrouter"] = "openrouter"
     api_key: SecretStr = Field(min_length=1, max_length=1000)
 
 

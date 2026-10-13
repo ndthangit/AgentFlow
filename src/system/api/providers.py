@@ -85,8 +85,8 @@ async def create_llm_provider(
     api_key = request.api_key.get_secret_value()
     provider = LlmProvider(
         owner_subject=claims["sub"],
-        name="OpenRouter",
-        kind="openrouter",
+        name=request.name,
+        kind=request.kind,
         settings={},
         api_key_encrypted=_encrypt_api_key(api_key),
         enabled=False,

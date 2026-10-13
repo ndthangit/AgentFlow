@@ -532,6 +532,7 @@ function WorkflowEditorView({
                     <datalist id="agent-runtime-options">
                       <option value="default">Default container runtime</option>
                       <option value="codex">OpenAI Codex CLI runtime</option>
+                      <option value="opencode">OpenCode SDK runtime</option>
                       <option value="agent">Legacy default alias</option>
                       <option value="direct">Direct provider</option>
                     </datalist>

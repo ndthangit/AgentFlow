@@ -1,6 +1,6 @@
 # Tích hợp Codex và OpenCode vào AgentFlow
 
-Ngày cập nhật: **11/10/2026**. Trạng thái: **Codex contract v1 đã được triển khai, build và nạp vào stack local; OpenCode vẫn ở mức thiết kế**.
+Ngày cập nhật: **12/10/2026**. Trạng thái: **Codex và OpenCode contract v1 đã được triển khai, có contract test và được nạp vào catalog Compose**.
 
 Tài liệu này mô tả cách đưa Codex, OpenCode và các agent runtime tương tự vào AgentFlow. Mục tiêu là giữ một contract ổn định ở phía workflow, còn mọi khác biệt về CLI, SDK, session, event và permission được xử lý bên trong adapter của từng runtime.
 
@@ -31,7 +31,7 @@ Hướng triển khai được chia làm hai mức:
 
 | Mức | Phạm vi | Có thể dùng với hệ thống hiện tại |
 | --- | --- | --- |
-| Contract v1 — one-shot | Một request, một kết quả JSON, không giữ session, không có approval giữa turn | Có; runtime `default` và `codex` đã được nối vào Compose |
+| Contract v1 — one-shot | Một request, một kết quả JSON, không giữ session, không có approval giữa turn | Có; runtime `default`, `codex` và `opencode` đã được nối vào Compose |
 | Contract v2 — coding agent đầy đủ | Workspace, diff/artifact, stream event, session/resume, cancel và approval | Chưa; cần mở rộng supervisor, persistence và API/UI |
 
 Nên triển khai v1 trước cho tác vụ phân tích, lập kế hoạch hoặc review từ context JSON. Không quảng bá khả năng sửa repository cho đến khi AgentFlow mount một workspace cô lập và thu artifact an toàn.
@@ -47,16 +47,17 @@ Nên triển khai v1 trước cho tác vụ phân tích, lập kế hoạch ho�
 - Request và response đi qua JSON UTF-8; log runtime phải đi qua `stderr`.
 - Supervisor áp dụng user `10001`, root filesystem chỉ đọc, drop capability, `no-new-privileges`, giới hạn CPU/RAM/PID, timeout, output size và network.
 - UI cho phép nhập runtime id; `agent` là alias của runtime mặc định và `direct` là đường gọi model trực tiếp trong worker.
-- Compose build đồng thời image `default` và `codex`, rồi truyền catalog `AGENT_RUNTIME_IMAGES` cho worker.
+- Compose build đồng thời image `default`, `codex` và `opencode`, rồi truyền catalog `AGENT_RUNTIME_IMAGES` cho worker.
 - Worker ánh xạ provider đã chọn sang `AGENT_PROVIDER_BASE_URL` và `AGENT_PROVIDER_API_KEY`; mọi runtime mới dùng contract credential này thay vì tự đọc key từ `.env`.
 - `src/agents/codex` pin `@openai/codex@0.130.0`, chạy `codex exec --ephemeral`, dùng Responses API và structured output.
+- `src/agents/opencode` pin `opencode-ai` và `@opencode-ai/sdk` cùng phiên bản `1.19.0`, chạy server loopback, dùng session prompt structured output, deny tool tích hợp sẵn và chỉ allow MCP đã chọn.
 
 ### Chưa có hoặc chưa nối hoàn chỉnh
 
 | Khoảng trống | Ảnh hưởng đến Codex/OpenCode |
 | --- | --- |
 | Model management hiện chỉ đăng ký provider loại `openrouter` | Runtime nhận credential theo contract chung, nhưng chưa thể chọn provider OpenAI/Anthropic trực tiếp cho đến khi trang Models hỗ trợ thêm provider kind |
-| Codex ánh xạ `AGENT_MCP_SERVERS` sang `mcp_servers.<slug>` | Hỗ trợ Streamable HTTP; header dùng `env_http_headers` để secret không xuất hiện trong argv; SSE bị từ chối rõ ràng |
+| Codex và OpenCode ánh xạ `AGENT_MCP_SERVERS` vào config riêng của runtime | Cả hai hỗ trợ Streamable HTTP, giữ header trong environment và fail run nếu MCP bắt buộc không kết nối được; SSE chỉ có ở runtime mặc định |
 | Container không mount repository/workspace | Runtime chỉ có thể xử lý `task` và `context`; chưa thể sửa code thật |
 | Root filesystem chỉ đọc, chỉ `/tmp` là tmpfs `noexec` | Runtime phải đặt state tạm, schema và output trong `/tmp`; không được giả định có home ghi được |
 | Contract chưa có session, artifact, event, approval hoặc runtime-native cancel | Không thể dùng đầy đủ App Server hoặc OpenCode server qua một lần JSON stdin/stdout |
@@ -173,7 +174,7 @@ Ví dụ manifest:
 
 Codex CLI hỗ trợ `codex exec`, đọc prompt từ stdin, `--output-schema`, `--output-last-message`, event JSONL và resume session. Codex SDK hỗ trợ start/continue/resume thread. App Server dùng handshake `initialize`/`initialized`, sau đó `thread/start` hoặc `thread/resume`, `turn/start`, streamed notification và server-initiated approval request. Nguồn chính thức: [Codex SDK](https://developers.openai.com/codex/sdk/), [Codex CLI reference](https://developers.openai.com/codex/cli/reference/), [Codex App Server](https://developers.openai.com/codex/app-server/).
 
-### Mapping v1
+### Mapping v1 đã triển khai
 
 Adapter Codex nên thực hiện luồng sau:
 
@@ -222,23 +223,26 @@ Adapter phải hoàn thành handshake trên mỗi connection, lưu `thread_id` t
 | `opencode serve` + HTTP/OpenAPI | Tách client/server, inspect API và quản lý session từ supervisor | Dùng cho v2 hoặc khi cần adapter độc lập process |
 | `opencode run --format json` | PoC CLI, raw event JSON | Chỉ dùng smoke test; SDK rõ hơn cho structured output |
 
-OpenCode SDK có thể start server và client cùng lúc hoặc kết nối server có sẵn. SDK cung cấp session create/prompt/abort, `outputFormat` cho structured output và stream event. Server headless công bố OpenAPI, session APIs, SSE và endpoint trả lời permission; HTTP Basic Auth được bật bằng `OPENCODE_SERVER_PASSWORD`. Nguồn chính thức: [OpenCode SDK](https://opencode.ai/docs/sdk/), [OpenCode Server](https://opencode.ai/docs/server/), [OpenCode Permissions](https://opencode.ai/docs/permissions/).
+OpenCode SDK có thể start server và client cùng lúc hoặc kết nối server có sẵn. SDK cung cấp session create/prompt/abort, `format` cho structured output và stream event. Server headless công bố OpenAPI, session APIs, SSE và endpoint trả lời permission; HTTP Basic Auth được bật bằng `OPENCODE_SERVER_PASSWORD`. Nguồn chính thức: [OpenCode SDK](https://opencode.ai/docs/sdk/), [OpenCode Server](https://opencode.ai/docs/server/), [OpenCode Permissions](https://opencode.ai/docs/permissions/).
 
-### Mapping v1
+### Mapping v1 đã triển khai
 
-1. Start OpenCode server trên `127.0.0.1` trong cùng container hoặc dùng helper SDK sở hữu cả server và client.
+Adapter hiện thực hiện luồng sau:
+
+1. Start OpenCode server trên `127.0.0.1` trong cùng container bằng helper SDK sở hữu cả server và client.
 2. Subscribe event trước khi gửi prompt để không mất event đầu.
 3. Tạo session trong thư mục làm việc của attempt.
-4. Gửi model dưới dạng provider ID + model ID và truyền `output_schema` qua `outputFormat`.
-5. Lọc event theo session/message; log event đã che secret vào `stderr`.
-6. Lấy structured result từ response/session state, validate lại schema và trả `RunResult`.
-7. Abort session khi nhận signal/timeout và đóng server trong `finally`.
+4. Gửi model dưới dạng provider ID + model ID và truyền `output_schema` qua `format: { type: "json_schema" }`.
+5. Ánh xạ MCP Streamable HTTP sang remote `mcp`, tắt OAuth tự động, xác nhận mọi server đã chọn có trạng thái `connected`, và chỉ allow tool theo `<server>_*`.
+6. Lọc event theo session; dùng event permission để fail closed, giới hạn provider retry và abort trước deadline của supervisor thay vì để request treo vô hạn.
+7. Lấy structured result từ response/session state, validate lại schema và trả `RunResult`.
+8. Abort session và đóng server trong `finally`, kể cả khi prompt hoặc validation thất bại.
 
-Trong contract v1, permission mặc định phải là deny hoặc policy không tương tác. Nếu runtime yêu cầu hỏi người dùng, trả `CAPABILITY_UNSUPPORTED` thay vì tự động approve. OpenCode có mặc định khá permissive cho nhiều tool, vì vậy adapter phải tạo cấu hình `permission` tường minh; không dựa vào default của phiên bản runtime.
+Trong implementation contract v1, permission mặc định là `{"*":"deny"}` và adapter chỉ thêm `"<mcp-slug>_*":"allow"` cho MCP đã chọn. Nếu runtime vẫn phát event xin quyền, adapter abort session và trả `CAPABILITY_UNSUPPORTED` thay vì tự động approve. OpenCode có mặc định khá permissive cho nhiều tool, vì vậy adapter không dựa vào default của phiên bản runtime.
 
 ### Authentication và cấu hình
 
-- Sinh `opencode.json` tạm cho invocation từ provider/model đã được AgentFlow cho phép.
+- Sinh config SDK tạm cho invocation từ provider/model đã được AgentFlow cho phép; không đọc config project hoặc home của host.
 - Dùng biến môi trường tham chiếu secret; không ghi giá trị API key trực tiếp vào config hoặc log.
 - Dùng `enabled_providers` để giới hạn provider trong job khi phù hợp.
 - State, auth và config tạm đặt trong filesystem riêng của attempt; không dùng chung `~/.local/share/opencode/auth.json` giữa tenant hoặc container.
@@ -319,10 +323,10 @@ Catalog hiện được Compose truyền cho worker:
 
 ```dotenv
 AGENT_RUNTIME_DEFAULT=default
-AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0","codex":"agentflow-agent-codex:0.1.0"}
+AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0","codex":"agentflow-agent-codex:0.1.0","opencode":"agentflow-agent-opencode:0.1.0"}
 ```
 
-`workflow-worker` nhận cả hai biến; các service `agent-runtime-default-image` và `agent-runtime-codex-image` bảo đảm image local được build trước khi worker khởi động. OpenCode chỉ được thêm vào catalog sau khi có image và contract test tương ứng.
+`workflow-worker` nhận catalog này; các service `agent-runtime-default-image`, `agent-runtime-codex-image` và `agent-runtime-opencode-image` bảo đảm image local được build trước khi worker khởi động.
 
 Quy trình local hiện tại:
 
@@ -330,6 +334,7 @@ Quy trình local hiện tại:
 python src/agents/manage.py validate
 python src/agents/manage.py build --all
 docker image inspect agentflow-agent-codex:0.1.0
+docker image inspect agentflow-agent-opencode:0.1.0
 ```
 
 Workflow chọn runtime bằng ID, không dùng image reference:
@@ -386,7 +391,7 @@ Không suy đoán capability chỉ từ tên runtime. Ví dụ adapter Codex v1 
 | Rate limit | `RATE_LIMITED` |
 | Provider/server tạm thời lỗi | `PROVIDER_UNAVAILABLE` |
 | Kết quả không khớp schema | `OUTPUT_INVALID` |
-| Cần approval nhưng contract không hỗ trợ | `CAPABILITY_UNSUPPORTED` — cần thêm vào public allow-list hiện tại |
+| Cần approval nhưng contract không hỗ trợ | `CAPABILITY_UNSUPPORTED` — đã có trong public allow-list |
 | Timeout | `TIMEOUT` |
 | Runtime bị hủy | `CANCELLED` — cần thêm vào public allow-list nếu muốn giữ nguyên mã từ adapter |
 | Không xác định được turn đã chạy hay chưa sau mất kết nối | `RESULT_UNKNOWN` — dành cho contract v2/reconciliation |
@@ -434,6 +439,8 @@ Mỗi image phải chạy cùng một suite:
 - Server chỉ bind loopback trong container v1.
 - Subscribe event trước prompt; event từ session khác bị bỏ qua.
 - Permission `ask` không bị auto-approve khi AgentFlow chưa hỗ trợ approval.
+- MCP Streamable HTTP được cấu hình bằng remote `mcp`; header secret chỉ xuất hiện trong environment tạm và SSE bị từ chối.
+- Trạng thái MCP được kiểm tra trước khi tạo session; server không `connected` trả `MCP_CONNECTION_FAILED`.
 - `session.abort` và server close luôn chạy trong cleanup.
 - Reconnect v2 dùng session state để xác nhận kết quả, không chỉ dựa vào SSE.
 
@@ -449,13 +456,13 @@ Không chạy trong mọi CI. Dùng job opt-in, repository fixture nhỏ, budget
 4. Tiếp theo: thêm JSON Schema validation tập trung cho output của mọi Agent runtime.
 5. Mở rộng runtime manifest/capability và API catalog để UI chỉ hiển thị runtime đã deploy.
 6. Mở rộng Models nếu cần provider kind ngoài OpenRouter.
-7. Thêm `src/agents/opencode` theo SDK/server local, policy deny-by-default và contract test.
+7. Hoàn tất: thêm `src/agents/opencode` theo SDK/server local, policy deny-by-default, MCP Streamable HTTP, JSON Schema validation và contract test.
 8. Chạy E2E Codex tool-call có model tương thích, quota ổn định và secret/budget riêng của môi trường thử nghiệm.
 9. Thiết kế/migrate contract v2, workspace/artifact store và durable agent job.
 10. Thêm event/session/cancel/approval cho Codex App Server và OpenCode server.
 11. Chỉ sau đó bật coding task có workspace write và luồng tạo PR qua connector.
 
-Codex v1 hiện đã có thể được chọn cùng runtime mặc định trong một deployment. Điều kiện hoàn thành v1 cho OpenCode vẫn là nhận cùng contract, trả output đã validate và không làm yếu isolation hiện tại. Điều kiện hoàn thành v2 là job có thể phục hồi sau worker/runtime disconnect, mọi side effect được audit/approval đúng action, và workspace/artifact không bị chia sẻ giữa các attempt.
+Codex và OpenCode v1 hiện có thể được chọn cùng runtime mặc định trong một deployment. OpenCode nhận cùng contract, trả output đã validate, hỗ trợ remote MCP Streamable HTTP và giữ nguyên isolation hiện tại. Điều kiện hoàn thành v2 là job có thể phục hồi sau worker/runtime disconnect, mọi side effect được audit/approval đúng action, và workspace/artifact không bị chia sẻ giữa các attempt.
 
 ## 14. Checklist thêm một runtime khác
 

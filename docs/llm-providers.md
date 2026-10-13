@@ -1,13 +1,13 @@
 # Quản lý LLM provider
 
-AgentFlow lưu cấu hình provider theo từng người dùng trong bảng `system.llm_providers`. Provider đầu tiên được hỗ trợ là OpenRouter.
+AgentFlow lưu cấu hình provider theo từng người dùng trong bảng `system.llm_providers`. Mỗi bản ghi là một cấu hình kết nối độc lập, có tên do người dùng đặt, API key và danh sách model riêng. Vì vậy một người dùng có thể tạo nhiều cấu hình cùng loại OpenRouter, ví dụ `OpenRouter cá nhân` và `OpenRouter công ty`, nhưng dùng các key khác nhau.
 
 ## Luồng cấu hình
 
-1. Người dùng thêm OpenRouter chỉ bằng API key.
+1. Người dùng thêm provider bằng tên cấu hình, loại provider và API key. Tên cấu hình phải là duy nhất trong phạm vi tài khoản hiện tại; loại provider đầu tiên được hỗ trợ là OpenRouter.
 2. API key được mã hóa và provider luôn được tạo ở trạng thái `Inactive`. Bước này không gọi OpenRouter.
 3. Khi người dùng chọn kích hoạt, AgentFlow gọi `GET /api/v1/models` bằng key đã lưu và hiển thị catalog để chọn.
-4. Người dùng phải chọn ít nhất một model. Model đầu tiên được dùng làm `default_model` nếu model mặc định cũ không còn trong lựa chọn.
+4. Người dùng phải chọn ít nhất một model và có thể chọn rõ model mặc định. Nếu model mặc định cũ không còn trong lựa chọn, giao diện tự chuyển sang model đầu tiên còn lại.
 5. Backend tải lại catalog để xác thực các model trước khi chuyển provider sang `Active`.
 6. Mỗi model đã chọn được hiển thị trên một dòng và có nút kiểm tra riêng. Phép kiểm tra gửi một chat completion ngắn tới đúng model đó.
 
@@ -19,7 +19,7 @@ OpenRouter dùng `GET /api/v1/models` để lấy catalog và `POST /api/v1/chat
 
 ## Dữ liệu được lưu
 
-Bảng `system.llm_providers` lưu tên, loại provider, settings, API key đã mã hóa, trạng thái và `revision` cho optimistic concurrency. Settings OpenRouter gồm:
+Bảng `system.llm_providers` lưu tên cấu hình, loại provider, settings, API key đã mã hóa, trạng thái và `revision` cho optimistic concurrency. Ràng buộc duy nhất áp dụng trên cặp `owner_subject + name`, không áp dụng trên `kind`, nên nhiều cấu hình cùng nhà cung cấp được hỗ trợ. Settings OpenRouter gồm:
 
 - `selected_models`: tối đa 100 model ID người dùng cho phép sử dụng.
 - `default_model`: model mặc định; backend tự dùng model đầu tiên đã chọn nếu giá trị cũ không còn hợp lệ.
@@ -31,7 +31,7 @@ API key là write-only. Response chỉ trả `has_api_key`, không trả plainte
 ## API quản lý
 
 - `GET /v1/llm-providers`
-- `POST /v1/llm-providers` với body chỉ gồm `api_key`
+- `POST /v1/llm-providers` với body gồm `name`, `kind` và `api_key`
 - `GET /v1/llm-providers/{id}`
 - `DELETE /v1/llm-providers/{id}` để xóa provider thuộc người dùng hiện tại
 - `PUT /v1/llm-providers/{id}` để thay key, chọn model hoặc bật/tắt
@@ -42,6 +42,8 @@ Ví dụ tạo provider:
 
 ```json
 {
+  "name": "OpenRouter công ty",
+  "kind": "openrouter",
   "api_key": "sk-or-v1-..."
 }
 ```

@@ -140,6 +140,15 @@ services:
     restart: "no"
     network_mode: none
 
+  agent-runtime-opencode-image:
+    image: agentflow-agent-opencode:${AGENT_RUNTIME_OPENCODE_IMAGE_VERSION:-0.1.0}
+    build:
+      context: ../src/agents/opencode
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    network_mode: none
+
   filesystem-mcp:
     image: agentflow-filesystem-mcp
     build:
@@ -175,7 +184,7 @@ services:
       WORKFLOW_HEARTBEAT_SECONDS: ${WORKFLOW_HEARTBEAT_SECONDS:-10}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       AGENT_RUNTIME_DEFAULT: ${AGENT_RUNTIME_DEFAULT:-default}
-      AGENT_RUNTIME_IMAGES: '{"default":"agentflow-agent-default:${AGENT_RUNTIME_DEFAULT_IMAGE_VERSION:-0.1.0}","codex":"agentflow-agent-codex:${AGENT_RUNTIME_CODEX_IMAGE_VERSION:-0.1.0}"}'
+      AGENT_RUNTIME_IMAGES: '{"default":"agentflow-agent-default:${AGENT_RUNTIME_DEFAULT_IMAGE_VERSION:-0.1.0}","codex":"agentflow-agent-codex:${AGENT_RUNTIME_CODEX_IMAGE_VERSION:-0.1.0}","opencode":"agentflow-agent-opencode:${AGENT_RUNTIME_OPENCODE_IMAGE_VERSION:-0.1.0}"}'
       AGENT_RUNTIME_TIMEOUT_SECONDS: ${AGENT_RUNTIME_TIMEOUT_SECONDS:-180}
       AGENT_RUNTIME_MAX_CONTAINERS: ${AGENT_RUNTIME_MAX_CONTAINERS:-2}
       AGENT_RUNTIME_CPUS: ${AGENT_RUNTIME_CPUS:-1}
@@ -195,6 +204,8 @@ services:
       agent-runtime-default-image:
         condition: service_completed_successfully
       agent-runtime-codex-image:
+        condition: service_completed_successfully
+      agent-runtime-opencode-image:
         condition: service_completed_successfully
       filesystem-mcp:
         condition: service_healthy

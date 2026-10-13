@@ -35,24 +35,25 @@ function selectedModels(provider: LlmProvider) {
   return provider.settings.selected_models ?? [];
 }
 
-function settingsWithModels(provider: LlmProvider, modelIds: string[]): OpenRouterSettings {
-  const currentDefault = provider.settings.default_model;
+function settingsWithModels(provider: LlmProvider, modelIds: string[], defaultModel: string): OpenRouterSettings {
   return {
     ...provider.settings,
     selected_models: modelIds,
-    default_model: currentDefault && modelIds.includes(currentDefault)
-      ? currentDefault
+    default_model: defaultModel && modelIds.includes(defaultModel)
+      ? defaultModel
       : modelIds[0] ?? null,
   };
 }
 
 export function ModelsPage({ providers, refresh }: Props) {
+  const [providerName, setProviderName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [selectedProviderKind, setSelectedProviderKind] = useState<LlmProvider["kind"] | "">("");
   const [replacementKeys, setReplacementKeys] = useState<Record<string, string>>({});
   const [catalogs, setCatalogs] = useState<Record<string, ProviderModel[]>>({});
   const [draftSelections, setDraftSelections] = useState<Record<string, string[]>>({});
+  const [draftDefaults, setDraftDefaults] = useState<Record<string, string>>({});
   const [searches, setSearches] = useState<Record<string, string>>({});
   const [configuringId, setConfiguringId] = useState<string>();
   const [busyAction, setBusyAction] = useState<string>();
@@ -65,6 +66,7 @@ export function ModelsPage({ providers, refresh }: Props) {
     if (busyAction === "create") return;
     setIsAddingProvider(false);
     setSelectedProviderKind("");
+    setProviderName("");
     setApiKey("");
   }
 
@@ -89,21 +91,28 @@ export function ModelsPage({ providers, refresh }: Props) {
         ...current,
         [provider.id]: selectedModels(provider).filter((id) => availableIds.has(id)),
       }));
+      const availableSelection = selectedModels(provider).filter((id) => availableIds.has(id));
+      setDraftDefaults((current) => ({
+        ...current,
+        [provider.id]: provider.settings.default_model
+          && availableSelection.includes(provider.settings.default_model)
+          ? provider.settings.default_model
+          : availableSelection[0] ?? "",
+      }));
       setConfiguringId(provider.id);
       setMessage(`Đã tải ${catalog.length} model từ OpenRouter`);
     });
   }
 
   function toggleModel(providerId: string, modelId: string) {
-    setDraftSelections((current) => {
-      const selected = current[providerId] ?? [];
-      return {
-        ...current,
-        [providerId]: selected.includes(modelId)
-          ? selected.filter((id) => id !== modelId)
-          : [...selected, modelId],
-      };
-    });
+    const selected = draftSelections[providerId] ?? [];
+    const next = selected.includes(modelId)
+      ? selected.filter((id) => id !== modelId)
+      : [...selected, modelId];
+    setDraftSelections((current) => ({ ...current, [providerId]: next }));
+    if (!next.includes(draftDefaults[providerId] ?? "")) {
+      setDraftDefaults((current) => ({ ...current, [providerId]: next[0] ?? "" }));
+    }
   }
 
   const testKey = (providerId: string, modelId: string) => `${providerId}:${modelId}`;
@@ -139,6 +148,7 @@ export function ModelsPage({ providers, refresh }: Props) {
               ? catalog.filter((model) => `${model.name} ${model.id}`.toLowerCase().includes(query))
               : catalog;
             const isConfiguring = configuringId === provider.id;
+            const draftDefault = draftDefaults[provider.id] ?? draft[0] ?? "";
 
             return (
               <article className={isConfiguring ? "provider-card configuring" : "provider-card"} key={provider.id}>
@@ -154,6 +164,7 @@ export function ModelsPage({ providers, refresh }: Props) {
 
                 <dl className="provider-details">
                   <div><dt>Models đã chọn</dt><dd>{chosenModels.length || "Chưa chọn"}</dd></div>
+                  <div><dt>Model mặc định</dt><dd>{provider.settings.default_model ?? "Chưa chọn"}</dd></div>
                   <div><dt>API key</dt><dd>{provider.has_api_key ? "Đã lưu (mã hóa)" : "Chưa cấu hình"}</dd></div>
                 </dl>
 
@@ -239,6 +250,20 @@ export function ModelsPage({ providers, refresh }: Props) {
                       ))}
                       {!filteredCatalog.length && <p className="model-picker-empty">Không tìm thấy model phù hợp.</p>}
                     </div>
+                    <label className="model-default-select">Model mặc định
+                      <select
+                        value={draftDefault}
+                        disabled={!draft.length || Boolean(busyAction)}
+                        onChange={(event) => setDraftDefaults((current) => ({
+                          ...current,
+                          [provider.id]: event.target.value,
+                        }))}
+                      >
+                        {draft.map((modelId) => (
+                          <option value={modelId} key={modelId}>{modelId}</option>
+                        ))}
+                      </select>
+                    </label>
                     <div className="model-picker-actions">
                       <button disabled={Boolean(busyAction)} onClick={() => setConfiguringId(undefined)}>Hủy</button>
                       <button
@@ -247,7 +272,7 @@ export function ModelsPage({ providers, refresh }: Props) {
                         onClick={() => void run(`save:${provider.id}`, async () => {
                           await api.updateLlmProvider(provider, {
                             name: provider.name,
-                            settings: settingsWithModels(provider, draft),
+                            settings: settingsWithModels(provider, draft, draftDefault),
                             enabled: true,
                           });
                           setConfiguringId(undefined);
@@ -267,7 +292,11 @@ export function ModelsPage({ providers, refresh }: Props) {
                       const state = modelTests[testKey(provider.id, modelId)];
                       return (
                         <div className="selected-model-row" key={modelId}>
-                          <span><strong>{model?.name ?? modelId}</strong><code>{modelId}</code></span>
+                          <span>
+                            <strong>{model?.name ?? modelId}</strong>
+                            <code>{modelId}</code>
+                            {provider.settings.default_model === modelId && <small className="default-model-badge">Mặc định</small>}
+                          </span>
                           <span className={`model-test-state ${state?.status ?? ""}`}>
                             {state?.status === "testing" && "Đang kiểm tra…"}
                             {state?.status === "ok" && `Hoạt động · ${state.detail}`}
@@ -338,13 +367,19 @@ export function ModelsPage({ providers, refresh }: Props) {
             {selectedProviderOption && (
               <form className="provider-form provider-modal-form" onSubmit={(event) => {
                 event.preventDefault();
-                if (!apiKey.trim()) return;
+                const name = providerName.trim();
+                if (!name || !apiKey.trim()) return;
                 void run("create", async () => {
-                  await api.createLlmProvider({ api_key: apiKey.trim() });
+                  await api.createLlmProvider({
+                    name,
+                    kind: selectedProviderOption.kind,
+                    api_key: apiKey.trim(),
+                  });
                   await refresh();
-                  setMessage(`Đã lưu ${selectedProviderOption.name} ở trạng thái Inactive. Hãy chọn model để kích hoạt.`);
+                  setMessage(`Đã lưu “${name}” ở trạng thái Inactive. Hãy chọn model để kích hoạt.`);
                   setIsAddingProvider(false);
                   setSelectedProviderKind("");
+                  setProviderName("");
                   setApiKey("");
                 });
               }}>
@@ -352,9 +387,19 @@ export function ModelsPage({ providers, refresh }: Props) {
                   <span className="provider-logo">{selectedProviderOption.initials}</span>
                   <span><strong>Cấu hình {selectedProviderOption.name}</strong><small>API key được mã hóa trước khi lưu.</small></span>
                 </div>
-                <label>{selectedProviderOption.keyLabel}
+                <label>Tên cấu hình provider
                   <input
                     autoFocus
+                    required
+                    maxLength={160}
+                    placeholder="Ví dụ: OpenRouter cá nhân"
+                    value={providerName}
+                    onChange={(event) => setProviderName(event.target.value)}
+                  />
+                  <small>Dùng tên khác nhau để lưu nhiều API key của cùng một nhà cung cấp.</small>
+                </label>
+                <label>{selectedProviderOption.keyLabel}
+                  <input
                     required
                     type="password"
                     autoComplete="new-password"
@@ -366,8 +411,8 @@ export function ModelsPage({ providers, refresh }: Props) {
                 </label>
                 <div className="provider-form-actions">
                   <button type="button" onClick={closeProviderForm} disabled={busyAction === "create"}>Hủy</button>
-                  <button className="install-button" disabled={Boolean(busyAction) || !apiKey.trim()}>
-                    {busyAction === "create" ? "Đang lưu…" : `Thêm ${selectedProviderOption.name}`}
+                  <button className="install-button" disabled={Boolean(busyAction) || !providerName.trim() || !apiKey.trim()}>
+                    {busyAction === "create" ? "Đang lưu…" : "Thêm provider"}
                   </button>
                 </div>
                 <span className="form-message" role="status">{message}</span>

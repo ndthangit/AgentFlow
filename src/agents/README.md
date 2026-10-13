@@ -1,6 +1,6 @@
 # Agent runtimes
 
-Mỗi thư mục con trực tiếp trong `src/agents` là một implementation Agent runtime độc lập. Dự án có runtime [`default`](default/README.md) và [`codex`](codex/README.md).
+Mỗi thư mục con trực tiếp trong `src/agents` là một implementation Agent runtime độc lập. Dự án có runtime [`default`](default/README.md), [`codex`](codex/README.md) và [`opencode`](opencode/README.md).
 
 Thiết kế và lộ trình adapter cụ thể cho Codex/OpenCode nằm tại [tài liệu tích hợp runtime](../../docs/codex-opencode-runtime-integration.md).
 
@@ -8,17 +8,18 @@ Thiết kế và lộ trình adapter cụ thể cho Codex/OpenCode nằm tại [
 src/agents/
 ├── default/          # Deep Agents/LangGraph runtime đi kèm dự án
 ├── codex/            # OpenAI Codex CLI one-shot runtime
+├── opencode/         # OpenCode SDK/server one-shot runtime
 ├── my-runtime/       # Runtime tùy biến của người dùng
 └── README.md         # Quy ước tích hợp
 ```
 
 ## Build catalog runtime cho Docker Compose
 
-Compose build sẵn cả runtime `default` và `codex`, rồi đăng ký hai image trong
+Compose build sẵn các runtime `default`, `codex` và `opencode`, rồi đăng ký ba image trong
 `AGENT_RUNTIME_IMAGES` của workflow worker:
 
 ```powershell
-docker compose --env-file docker/.env -f docker/compose.yaml build agent-runtime-default-image agent-runtime-codex-image
+docker compose --env-file docker/.env -f docker/compose.yaml build agent-runtime-default-image agent-runtime-codex-image agent-runtime-opencode-image
 docker compose --env-file docker/.env -f docker/compose.yaml up -d workflow-worker
 ```
 

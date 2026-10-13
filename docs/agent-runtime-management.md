@@ -106,7 +106,7 @@ Worker không tự quét filesystem và không tự build image. Nó chỉ chạ
 
 ```dotenv
 AGENT_RUNTIME_DEFAULT=default
-AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0","codex":"agentflow-agent-codex:0.1.0"}
+AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0","codex":"agentflow-agent-codex:0.1.0","opencode":"agentflow-agent-opencode:0.1.0"}
 ```
 
 Catalog là allow-list. Node yêu cầu runtime không có trong catalog phải fail trước khi Docker được gọi. Cách này tách quyền build/publish image khỏi quyền thực thi workflow và tránh để graph tùy ý chọn image reference.

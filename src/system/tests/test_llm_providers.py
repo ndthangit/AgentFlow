@@ -32,11 +32,25 @@ from providers.secrets import ProviderSecretStore
 class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
     def test_create_requires_non_empty_api_key(self):
         with self.assertRaises(ValidationError):
-            LlmProviderCreate(name="OpenRouter", kind="openrouter", api_key="")
+            LlmProviderCreate(name="OpenRouter cá nhân", kind="openrouter", api_key="")
 
-    def test_create_contract_only_requires_api_key(self):
-        request = LlmProviderCreate(api_key="test-secret")
-        self.assertEqual(request.model_fields_set, {"api_key"})
+    def test_create_requires_a_provider_instance_name(self):
+        with self.assertRaises(ValidationError):
+            LlmProviderCreate(name="", kind="openrouter", api_key="test-secret")
+
+    def test_create_contract_accepts_named_instances_of_the_same_kind(self):
+        first = LlmProviderCreate(
+            name="OpenRouter cá nhân",
+            kind="openrouter",
+            api_key="test-secret-1",
+        )
+        second = LlmProviderCreate(
+            name="OpenRouter công ty",
+            kind="openrouter",
+            api_key="test-secret-2",
+        )
+        self.assertEqual(first.kind, second.kind)
+        self.assertNotEqual(first.name, second.name)
 
     def test_selected_models_are_trimmed_and_deduplicated(self):
         settings = OpenRouterSettings(
@@ -60,13 +74,17 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession()
         with patch("api.providers._encrypt_api_key", return_value="encrypted"):
             provider = await create_llm_provider(
-                LlmProviderCreate(api_key="test-secret"),
+                LlmProviderCreate(
+                    name="OpenRouter nhóm A",
+                    kind="openrouter",
+                    api_key="test-secret",
+                ),
                 {"sub": "test-user"},
                 session,
             )
 
         self.assertIs(provider, session.added)
-        self.assertEqual(provider.name, "OpenRouter")
+        self.assertEqual(provider.name, "OpenRouter nhóm A")
         self.assertEqual(provider.kind, "openrouter")
         self.assertEqual(provider.settings, {})
         self.assertFalse(provider.enabled)

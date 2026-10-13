@@ -10,9 +10,9 @@ Theo phạm vi mới, dùng [agent Python mặc định trong `src/agents/defaul
 
 Đường thử nghiệm: **task/context → Deep Agents → LLM thật → WorkflowPlan JSON → output của agent node**. Runtime gọi OpenAI-compatible Chat Completions API hoặc Anthropic theo provider/model đã cấu hình; không có nhánh fake model. Kết quả là đề xuất, chưa tự chuyển thành DSL hoặc thực thi hành động.
 
-Mẫu chưa triển khai contract `startOrAttach`, session, streaming, approval hay recovery ở các phần dưới. Worker có thể gọi HTTP/CLI để thử ranh giới tích hợp trước. Chi tiết Codex/OpenCode bên dưới được giữ làm **thiết kế mở rộng sau**, không còn là việc cần tích hợp ngay trong PoC đầu tiên.
+Contract v1 one-shot đã có adapter Codex CLI và OpenCode SDK/server. Mẫu vẫn chưa triển khai contract `startOrAttach`, workspace, streaming bền vững, approval hay recovery ở các phần dưới; các nội dung đó là thiết kế mở rộng v2.
 
-Ngày kiểm chứng tài liệu nhà cung cấp: **11/10/2026**. Các interface và chính sách AgentFlow dưới đây là thiết kế đề xuất, chưa phải adapter đã chạy thử.
+Ngày kiểm chứng tài liệu nhà cung cấp: **12/10/2026**. Contract v1 đã chạy bằng adapter; các interface session/workspace v2 dưới đây vẫn là thiết kế đề xuất.
 
 ## 1. Chọn bề mặt tích hợp
 
@@ -26,7 +26,7 @@ Ngày kiểm chứng tài liệu nhà cung cấp: **11/10/2026**. Các interface
 
 Nguồn cho Codex SDK: [Codex SDK](https://developers.openai.com/codex/sdk/). `codex mcp-server` đã bị loại bỏ; không chọn nó làm nền tích hợp mới.
 
-Worker truyền các MCP được chọn qua `AGENT_MCP_SERVERS` cho đúng một container. Runtime mặc định nạp tool bằng `langchain-mcp-adapters`, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Runtime Codex ánh xạ cùng contract sang `mcp_servers.<slug>`, hỗ trợ Streamable HTTP và dùng `env_http_headers` để không đặt secret trong argv. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin. Cấu hình Codex MCP được đối chiếu theo [tài liệu MCP chính thức](https://developers.openai.com/codex/mcp/).
+Worker truyền các MCP được chọn qua `AGENT_MCP_SERVERS` cho đúng một container. Runtime mặc định nạp tool bằng `langchain-mcp-adapters`, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Runtime Codex ánh xạ cùng contract sang `mcp_servers.<slug>`; OpenCode ánh xạ sang remote `mcp` và chỉ allow tool của server đã chọn. Cả hai hỗ trợ Streamable HTTP và tham chiếu header qua environment để không đặt secret trong argv/config. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin. Cấu hình được đối chiếu theo [Codex MCP](https://developers.openai.com/codex/mcp/) và [OpenCode MCP](https://opencode.ai/docs/mcp-servers/) chính thức.
 
 App Server dùng JSON-RPC với định dạng wire có khác biệt: bỏ trường `jsonrpc`; stdio dùng JSONL. Transport WebSocket hiện được ghi experimental/unsupported. AgentFlow nên bọc stdio bằng gateway của mình khi cần truy cập từ xa. Nguồn: [Codex App Server](https://learn.chatgpt.com/docs/app-server).
 
