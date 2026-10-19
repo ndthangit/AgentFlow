@@ -76,6 +76,30 @@ class ProviderEnvironmentTests(unittest.TestCase):
         self.assertEqual(resolved["AGENT_PROVIDER_API_KEY"], "test-anthropic-key")
         self.assertNotIn("OPENROUTER_API_KEY", resolved)
 
+    def test_protocol_provider_passes_its_validated_endpoint_to_runtime(self):
+        provider = SimpleNamespace(
+            id="provider-custom",
+            name="Small vendor",
+            kind="openai-compatible",
+            settings={
+                "base_url": "https://api.small-vendor.example/v1",
+                "default_model": "vendor/model-a",
+                "selected_models": ["vendor/model-a"],
+            },
+            api_key_encrypted="encrypted-key",
+        )
+        secret_store = Mock()
+        secret_store.decrypt.return_value = "test-custom-key"
+
+        resolved = _agent_container_environment({}, [provider], secret_store)
+
+        self.assertEqual(resolved["AGENT_PROVIDER"], "openai-compatible")
+        self.assertEqual(
+            resolved["AGENT_PROVIDER_BASE_URL"],
+            "https://api.small-vendor.example/v1",
+        )
+        self.assertEqual(resolved["AGENT_PROVIDER_API_KEY"], "test-custom-key")
+
 
 class AgentDockerCommandTests(unittest.TestCase):
     def test_command_applies_isolation_and_invokes_live_cli(self):

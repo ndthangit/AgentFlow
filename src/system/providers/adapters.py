@@ -1,6 +1,9 @@
 """Provider-neutral LLM contracts and HTTP adapters."""
 
+import asyncio
+import ipaddress
 import os
+import socket
 import uuid
 from abc import ABC, abstractmethod
 from asyncio import sleep
@@ -10,7 +13,15 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -18,16 +29,24 @@ ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 
-ProviderKind = Literal["openrouter", "openai", "anthropic", "nvidia"]
+ProviderKind = Literal[
+    "openrouter",
+    "openai",
+    "anthropic",
+    "nvidia",
+    "openai-compatible",
+    "anthropic-compatible",
+]
 
 
 @dataclass(frozen=True)
 class ProviderSpec:
     kind: str
     api_style: Literal["openai_chat", "anthropic_messages"]
-    default_base_url: str
-    override_environment: str
+    default_base_url: str | None
+    override_environment: str | None
     runtime_provider: str
+    custom_endpoint: bool = False
 
 
 PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
@@ -58,6 +77,22 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         default_base_url=NVIDIA_BASE_URL,
         override_environment="NVIDIA_BASE_URL_OVERRIDE",
         runtime_provider="nvidia",
+    ),
+    "openai-compatible": ProviderSpec(
+        kind="openai-compatible",
+        api_style="openai_chat",
+        default_base_url=None,
+        override_environment=None,
+        runtime_provider="openai-compatible",
+        custom_endpoint=True,
+    ),
+    "anthropic-compatible": ProviderSpec(
+        kind="anthropic-compatible",
+        api_style="anthropic_messages",
+        default_base_url=None,
+        override_environment=None,
+        runtime_provider="anthropic",
+        custom_endpoint=True,
     ),
 }
 
@@ -95,10 +130,12 @@ class ProviderSettings(BaseModel):
 
     default_model: str | None = Field(default=None, max_length=200)
     selected_models: list[str] = Field(default_factory=list, max_length=100)
+    custom_models: list[str] = Field(default_factory=list, max_length=100)
+    base_url: str | None = Field(default=None, max_length=2048)
     site_url: HttpUrl | None = None
     app_title: str = Field(default="AgentFlow", min_length=1, max_length=120)
 
-    @field_validator("selected_models")
+    @field_validator("selected_models", "custom_models")
     @classmethod
     def normalize_selected_models(cls, models: list[str]) -> list[str]:
         normalized: list[str] = []
@@ -110,6 +147,13 @@ class ProviderSettings(BaseModel):
                 normalized.append(model_id)
         return normalized
 
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validated_custom_base_url(value)
+
 
 # Backwards-compatible import while callers migrate to the provider-neutral name.
 OpenRouterSettings = ProviderSettings
@@ -120,6 +164,26 @@ class LlmProviderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     kind: ProviderKind = "openrouter"
     api_key: SecretStr = Field(min_length=1, max_length=1000)
+    base_url: str | None = Field(default=None, max_length=2048)
+    custom_models: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("custom_models")
+    @classmethod
+    def normalize_custom_models(cls, models: list[str]) -> list[str]:
+        return ProviderSettings(custom_models=models).custom_models
+
+    @model_validator(mode="after")
+    def validate_protocol_configuration(self) -> "LlmProviderCreate":
+        custom_kind = self.kind in {"openai-compatible", "anthropic-compatible"}
+        if custom_kind and not self.base_url:
+            raise ValueError("A base URL is required for protocol-compatible providers")
+        if self.base_url:
+            self.base_url = _validated_custom_base_url(self.base_url)
+        if not custom_kind and (self.base_url or self.custom_models):
+            raise ValueError(
+                "Custom endpoint settings are only valid for protocol-compatible providers"
+            )
+        return self
 
 
 class LlmProviderUpdate(BaseModel):
@@ -200,6 +264,86 @@ def _environment_flag(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _custom_private_networks_allowed() -> bool:
+    if not _environment_flag("ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS"):
+        return False
+    deployment = os.getenv("DEPLOYMENT_ENVIRONMENT", "local").strip().lower()
+    if deployment in {"prod", "production"}:
+        raise ProviderConfigurationError(
+            "Private custom provider endpoints are disabled in production"
+        )
+    return True
+
+
+def _validated_custom_base_url(value: str) -> str:
+    value = value.strip()
+    parsed = urlsplit(value)
+    try:
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Custom provider base URL has an invalid port") from exc
+    allow_private = _custom_private_networks_allowed()
+    allowed_schemes = {"http", "https"} if allow_private else {"https"}
+    if (
+        parsed.scheme not in allowed_schemes
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.hostname
+        or parsed_port == 0
+    ):
+        requirement = "HTTP(S)" if allow_private else "HTTPS"
+        raise ValueError(
+            f"Custom provider base URL must be an absolute {requirement} URL "
+            "without credentials, query or fragment"
+        )
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    blocked_names = {"localhost", "localhost.localdomain"}
+    blocked_suffixes = (".localhost", ".local", ".internal", ".home", ".lan")
+    if not allow_private and (
+        hostname in blocked_names or hostname.endswith(blocked_suffixes)
+    ):
+        raise ValueError("Custom provider base URL must use a public host")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if not allow_private and address is not None and not address.is_global:
+        raise ValueError("Custom provider base URL must use a public IP address")
+    return value.rstrip("/")
+
+
+async def _assert_public_custom_endpoint(base_url: str) -> None:
+    """Reject custom hosts that resolve to non-public networks before connecting."""
+
+    if _custom_private_networks_allowed():
+        return
+    parsed = urlsplit(base_url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise ProviderConfigurationError("Custom provider base URL has no host")
+    try:
+        results = await asyncio.get_running_loop().getaddrinfo(
+            hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise ProviderConfigurationError(
+            "Custom provider host could not be resolved"
+        ) from exc
+    addresses = {item[4][0].split("%", 1)[0] for item in results}
+    if not addresses or any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise ProviderConfigurationError(
+            "Custom provider host resolves to a non-public network"
+        )
+
+
 def _validated_base_url(value: str, environment_name: str) -> str:
     parsed = urlsplit(value)
     if (
@@ -223,10 +367,27 @@ def provider_spec(kind: str) -> ProviderSpec:
         raise ProviderConfigurationError(f"Unsupported LLM provider: {kind}") from None
 
 
-def resolve_provider_base_url(kind: str) -> str:
-    """Resolve a trusted endpoint; user-controlled settings never supply this URL."""
+def resolve_provider_base_url(
+    kind: str, settings: ProviderSettings | dict[str, Any] | None = None
+) -> str:
+    """Resolve a built-in endpoint or validate a user-configured protocol endpoint."""
 
     spec = provider_spec(kind)
+    if spec.custom_endpoint:
+        if isinstance(settings, ProviderSettings):
+            custom_url = settings.base_url
+        else:
+            custom_url = (settings or {}).get("base_url")
+        if not isinstance(custom_url, str) or not custom_url.strip():
+            raise ProviderConfigurationError(
+                "A base URL is required for protocol-compatible providers"
+            )
+        try:
+            return _validated_custom_base_url(custom_url)
+        except ValueError as exc:
+            raise ProviderConfigurationError(str(exc)) from None
+    if spec.default_base_url is None:
+        raise ProviderConfigurationError(f"Provider {kind} has no default endpoint")
     if not _environment_flag("ALLOW_PROVIDER_ENDPOINT_OVERRIDES"):
         return spec.default_base_url
     deployment = os.getenv("DEPLOYMENT_ENVIRONMENT", "local").strip().lower()
@@ -234,6 +395,8 @@ def resolve_provider_base_url(kind: str) -> str:
         raise ProviderConfigurationError(
             "Provider endpoint overrides are disabled in production"
         )
+    if spec.override_environment is None:
+        return spec.default_base_url
     override = os.getenv(spec.override_environment, "").strip()
     if not override:
         return spec.default_base_url
@@ -243,10 +406,12 @@ def resolve_provider_base_url(kind: str) -> str:
 def validate_provider_endpoint_configuration() -> None:
     """Fail process startup when trusted endpoint override configuration is unsafe."""
 
+    _custom_private_networks_allowed()
     if not _environment_flag("ALLOW_PROVIDER_ENDPOINT_OVERRIDES"):
         return
-    for kind in PROVIDER_REGISTRY:
-        resolve_provider_base_url(kind)
+    for kind, spec in PROVIDER_REGISTRY.items():
+        if not spec.custom_endpoint:
+            resolve_provider_base_url(kind)
 
 
 class LlmProviderAdapter(ABC):
@@ -281,7 +446,9 @@ class HttpLlmProviderAdapter(LlmProviderAdapter):
         self.settings = settings
         self._resolver = credential_resolver
         self._client = client
-        self.base_url = (base_url or resolve_provider_base_url(kind)).rstrip("/")
+        self.base_url = (base_url or resolve_provider_base_url(kind, settings)).rstrip(
+            "/"
+        )
 
     @abstractmethod
     def _headers(self) -> dict[str, str]:
@@ -289,6 +456,8 @@ class HttpLlmProviderAdapter(LlmProviderAdapter):
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         owns_client = self._client is None
+        if owns_client and provider_spec(self.kind).custom_endpoint:
+            await _assert_public_custom_endpoint(self.base_url)
         client = self._client or httpx.AsyncClient(base_url=self.base_url, timeout=60)
         try:
             response = await client.request(
@@ -322,6 +491,11 @@ class OpenAICompatibleAdapter(HttpLlmProviderAdapter):
         await self.list_models()
 
     async def list_models(self) -> list[ProviderModel]:
+        if self.kind == "openai-compatible" and self.settings.custom_models:
+            return [
+                ProviderModel(id=model_id, name=model_id)
+                for model_id in self.settings.custom_models
+            ]
         payload = await self._request("GET", "/models")
         data = payload.get("data")
         if not isinstance(data, list):
@@ -450,9 +624,10 @@ class AnthropicAdapter(HttpLlmProviderAdapter):
         client: httpx.AsyncClient | None = None,
         *,
         base_url: str | None = None,
+        kind: str = "anthropic",
     ) -> None:
         super().__init__(
-            "anthropic",
+            kind,
             settings,
             credential_resolver,
             client,
@@ -469,6 +644,11 @@ class AnthropicAdapter(HttpLlmProviderAdapter):
         await self.list_models()
 
     async def list_models(self) -> list[ProviderModel]:
+        if self.kind == "anthropic-compatible" and self.settings.custom_models:
+            return [
+                ProviderModel(id=model_id, name=model_id)
+                for model_id in self.settings.custom_models
+            ]
         payload = await self._request("GET", "/v1/models")
         data = payload.get("data")
         if not isinstance(data, list):
@@ -571,7 +751,7 @@ def create_provider_adapter(
             client,
             base_url=base_url,
         )
-    if kind in {"openai", "nvidia"}:
+    if kind in {"openai", "nvidia", "openai-compatible"}:
         return OpenAICompatibleAdapter(
             kind,
             parsed_settings,
@@ -579,11 +759,12 @@ def create_provider_adapter(
             client,
             base_url=base_url,
         )
-    if kind == "anthropic":
+    if kind in {"anthropic", "anthropic-compatible"}:
         return AnthropicAdapter(
             parsed_settings,
             resolver,
             client,
             base_url=base_url,
+            kind=kind,
         )
     raise ProviderConfigurationError(f"Unsupported LLM provider: {kind}")

@@ -83,11 +83,17 @@ async def create_llm_provider(
     session: DatabaseSession,
 ):
     api_key = request.api_key.get_secret_value()
+    settings = {}
+    if request.kind in {"openai-compatible", "anthropic-compatible"}:
+        settings = {
+            "base_url": request.base_url,
+            "custom_models": request.custom_models,
+        }
     provider = LlmProvider(
         owner_subject=claims["sub"],
         name=request.name,
         kind=request.kind,
-        settings={},
+        settings=settings,
         api_key_encrypted=_encrypt_api_key(api_key),
         enabled=False,
     )
@@ -158,6 +164,26 @@ async def update_llm_provider(
         raise HTTPException(status_code=404, detail="LLM provider not found")
     if current.revision != request.expected_revision:
         raise HTTPException(status_code=409, detail="Provider revision conflict")
+
+    protocol_provider = current.kind in {
+        "openai-compatible",
+        "anthropic-compatible",
+    }
+    if protocol_provider and not request.settings.base_url:
+        raise HTTPException(
+            status_code=422,
+            detail="A base URL is required for protocol-compatible providers",
+        )
+    if not protocol_provider and (
+        request.settings.base_url or request.settings.custom_models
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Custom endpoint settings are only valid for "
+                "protocol-compatible providers"
+            ),
+        )
 
     settings = request.settings.model_dump(mode="json")
     replacement_key = (

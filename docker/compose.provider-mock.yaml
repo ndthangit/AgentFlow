@@ -19,6 +19,7 @@ services:
   system:
     environment: &provider-mock-environment
       ALLOW_PROVIDER_ENDPOINT_OVERRIDES: "true"
+      ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS: "true"
       OPENAI_BASE_URL_OVERRIDE: http://provider-mock:8089/openai/v1
       ANTHROPIC_BASE_URL_OVERRIDE: http://provider-mock:8089/anthropic
       NVIDIA_BASE_URL_OVERRIDE: http://provider-mock:8089/nvidia/v1

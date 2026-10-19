@@ -20,8 +20,8 @@ lẫn endpoint bằng test double.
 
 ## Trạng thái triển khai
 
-- Control plane, API và Models UI chấp nhận `openrouter`, `openai`, `anthropic` và
-  `nvidia`.
+- Control plane, API và Models UI chấp nhận `openrouter`, `openai`, `anthropic`,
+  `nvidia`, `openai-compatible` và `anthropic-compatible`.
 - OpenAI và NVIDIA dùng `OpenAICompatibleAdapter`; Anthropic dùng
   `AnthropicAdapter`; OpenRouter giữ adapter và attribution headers hiện có.
 - API key được mã hóa bằng Fernet, response chỉ trả `has_api_key`.
@@ -129,10 +129,10 @@ test-nvidia-key
 Không dùng key đã bị revoke hoặc key có prefix thật làm fixture. Secret scanner có
 thể chặn nhầm và người đọc khó phân biệt fixture với secret bị lộ.
 
-### Base URL test
+### Base URL test cho provider tích hợp sẵn
 
-Không nên cho người dùng nhập `base_url` tùy ý trong Models UI. System API và worker
-có quyền truy cập các service nội bộ; URL tùy ý sẽ tạo rủi ro SSRF.
+Các provider tích hợp sẵn không nhận `base_url` từ người dùng. System API và worker
+dùng URL cố định, còn test double được cấu hình bằng biến môi trường tin cậy.
 
 Resolver chỉ cho override từ môi trường tin cậy:
 
@@ -151,6 +151,11 @@ Quy tắc bắt buộc:
 - production URL nằm trong registry, không lấy từ request của người dùng;
 - system và workflow-worker phải dùng cùng một resolver;
 - worker truyền URL đã resolve vào container qua `AGENT_PROVIDER_BASE_URL`.
+
+Hai loại theo giao thức là ngoại lệ có chủ đích: người dùng nhập `base_url` để kết
+nối hãng nhỏ. Chúng chỉ nhận HTTPS public theo mặc định, chặn host/IP nội bộ và kiểm
+tra kết quả DNS trước khi gọi. Local integration test có thể bật rõ ràng
+`ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS=true`; production luôn từ chối flag này.
 
 ## Fake provider dùng cho integration test
 

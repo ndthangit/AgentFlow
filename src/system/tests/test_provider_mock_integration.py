@@ -51,6 +51,25 @@ class ProviderMockIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("test-chat-model", {model.id for model in models})
         self.assertEqual(result.message.content, "mock response")
 
+    async def test_generic_openai_protocol_roundtrip_uses_only_fake_key(self):
+        adapter = create_provider_adapter(
+            "openai-compatible",
+            {
+                "base_url": "https://api.small-vendor.example/v1",
+                "default_model": "test-chat-model",
+            },
+            "test-openai-key",
+            await self._client("http://provider-mock/openai/v1"),
+        )
+
+        models = await adapter.list_models()
+        result = await adapter.complete(
+            ChatCompletionRequest(messages=[{"role": "user", "content": "test"}])
+        )
+
+        self.assertIn("test-chat-model", {model.id for model in models})
+        self.assertEqual(result.message.content, "mock response")
+
     async def test_nvidia_roundtrip_uses_only_fake_key(self):
         adapter = create_provider_adapter(
             "nvidia",

@@ -20,6 +20,8 @@ const providerOptions: Array<{
   description: string;
   keyLabel: string;
   keyPlaceholder: string;
+  customEndpoint?: boolean;
+  endpointPlaceholder?: string;
 }> = [
   {
     kind: "openrouter",
@@ -53,6 +55,26 @@ const providerOptions: Array<{
     keyLabel: "NVIDIA API key",
     keyPlaceholder: "nvapi-…",
   },
+  {
+    kind: "openai-compatible",
+    name: "OpenAI-compatible",
+    initials: "OC",
+    description: "Kết nối provider bất kỳ hỗ trợ /models và /chat/completions.",
+    keyLabel: "Provider API key",
+    keyPlaceholder: "API key của provider",
+    customEndpoint: true,
+    endpointPlaceholder: "https://api.provider.example/v1",
+  },
+  {
+    kind: "anthropic-compatible",
+    name: "Anthropic-compatible",
+    initials: "AC",
+    description: "Kết nối provider hỗ trợ Anthropic Models và Messages API.",
+    keyLabel: "Provider API key",
+    keyPlaceholder: "API key của provider",
+    customEndpoint: true,
+    endpointPlaceholder: "https://api.provider.example",
+  },
 ];
 
 const providerMetadata = (kind: LlmProvider["kind"]) =>
@@ -75,6 +97,8 @@ function settingsWithModels(provider: LlmProvider, modelIds: string[], defaultMo
 export function ModelsPage({ providers, refresh }: Props) {
   const [providerName, setProviderName] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [customModels, setCustomModels] = useState("");
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [selectedProviderKind, setSelectedProviderKind] = useState<LlmProvider["kind"] | "">("");
   const [replacementKeys, setReplacementKeys] = useState<Record<string, string>>({});
@@ -95,6 +119,8 @@ export function ModelsPage({ providers, refresh }: Props) {
     setSelectedProviderKind("");
     setProviderName("");
     setApiKey("");
+    setBaseUrl("");
+    setCustomModels("");
   }
 
   async function run(actionId: string, action: () => Promise<void>) {
@@ -110,7 +136,7 @@ export function ModelsPage({ providers, refresh }: Props) {
 
   async function openModelPicker(provider: LlmProvider) {
     await run(`catalog:${provider.id}`, async () => {
-      setMessage("Đang kiểm tra API key và tải danh sách model…");
+      setMessage("Đang tải danh sách model…");
       const catalog = await api.listProviderModels(provider.id);
       const availableIds = new Set(catalog.map((model) => model.id));
       setCatalogs((current) => ({ ...current, [provider.id]: catalog }));
@@ -194,6 +220,7 @@ export function ModelsPage({ providers, refresh }: Props) {
                   <div><dt>Models đã chọn</dt><dd>{chosenModels.length || "Chưa chọn"}</dd></div>
                   <div><dt>Model mặc định</dt><dd>{provider.settings.default_model ?? "Chưa chọn"}</dd></div>
                   <div><dt>API key</dt><dd>{provider.has_api_key ? "Đã lưu (mã hóa)" : "Chưa cấu hình"}</dd></div>
+                  {provider.settings.base_url && <div><dt>Base URL</dt><dd>{provider.settings.base_url}</dd></div>}
                 </dl>
 
                 <div className="provider-key-update">
@@ -218,9 +245,11 @@ export function ModelsPage({ providers, refresh }: Props) {
                       });
                       setReplacementKeys((current) => ({ ...current, [provider.id]: "" }));
                       await refresh();
-                      setMessage(provider.enabled
-                        ? "API key hợp lệ và đã được thay thế"
-                        : "Đã lưu API key mới; key sẽ được kiểm tra khi kích hoạt");
+                      setMessage(provider.settings.custom_models?.length
+                        ? "Đã thay API key; hãy kiểm tra một model để xác nhận key mới"
+                        : provider.enabled
+                          ? "API key hợp lệ và đã được thay thế"
+                          : "Đã lưu API key mới; key sẽ được kiểm tra khi kích hoạt");
                     })}
                   >Thay API key</button>
                 </div>
@@ -396,12 +425,20 @@ export function ModelsPage({ providers, refresh }: Props) {
               <form className="provider-form provider-modal-form" onSubmit={(event) => {
                 event.preventDefault();
                 const name = providerName.trim();
-                if (!name || !apiKey.trim()) return;
+                const endpoint = baseUrl.trim();
+                if (!name || !apiKey.trim() || (selectedProviderOption.customEndpoint && !endpoint)) return;
+                const configuredModels = customModels
+                  .split(/[\n,]/)
+                  .map((model) => model.trim())
+                  .filter((model, index, models) => model && models.indexOf(model) === index);
                 void run("create", async () => {
                   await api.createLlmProvider({
                     name,
                     kind: selectedProviderOption.kind,
                     api_key: apiKey.trim(),
+                    ...(selectedProviderOption.customEndpoint
+                      ? { base_url: endpoint, custom_models: configuredModels }
+                      : {}),
                   });
                   await refresh();
                   setMessage(`Đã lưu “${name}” ở trạng thái Inactive. Hãy chọn model để kích hoạt.`);
@@ -409,6 +446,8 @@ export function ModelsPage({ providers, refresh }: Props) {
                   setSelectedProviderKind("");
                   setProviderName("");
                   setApiKey("");
+                  setBaseUrl("");
+                  setCustomModels("");
                 });
               }}>
                 <div className="provider-config-heading">
@@ -426,6 +465,31 @@ export function ModelsPage({ providers, refresh }: Props) {
                   />
                   <small>Dùng tên khác nhau để lưu nhiều API key của cùng một nhà cung cấp.</small>
                 </label>
+                {selectedProviderOption.customEndpoint && (
+                  <>
+                    <label>Base URL của API
+                      <input
+                        required
+                        type="url"
+                        maxLength={2048}
+                        placeholder={selectedProviderOption.endpointPlaceholder}
+                        value={baseUrl}
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                      />
+                      <small>Dùng HTTPS công khai. OpenAI-compatible thường kết thúc bằng /v1; Anthropic-compatible nhập phần đứng trước /v1.</small>
+                    </label>
+                    <label>Model IDs (không bắt buộc)
+                      <textarea
+                        rows={3}
+                        maxLength={20000}
+                        placeholder={"model-small\nmodel-large"}
+                        value={customModels}
+                        onChange={(event) => setCustomModels(event.target.value)}
+                      />
+                      <small>Mỗi dòng hoặc dấu phẩy là một model. Để trống nếu provider hỗ trợ endpoint liệt kê model.</small>
+                    </label>
+                  </>
+                )}
                 <label>{selectedProviderOption.keyLabel}
                   <input
                     required
@@ -439,7 +503,13 @@ export function ModelsPage({ providers, refresh }: Props) {
                 </label>
                 <div className="provider-form-actions">
                   <button type="button" onClick={closeProviderForm} disabled={busyAction === "create"}>Hủy</button>
-                  <button className="install-button" disabled={Boolean(busyAction) || !providerName.trim() || !apiKey.trim()}>
+                  <button
+                    className="install-button"
+                    disabled={Boolean(busyAction)
+                      || !providerName.trim()
+                      || !apiKey.trim()
+                      || Boolean(selectedProviderOption.customEndpoint && !baseUrl.trim())}
+                  >
                     {busyAction === "create" ? "Đang lưu…" : "Thêm provider"}
                   </button>
                 </div>

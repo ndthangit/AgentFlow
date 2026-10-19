@@ -71,6 +71,8 @@ export type Skill = {
 export type ProviderSettings = {
   default_model: string | null;
   selected_models: string[];
+  custom_models: string[];
+  base_url: string | null;
   site_url: string | null;
   app_title: string;
 };
@@ -80,7 +82,7 @@ export type OpenRouterSettings = ProviderSettings;
 export type LlmProvider = {
   id: string;
   name: string;
-  kind: "openrouter" | "openai" | "anthropic" | "nvidia";
+  kind: "openrouter" | "openai" | "anthropic" | "nvidia" | "openai-compatible" | "anthropic-compatible";
   settings: ProviderSettings;
   has_api_key: boolean;
   enabled: boolean;

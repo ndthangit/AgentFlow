@@ -218,7 +218,7 @@ def _agent_container_environment(
         )
     try:
         spec = provider_spec(provider.kind)
-        base_url = resolve_provider_base_url(provider.kind)
+        base_url = resolve_provider_base_url(provider.kind, provider.settings)
     except ProviderConfigurationError as exc:
         raise WorkflowExecutionError(
             f"Provider {provider.name} is not supported by the Agent container"

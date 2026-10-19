@@ -68,7 +68,13 @@ export const api = {
   deleteMcpServer: (serverId: string) =>
     request<void>(`/v1/mcp-servers/${serverId}`, { method: "DELETE" }),
   listLlmProviders: () => request<LlmProvider[]>("/v1/llm-providers"),
-  createLlmProvider: (input: { name: string; kind: LlmProvider["kind"]; api_key: string }) =>
+  createLlmProvider: (input: {
+    name: string;
+    kind: LlmProvider["kind"];
+    api_key: string;
+    base_url?: string;
+    custom_models?: string[];
+  }) =>
     request<LlmProvider>("/v1/llm-providers", { method: "POST", body: JSON.stringify(input) }),
   deleteLlmProvider: (providerId: string) =>
     request<void>(`/v1/llm-providers/${providerId}`, { method: "DELETE" }),

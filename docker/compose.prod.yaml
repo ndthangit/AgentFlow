@@ -41,6 +41,7 @@ services:
     restart: always
     environment:
       ALLOW_PROVIDER_ENDPOINT_OVERRIDES: "false"
+      ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS: "false"
       DEPLOYMENT_ENVIRONMENT: production
       OIDC_ISSUER: ${KEYCLOAK_PUBLIC_URL:?Set KEYCLOAK_PUBLIC_URL in .env.prod}/realms/agentflow
       WEB_ORIGINS: ${WEB_PUBLIC_URL:?Set WEB_PUBLIC_URL in .env.prod}
@@ -82,6 +83,7 @@ services:
     restart: always
     environment:
       ALLOW_PROVIDER_ENDPOINT_OVERRIDES: "false"
+      ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS: "false"
       DEPLOYMENT_ENVIRONMENT: production
       AGENT_RUNTIME_IMAGES: '{"default":"${AGENTFLOW_AGENT_DEFAULT_IMAGE:?Set AGENTFLOW_AGENT_DEFAULT_IMAGE in .env.prod}","codex":"${AGENTFLOW_AGENT_CODEX_IMAGE:?Set AGENTFLOW_AGENT_CODEX_IMAGE in .env.prod}","opencode":"${AGENTFLOW_AGENT_OPENCODE_IMAGE:?Set AGENTFLOW_AGENT_OPENCODE_IMAGE in .env.prod}","openhands":"${AGENTFLOW_AGENT_OPENHANDS_IMAGE:?Set AGENTFLOW_AGENT_OPENHANDS_IMAGE in .env.prod}"}'
       AGENT_RUNTIME_NETWORK: ${AGENT_RUNTIME_NETWORK:-agentflow-prod-runtime}
