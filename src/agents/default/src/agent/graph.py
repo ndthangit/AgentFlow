@@ -74,31 +74,49 @@ def build_configured_model() -> BaseChatModel:
     if not model_name:
         raise AgentRunError("CONFIGURATION_ERROR", "Set AGENT_MODEL.")
 
-    if provider in {"openai-compatible", "openrouter"}:
+    generic_base_url = os.getenv("AGENT_PROVIDER_BASE_URL", "").strip().rstrip("/")
+    generic_api_key = os.getenv("AGENT_PROVIDER_API_KEY", "").strip()
+
+    if provider in {"openai-compatible", "openrouter", "openai", "nvidia"}:
         is_openrouter = provider == "openrouter"
-        base_url = os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip().rstrip("/")
+        base_url = generic_base_url
         if is_openrouter:
             base_url = (
-                os.getenv("OPENROUTER_BASE_URL", "").strip().rstrip("/")
-                or base_url
+                base_url
+                or os.getenv("OPENROUTER_BASE_URL", "").strip().rstrip("/")
+                or os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip().rstrip("/")
                 or "https://openrouter.ai/api/v1"
             )
+        elif provider == "openai":
+            base_url = base_url or "https://api.openai.com/v1"
+        elif provider == "nvidia":
+            base_url = base_url or "https://integrate.api.nvidia.com/v1"
+        else:
+            base_url = base_url or os.getenv(
+                "OPENAI_COMPATIBLE_BASE_URL", ""
+            ).strip().rstrip("/")
         if not base_url:
             raise AgentRunError(
                 "CONFIGURATION_ERROR",
-                "Set OPENAI_COMPATIBLE_BASE_URL.",
+                "Set AGENT_PROVIDER_BASE_URL.",
+            )
+        api_key = generic_api_key
+        if is_openrouter:
+            api_key = (
+                api_key
+                or os.getenv("OPENROUTER_API_KEY", "").strip()
+                or os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip()
+            )
+        elif provider == "openai-compatible":
+            api_key = api_key or os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip()
+        if provider != "openai-compatible" and not api_key:
+            raise AgentRunError(
+                "CONFIGURATION_ERROR",
+                "Set AGENT_PROVIDER_API_KEY.",
             )
         # ChatOpenAI requires a non-empty key. Many local servers ignore it, so
         # a non-secret placeholder is safe and avoids special cases per server.
-        api_key = os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip()
-        if is_openrouter:
-            api_key = os.getenv("OPENROUTER_API_KEY", "").strip() or api_key
-            if not api_key:
-                raise AgentRunError(
-                    "CONFIGURATION_ERROR",
-                    "Set OPENROUTER_API_KEY.",
-                )
-        else:
+        if provider == "openai-compatible":
             api_key = api_key or "not-required"
         return ChatOpenAI(
             model=model_name,
@@ -110,13 +128,16 @@ def build_configured_model() -> BaseChatModel:
         )
 
     if provider == "anthropic":
-        if not os.getenv("ANTHROPIC_API_KEY", "").strip():
+        api_key = generic_api_key or os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
             raise AgentRunError(
                 "CONFIGURATION_ERROR",
-                "Set ANTHROPIC_API_KEY.",
+                "Set AGENT_PROVIDER_API_KEY.",
             )
         return ChatAnthropic(
             model_name=model_name,
+            anthropic_api_key=api_key,
+            anthropic_api_url=generic_base_url or "https://api.anthropic.com",
             max_tokens=2048,
             timeout=60.0,
             max_retries=1,
@@ -124,7 +145,7 @@ def build_configured_model() -> BaseChatModel:
 
     raise AgentRunError(
         "CONFIGURATION_ERROR",
-        "AGENT_PROVIDER must be openai-compatible, openrouter or anthropic.",
+        "AGENT_PROVIDER must be openai-compatible, openrouter, openai, nvidia or anthropic.",
     )
 
 

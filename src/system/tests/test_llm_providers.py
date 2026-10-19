@@ -1,3 +1,5 @@
+import json
+import os
 import unittest
 import uuid
 from pathlib import Path
@@ -25,6 +27,7 @@ from providers.adapters import (
     ProviderModelTestRequest,
     ProviderUpstreamError,
     create_provider_adapter,
+    resolve_provider_base_url,
 )
 from providers.secrets import ProviderSecretStore
 
@@ -437,6 +440,127 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(models[0].id, "openai/test")
         self.assertEqual(models[0].context_length, 8192)
         self.assertEqual(models[0].pricing["overrides"][0]["utc_end"], 8)
+
+    def test_create_contract_accepts_all_supported_provider_kinds(self):
+        for kind in ("openrouter", "openai", "anthropic", "nvidia"):
+            with self.subTest(kind=kind):
+                request = LlmProviderCreate(
+                    name=f"Provider {kind}", kind=kind, api_key="test-key"
+                )
+                self.assertEqual(request.kind, kind)
+
+    async def test_openai_adapter_uses_bearer_auth_and_normalizes_catalog(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/models")
+            self.assertEqual(request.headers["Authorization"], "Bearer test-openai-key")
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [{"id": "test-chat-model", "owned_by": "test"}],
+                },
+            )
+
+        client = httpx.AsyncClient(
+            base_url="https://unit.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+        models = await create_provider_adapter(
+            "openai", {}, "test-openai-key", client
+        ).list_models()
+        self.assertEqual(models[0].id, "test-chat-model")
+
+    async def test_nvidia_adapter_uses_openai_compatible_completion(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/chat/completions")
+            self.assertEqual(request.headers["Authorization"], "Bearer test-nvidia-key")
+            self.assertEqual(json.loads(request.content)["model"], "test-chat-model")
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chat-test",
+                    "model": "test-chat-model",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "OK"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        client = httpx.AsyncClient(
+            base_url="https://unit.test/v1",
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+        result = await create_provider_adapter(
+            "nvidia",
+            {"default_model": "test-chat-model"},
+            "test-nvidia-key",
+            client,
+        ).complete(ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}]))
+        self.assertEqual(result.message.content, "OK")
+
+    async def test_anthropic_adapter_translates_system_message_and_response(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/v1/messages")
+            self.assertEqual(request.headers["x-api-key"], "test-anthropic-key")
+            self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
+            body = json.loads(request.content)
+            self.assertEqual(body["system"], "Be concise")
+            self.assertEqual(body["messages"], [{"role": "user", "content": "hi"}])
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg-test",
+                    "model": "test-claude-model",
+                    "content": [{"type": "text", "text": "OK"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 2, "output_tokens": 1},
+                },
+            )
+
+        client = httpx.AsyncClient(
+            base_url="https://unit.test",
+            transport=httpx.MockTransport(handler),
+        )
+        self.addAsyncCleanup(client.aclose)
+        result = await create_provider_adapter(
+            "anthropic",
+            {"default_model": "test-claude-model"},
+            "test-anthropic-key",
+            client,
+        ).complete(
+            ChatCompletionRequest(
+                messages=[
+                    {"role": "system", "content": "Be concise"},
+                    {"role": "user", "content": "hi"},
+                ],
+                max_tokens=64,
+            )
+        )
+        self.assertEqual(result.message.content, "OK")
+        self.assertEqual(result.usage["output_tokens"], 1)
+
+    def test_endpoint_override_is_local_only_and_rejected_in_production(self):
+        environment = {
+            "ALLOW_PROVIDER_ENDPOINT_OVERRIDES": "true",
+            "OPENAI_BASE_URL_OVERRIDE": "http://provider-mock:8089/openai/v1/",
+            "DEPLOYMENT_ENVIRONMENT": "local",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            self.assertEqual(
+                resolve_provider_base_url("openai"),
+                "http://provider-mock:8089/openai/v1",
+            )
+        environment["DEPLOYMENT_ENVIRONMENT"] = "production"
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            self.assertRaises(ProviderConfigurationError),
+        ):
+            resolve_provider_base_url("openai")
 
 
 if __name__ == "__main__":

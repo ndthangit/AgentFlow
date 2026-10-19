@@ -1,25 +1,31 @@
 # Quản lý LLM provider
 
-AgentFlow lưu cấu hình provider theo từng người dùng trong bảng `system.llm_providers`. Mỗi bản ghi là một cấu hình kết nối độc lập, có tên do người dùng đặt, API key và danh sách model riêng. Vì vậy một người dùng có thể tạo nhiều cấu hình cùng loại OpenRouter, ví dụ `OpenRouter cá nhân` và `OpenRouter công ty`, nhưng dùng các key khác nhau.
+Phần quản lý hỗ trợ OpenRouter, OpenAI, Anthropic và NVIDIA. Chiến lược kiểm thử
+hoàn toàn bằng key giả được mô tả tại
+[Tích hợp provider không cần API key thật](provider-integration-testing.md).
+
+AgentFlow lưu cấu hình provider theo từng người dùng trong bảng `system.llm_providers`. Mỗi bản ghi là một cấu hình kết nối độc lập, có tên do người dùng đặt, API key và danh sách model riêng. Vì vậy một người dùng có thể tạo nhiều cấu hình cùng loại nhưng dùng các key khác nhau.
 
 ## Luồng cấu hình
 
-1. Người dùng thêm provider bằng tên cấu hình, loại provider và API key. Tên cấu hình phải là duy nhất trong phạm vi tài khoản hiện tại; loại provider đầu tiên được hỗ trợ là OpenRouter.
-2. API key được mã hóa và provider luôn được tạo ở trạng thái `Inactive`. Bước này không gọi OpenRouter.
-3. Khi người dùng chọn kích hoạt, AgentFlow gọi `GET /api/v1/models` bằng key đã lưu và hiển thị catalog để chọn.
+1. Người dùng thêm provider bằng tên cấu hình, loại provider và API key. Tên cấu hình phải là duy nhất trong phạm vi tài khoản hiện tại.
+2. API key được mã hóa và provider luôn được tạo ở trạng thái `Inactive`. Bước này không gọi provider.
+3. Khi người dùng chọn kích hoạt, AgentFlow gọi model catalog bằng key đã lưu và hiển thị kết quả để chọn.
 4. Người dùng phải chọn ít nhất một model và có thể chọn rõ model mặc định. Nếu model mặc định cũ không còn trong lựa chọn, giao diện tự chuyển sang model đầu tiên còn lại.
 5. Backend tải lại catalog để xác thực các model trước khi chuyển provider sang `Active`.
 6. Mỗi model đã chọn được hiển thị trên một dòng và có nút kiểm tra riêng. Phép kiểm tra gửi một chat completion ngắn tới đúng model đó.
 
 ## Thiết kế adapter
 
-`LlmProviderAdapter` là interface ổn định gồm `verify()`, `list_models()` và `complete()`. `OpenRouterAdapter` triển khai interface này, còn `create_provider_adapter()` là registry/factory. Code orchestration chỉ phụ thuộc interface chung.
+`LlmProviderAdapter` là interface ổn định gồm `verify()`, `list_models()` và `complete()`. `OpenRouterAdapter`, `OpenAICompatibleAdapter` và `AnthropicAdapter` triển khai interface này, còn `create_provider_adapter()` là registry/factory. Code orchestration chỉ phụ thuộc interface chung.
 
 OpenRouter dùng `GET /api/v1/models` để lấy catalog và `POST /api/v1/chat/completions` để gọi hoặc kiểm tra model. Adapter gửi API key bằng Bearer token và hỗ trợ các header attribution `HTTP-Referer`, `X-OpenRouter-Title`.
 
+OpenAI và NVIDIA dùng Bearer token cùng giao thức Chat Completions tương thích OpenAI. Anthropic dùng `x-api-key`, `anthropic-version`, Models API và Messages API; adapter chuyển system message sang field `system` và chuẩn hóa content blocks về `ChatCompletionResult`.
+
 ## Dữ liệu được lưu
 
-Bảng `system.llm_providers` lưu tên cấu hình, loại provider, settings, API key đã mã hóa, trạng thái và `revision` cho optimistic concurrency. Ràng buộc duy nhất áp dụng trên cặp `owner_subject + name`, không áp dụng trên `kind`, nên nhiều cấu hình cùng nhà cung cấp được hỗ trợ. Settings OpenRouter gồm:
+Bảng `system.llm_providers` lưu tên cấu hình, loại provider, settings, API key đã mã hóa, trạng thái và `revision` cho optimistic concurrency. Ràng buộc duy nhất áp dụng trên cặp `owner_subject + name`, không áp dụng trên `kind`, nên nhiều cấu hình cùng nhà cung cấp được hỗ trợ. Settings chung gồm:
 
 - `selected_models`: tối đa 100 model ID người dùng cho phép sử dụng.
 - `default_model`: model mặc định; backend tự dùng model đầu tiên đã chọn nếu giá trị cũ không còn hợp lệ.

@@ -4,7 +4,7 @@ import type {
   LlmProvider,
   McpServer,
   NodeTypeDefinition,
-  OpenRouterSettings,
+  ProviderSettings,
   ProviderModel,
   ProviderModelTestResult,
   RunStep,
@@ -72,7 +72,7 @@ export const api = {
     request<LlmProvider>("/v1/llm-providers", { method: "POST", body: JSON.stringify(input) }),
   deleteLlmProvider: (providerId: string) =>
     request<void>(`/v1/llm-providers/${providerId}`, { method: "DELETE" }),
-  updateLlmProvider: (provider: LlmProvider, input: { name: string; settings: OpenRouterSettings; enabled: boolean; api_key?: string }) =>
+  updateLlmProvider: (provider: LlmProvider, input: { name: string; settings: ProviderSettings; enabled: boolean; api_key?: string }) =>
     request<LlmProvider>(`/v1/llm-providers/${provider.id}`, {
       method: "PUT",
       body: JSON.stringify({ expected_revision: provider.revision, ...input }),

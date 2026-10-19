@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { api } from "../../shared/api";
-import type { LlmProvider, OpenRouterSettings, ProviderModel } from "../../shared/types";
+import type { LlmProvider, ProviderModel, ProviderSettings } from "../../shared/types";
 
 type Props = {
   providers: LlmProvider[];
@@ -29,13 +29,40 @@ const providerOptions: Array<{
     keyLabel: "OpenRouter API key",
     keyPlaceholder: "sk-or-v1-…",
   },
+  {
+    kind: "openai",
+    name: "OpenAI",
+    initials: "OA",
+    description: "Kết nối trực tiếp tới catalog và Chat Completions của OpenAI.",
+    keyLabel: "OpenAI API key",
+    keyPlaceholder: "sk-…",
+  },
+  {
+    kind: "anthropic",
+    name: "Anthropic",
+    initials: "AN",
+    description: "Sử dụng Claude qua Models API và Messages API của Anthropic.",
+    keyLabel: "Anthropic API key",
+    keyPlaceholder: "sk-ant-…",
+  },
+  {
+    kind: "nvidia",
+    name: "NVIDIA",
+    initials: "NV",
+    description: "Sử dụng NVIDIA API Catalog qua giao thức OpenAI-compatible.",
+    keyLabel: "NVIDIA API key",
+    keyPlaceholder: "nvapi-…",
+  },
 ];
+
+const providerMetadata = (kind: LlmProvider["kind"]) =>
+  providerOptions.find((option) => option.kind === kind) ?? providerOptions[0];
 
 function selectedModels(provider: LlmProvider) {
   return provider.settings.selected_models ?? [];
 }
 
-function settingsWithModels(provider: LlmProvider, modelIds: string[], defaultModel: string): OpenRouterSettings {
+function settingsWithModels(provider: LlmProvider, modelIds: string[], defaultModel: string): ProviderSettings {
   return {
     ...provider.settings,
     selected_models: modelIds,
@@ -100,7 +127,7 @@ export function ModelsPage({ providers, refresh }: Props) {
           : availableSelection[0] ?? "",
       }));
       setConfiguringId(provider.id);
-      setMessage(`Đã tải ${catalog.length} model từ OpenRouter`);
+      setMessage(`Đã tải ${catalog.length} model từ ${providerMetadata(provider.kind).name}`);
     });
   }
 
@@ -140,6 +167,7 @@ export function ModelsPage({ providers, refresh }: Props) {
       <div className="models-layout">
         <div className="provider-list">
           {providers.map((provider) => {
+            const metadata = providerMetadata(provider.kind);
             const chosenModels = selectedModels(provider);
             const catalog = catalogs[provider.id] ?? [];
             const draft = draftSelections[provider.id] ?? [];
@@ -154,8 +182,8 @@ export function ModelsPage({ providers, refresh }: Props) {
               <article className={isConfiguring ? "provider-card configuring" : "provider-card"} key={provider.id}>
                 <div className="provider-heading">
                   <div>
-                    <span className="provider-logo">OR</span>
-                    <span><strong>{provider.name}</strong><small>OpenRouter · revision {provider.revision}</small></span>
+                    <span className="provider-logo">{metadata.initials}</span>
+                    <span><strong>{provider.name}</strong><small>{metadata.name} · revision {provider.revision}</small></span>
                   </div>
                   <span className={provider.enabled ? "provider-status enabled" : "provider-status"}>
                     {provider.enabled ? "Active" : "Inactive"}
@@ -327,7 +355,7 @@ export function ModelsPage({ providers, refresh }: Props) {
               </article>
             );
           })}
-          {!providers.length && <div className="catalog-empty">Chưa có provider. Hãy thêm API key OpenRouter để bắt đầu.</div>}
+          {!providers.length && <div className="catalog-empty">Chưa có provider. Hãy thêm một kết nối model để bắt đầu.</div>}
         </div>
       </div>
 
@@ -392,7 +420,7 @@ export function ModelsPage({ providers, refresh }: Props) {
                     autoFocus
                     required
                     maxLength={160}
-                    placeholder="Ví dụ: OpenRouter cá nhân"
+                    placeholder={`Ví dụ: ${selectedProviderOption.name} cá nhân`}
                     value={providerName}
                     onChange={(event) => setProviderName(event.target.value)}
                   />

@@ -11,10 +11,12 @@ from core.telemetry import annotate_langfuse_span
 from domain.errors import WorkflowExecutionError
 from domain.models import LlmProvider, McpServer
 from providers.adapters import (
-    OPENROUTER_BASE_URL,
     ChatCompletionRequest,
     ChatMessage,
+    ProviderConfigurationError,
     create_provider_adapter,
+    provider_spec,
+    resolve_provider_base_url,
 )
 from providers.secrets import ProviderSecretStore
 from runtime.agent_container import AgentContainerExecutor
@@ -214,21 +216,25 @@ def _agent_container_environment(
         raise WorkflowExecutionError(
             f"Model {model} is not enabled for provider {provider.name}"
         )
-    if provider.kind != "openrouter":
+    try:
+        spec = provider_spec(provider.kind)
+        base_url = resolve_provider_base_url(provider.kind)
+    except ProviderConfigurationError as exc:
         raise WorkflowExecutionError(
             f"Provider {provider.name} is not supported by the Agent container"
-        )
+        ) from exc
     api_key = secret_store.decrypt(provider.api_key_encrypted)
-    return {
-        "AGENT_PROVIDER": "openrouter",
+    environment = {
+        "AGENT_PROVIDER": spec.runtime_provider,
         "AGENT_MODEL": model.strip(),
-        # Runtime-neutral names are the contract for new adapters. Keep the
-        # OpenRouter aliases while the default runtime still consumes them.
-        "AGENT_PROVIDER_BASE_URL": OPENROUTER_BASE_URL,
+        "AGENT_PROVIDER_BASE_URL": base_url,
         "AGENT_PROVIDER_API_KEY": api_key,
-        "OPENROUTER_BASE_URL": OPENROUTER_BASE_URL,
-        "OPENROUTER_API_KEY": api_key,
     }
+    if provider.kind == "openrouter":
+        # Transitional aliases for older runtime images.
+        environment["OPENROUTER_BASE_URL"] = base_url
+        environment["OPENROUTER_API_KEY"] = api_key
+    return environment
 
 
 def _create_completion_executor(

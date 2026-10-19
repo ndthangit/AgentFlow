@@ -225,6 +225,66 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             build_configured_model()
         self.assertEqual(error.exception.code, "CONFIGURATION_ERROR")
 
+    def test_openai_uses_generic_managed_environment(self):
+        environment = {
+            "AGENT_PROVIDER": "openai",
+            "AGENT_MODEL": "test-chat-model",
+            "AGENT_PROVIDER_BASE_URL": "http://provider-mock:8089/openai/v1/",
+            "AGENT_PROVIDER_API_KEY": "test-openai-key",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("agent.graph.ChatOpenAI") as chat_openai,
+        ):
+            build_configured_model()
+        chat_openai.assert_called_once_with(
+            model="test-chat-model",
+            base_url="http://provider-mock:8089/openai/v1",
+            api_key="test-openai-key",
+            max_tokens=2048,
+            timeout=60.0,
+            max_retries=1,
+        )
+
+    def test_nvidia_uses_openai_compatible_client(self):
+        environment = {
+            "AGENT_PROVIDER": "nvidia",
+            "AGENT_MODEL": "test-chat-model",
+            "AGENT_PROVIDER_BASE_URL": "http://provider-mock:8089/nvidia/v1",
+            "AGENT_PROVIDER_API_KEY": "test-nvidia-key",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("agent.graph.ChatOpenAI") as chat_openai,
+        ):
+            build_configured_model()
+        self.assertEqual(
+            chat_openai.call_args.kwargs["base_url"],
+            "http://provider-mock:8089/nvidia/v1",
+        )
+        self.assertEqual(chat_openai.call_args.kwargs["api_key"], "test-nvidia-key")
+
+    def test_anthropic_uses_generic_managed_environment(self):
+        environment = {
+            "AGENT_PROVIDER": "anthropic",
+            "AGENT_MODEL": "test-claude-model",
+            "AGENT_PROVIDER_BASE_URL": "http://provider-mock:8089/anthropic/",
+            "AGENT_PROVIDER_API_KEY": "test-anthropic-key",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch("agent.graph.ChatAnthropic") as chat_anthropic,
+        ):
+            build_configured_model()
+        chat_anthropic.assert_called_once_with(
+            model_name="test-claude-model",
+            anthropic_api_key="test-anthropic-key",
+            anthropic_api_url="http://provider-mock:8089/anthropic",
+            max_tokens=2048,
+            timeout=60.0,
+            max_retries=1,
+        )
+
     async def test_deadline_cancels_graph(self):
         cancelled = asyncio.Event()
 

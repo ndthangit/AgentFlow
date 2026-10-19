@@ -88,6 +88,7 @@ HTTPS và cấu hình image trong [hướng dẫn Docker](docker/README.md).
 - [Quản lý Agent runtime](docs/agent-runtime-management.md)
 - [Tích hợp Codex và OpenCode](docs/codex-opencode-runtime-integration.md)
 - [Provider và model LLM](docs/llm-providers.md)
+- [Tích hợp và test OpenAI, Anthropic, NVIDIA không cần key thật](docs/provider-integration-testing.md)
 - [Kế hoạch tích hợp giám sát hệ thống và workflow](docs/observability.md)
 
 Giấy phép: [MIT](LICENSE).

@@ -13,7 +13,7 @@ from runtime.agent_container import (
     _runtime_diagnostics,
     build_agent_docker_command,
 )
-from runtime.agent_executor import create_agent_executor
+from runtime.agent_executor import _agent_container_environment, create_agent_executor
 from runtime.container_process import ContainerResult
 from runtime.execution_context import bind_node_execution, bind_run_execution
 
@@ -43,6 +43,38 @@ def configured_openrouter(model: str = "openai/test-model"):
     secret_store = Mock()
     secret_store.decrypt.return_value = "secret-key"
     return provider, secret_store
+
+
+class ProviderEnvironmentTests(unittest.TestCase):
+    def test_non_openrouter_provider_uses_only_generic_runtime_contract(self):
+        provider = SimpleNamespace(
+            id="provider-2",
+            name="Anthropic",
+            kind="anthropic",
+            settings={
+                "default_model": "test-claude-model",
+                "selected_models": ["test-claude-model"],
+            },
+            api_key_encrypted="encrypted-key",
+        )
+        secret_store = Mock()
+        secret_store.decrypt.return_value = "test-anthropic-key"
+        environment = {
+            "ALLOW_PROVIDER_ENDPOINT_OVERRIDES": "true",
+            "ANTHROPIC_BASE_URL_OVERRIDE": "http://provider-mock:8089/anthropic",
+            "DEPLOYMENT_ENVIRONMENT": "local",
+        }
+
+        with patch.dict(os.environ, environment, clear=True):
+            resolved = _agent_container_environment({}, [provider], secret_store)
+
+        self.assertEqual(resolved["AGENT_PROVIDER"], "anthropic")
+        self.assertEqual(
+            resolved["AGENT_PROVIDER_BASE_URL"],
+            "http://provider-mock:8089/anthropic",
+        )
+        self.assertEqual(resolved["AGENT_PROVIDER_API_KEY"], "test-anthropic-key")
+        self.assertNotIn("OPENROUTER_API_KEY", resolved)
 
 
 class AgentDockerCommandTests(unittest.TestCase):

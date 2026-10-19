@@ -25,6 +25,7 @@ from core.telemetry import (
     record_worker_heartbeat,
 )
 from domain.models import FlowRun, LlmProvider, McpServer, RunStep, WorkflowVersion
+from providers.adapters import validate_provider_endpoint_configuration
 from providers.secrets import ProviderSecretStore
 from runtime.agent_executor import create_agent_executor, create_llm_executor
 from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
@@ -370,14 +371,13 @@ async def process_message(
 
 
 async def run_worker() -> None:
+    validate_provider_endpoint_configuration()
     queue = RedisRunQueue.from_env()
     consumer = os.getenv(
         "WORKFLOW_WORKER_NAME", f"{socket.gethostname()}-{os.getpid()}"
     )
     reclaim_idle_ms = int(os.getenv("WORKFLOW_RECLAIM_IDLE_MS", "300000"))
-    lease_ttl_seconds = max(
-        10.0, float(os.getenv("WORKFLOW_LEASE_TTL_SECONDS", "60"))
-    )
+    lease_ttl_seconds = max(10.0, float(os.getenv("WORKFLOW_LEASE_TTL_SECONDS", "60")))
     heartbeat_seconds = max(
         1.0,
         min(

@@ -296,7 +296,7 @@ async def test_llm_provider_model(
         if exc.status_code == 402:
             raise HTTPException(
                 status_code=402,
-                detail="OpenRouter credits are insufficient for this model",
+                detail="Provider credits are insufficient for this model",
             ) from None
         if exc.status_code in {408, 500, 502, 503, 529}:
             raise HTTPException(
@@ -305,7 +305,7 @@ async def test_llm_provider_model(
             ) from None
         raise HTTPException(
             status_code=502,
-            detail="OpenRouter rejected the model test request",
+            detail="Provider rejected the model test request",
         ) from None
     except ProviderRequestError:
         raise HTTPException(status_code=502, detail="Model test failed") from None

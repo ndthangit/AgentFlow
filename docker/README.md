@@ -46,6 +46,24 @@ Các endpoint local:
 | Redis | `127.0.0.1:6379` |
 | Filesystem MCP | `127.0.0.1:8002` |
 
+### Test provider không cần API key thật
+
+Compose override `compose.provider-mock.yaml` chạy endpoint local cho OpenAI,
+Anthropic và NVIDIA, đồng thời cấu hình System API/worker dùng endpoint đó thay vì
+Internet:
+
+```powershell
+docker compose `
+  -f compose.yaml `
+  -f compose.provider-mock.yaml `
+  up -d --build
+```
+
+Trong Models UI, dùng `test-openai-key`, `test-anthropic-key` hoặc
+`test-nvidia-key`. Fake catalog trả `test-chat-model` cho OpenAI/NVIDIA và
+`test-claude-model` cho Anthropic. Override này chỉ dành cho local/CI và không được
+kết hợp với `compose.prod.yaml`.
+
 ### Bật observability local
 
 Stack giám sát là Compose override tùy chọn, gồm OpenTelemetry Collector,

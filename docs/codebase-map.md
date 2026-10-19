@@ -69,6 +69,8 @@ Các ranh giới quan trọng:
 - `src/agents/default/src/agent` triển khai contract JSON qua stdin/stdout bằng Deep
   Agents/LangGraph.
 - `src/mcp-filesystem` là MCP server demo với root filesystem bị giới hạn.
+- `src/provider-mock` là test double local cho OpenAI, Anthropic và NVIDIA; chỉ được
+  bật qua `docker/compose.provider-mock.yaml` trong local/CI.
 
 ## Chọn nơi sửa theo loại thay đổi
 

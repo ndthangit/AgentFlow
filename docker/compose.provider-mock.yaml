@@ -1,0 +1,33 @@
+services:
+  provider-mock:
+    image: agentflow-provider-mock:dev
+    build:
+      context: ../src/provider-mock
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8089/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend, runtime]
+
+  system:
+    environment: &provider-mock-environment
+      ALLOW_PROVIDER_ENDPOINT_OVERRIDES: "true"
+      OPENAI_BASE_URL_OVERRIDE: http://provider-mock:8089/openai/v1
+      ANTHROPIC_BASE_URL_OVERRIDE: http://provider-mock:8089/anthropic
+      NVIDIA_BASE_URL_OVERRIDE: http://provider-mock:8089/nvidia/v1
+    depends_on:
+      provider-mock:
+        condition: service_healthy
+
+  workflow-worker:
+    environment: *provider-mock-environment
+    depends_on:
+      provider-mock:
+        condition: service_healthy
