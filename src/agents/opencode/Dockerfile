@@ -21,7 +21,7 @@ RUN npm ci --omit=dev \
     && mkdir -p /workspace \
     && chown agentflow:agentflow /workspace
 
-COPY --chmod=755 agent.mjs ./agent.mjs
+COPY --chmod=755 agent.mjs telemetry.mjs ./
 RUN ln -s /opt/agentflow-opencode/agent.mjs /usr/local/bin/agent
 
 WORKDIR /workspace

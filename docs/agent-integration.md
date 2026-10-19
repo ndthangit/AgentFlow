@@ -2,6 +2,8 @@
 
 > Phần mapping từ code hiện tại sang image, credential, contract v1/v2 và kế hoạch triển khai Codex/OpenCode được tách tại [Tích hợp Codex và OpenCode vào AgentFlow](codex-opencode-runtime-integration.md).
 
+> Runtime OpenHands Software Agent SDK được mô tả riêng tại [Tích hợp OpenHands](openhands-runtime-integration.md).
+
 ## Hướng triển khai hiện tại: Deep Agents trước
 
 > **Cập nhật kiến trúc:** đường production mục tiêu không dùng một agent HTTP service lâu dài. Mỗi attempt của agent node sẽ chạy trong một container dùng một lần; xem [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md). HTTP/CLI ở tài liệu này vẫn là bề mặt thử nghiệm contract và adapter.

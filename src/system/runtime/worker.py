@@ -83,6 +83,7 @@ async def load_and_execute(
 
     trace_metadata = {
         "run_id": run_id,
+        "session_id": str(run_id),
         "workflow_id": version.workflow_id,
         "workflow_version_id": version.id,
         "workflow_version": version.version,
@@ -263,6 +264,7 @@ async def process_message(
             "chain",
             metadata={
                 "run_id": run_id,
+                "session_id": str(run_id),
                 "trace_name": "workflow.run",
                 "stage": "execution",
             },

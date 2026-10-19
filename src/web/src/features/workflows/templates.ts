@@ -1,7 +1,7 @@
 export const FILESYSTEM_DEMO_MCP = {
   slug: "filesystem-demo",
   name: "Filesystem MCP demo",
-  description: "Đọc, ghi và liệt kê file trong volume cô lập của MCP container.",
+  description: "Read, write, and list files in the isolated MCP container volume.",
   transport: "streamable_http" as const,
   url: "http://filesystem-mcp:8002/mcp",
 };
@@ -11,15 +11,15 @@ export const starterDraft = {
     {
       id: "start",
       type: "input.schema",
-      name: "Bắt đầu",
-      note: "Định nghĩa các biến đầu vào ban đầu của workflow.",
+      name: "Start",
+      note: "Define the initial workflow input fields.",
       schema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
       id: "agent",
       type: "agent",
       name: "Agent",
-      note: "Mô tả ngắn nhiệm vụ của agent.",
+      note: "Describe the task this agent should complete.",
       config: {
         instructions: "",
         skillIds: [],
@@ -31,8 +31,8 @@ export const starterDraft = {
     {
       id: "end",
       type: "output.schema",
-      name: "Kết thúc",
-      note: "Định nghĩa các biến workflow trả về.",
+      name: "End",
+      note: "Define the fields returned by the workflow.",
       inputs: {},
       schema: { type: "object", properties: {}, additionalProperties: false },
     },
@@ -49,8 +49,8 @@ const agentPythonWorkflowDraft = {
     {
       id: "start",
       type: "input.schema",
-      name: "Bắt đầu",
-      note: "Nhận chủ đề ban đầu từ người dùng.",
+      name: "Start",
+      note: "Receive the topic supplied by the user.",
       schema: {
         type: "object",
         properties: { topic: { type: "string" } },
@@ -61,11 +61,12 @@ const agentPythonWorkflowDraft = {
     {
       id: "research_agent",
       type: "agent",
-      name: "Agent phân tích",
-      note: "Phân tích chủ đề và tạo nội dung nháp có cấu trúc.",
+      name: "Research Agent",
+      note: "Analyze the topic and create a concise structured draft.",
       inputs: { topic: { from: "$input.topic" } },
       config: {
-        instructions: "Phân tích chủ đề người dùng cung cấp. Trả về draft là một đoạn nội dung ngắn, rõ ràng và có các ý chính.",
+        runtime: "default",
+        instructions: "Analyze the topic in {{input.topic}} and write a concise draft covering the main ideas. Return exactly one JSON object matching the output schema with a single draft string. Do not return Markdown, code fences, or commentary outside the JSON object.",
         skillIds: [],
         mcpServerIds: [],
         inputSchema: {
@@ -85,14 +86,14 @@ const agentPythonWorkflowDraft = {
     {
       id: "parallel_split",
       type: "parallel",
-      name: "Chạy xử lý song song",
-      note: "Truyền cùng bản nháp cho Python chuẩn hóa và Agent phản biện.",
+      name: "Parallel Split",
+      note: "Send the same draft to the Python formatter and review agent in parallel.",
     },
     {
       id: "python_formatter",
       type: "code.python",
-      name: "Python chuẩn hóa",
-      note: "Chuẩn hóa khoảng trắng và thống kê số từ trong bản nháp.",
+      name: "Python Formatter",
+      note: "Normalize whitespace and count the words in the draft.",
       inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
       config: {
         language: "python",
@@ -124,11 +125,12 @@ const agentPythonWorkflowDraft = {
     {
       id: "review_agent",
       type: "agent",
-      name: "Agent phản biện",
-      note: "Đánh giá bản nháp độc lập trong lúc Python đang chuẩn hóa.",
+      name: "Review Agent",
+      note: "Review the draft while the Python branch formats it.",
       inputs: { draft: { from: "$nodes.parallel_split.output.draft" } },
       config: {
-        instructions: "Đánh giá draft, chỉ ra điểm cần cải thiện ngắn gọn và trả về trường review.",
+        runtime: "default",
+        instructions: "Review the draft in {{input.draft}}. Identify the most important improvement in a concise paragraph. Return exactly one JSON object matching the output schema with a single review string. Do not return Markdown, code fences, or commentary outside the JSON object.",
         skillIds: [],
         mcpServerIds: [],
         inputSchema: {
@@ -148,15 +150,16 @@ const agentPythonWorkflowDraft = {
     {
       id: "final_agent",
       type: "agent",
-      name: "Agent tổng hợp",
-      note: "Đợi hai nhánh hoàn tất rồi tạo câu trả lời cuối cùng.",
+      name: "Final Agent",
+      note: "Wait for both branches and produce the final answer.",
       inputs: {
         content: { from: "$nodes.python_formatter.output.cleaned_text" },
         word_count: { from: "$nodes.python_formatter.output.word_count" },
         review: { from: "$nodes.review_agent.output.review" },
       },
       config: {
-        instructions: "Kết hợp content đã chuẩn hóa với review để tạo câu trả lời hoàn chỉnh bằng tiếng Việt. Bắt buộc dùng tool filesystem-demo_write_file để ghi câu trả lời vào demo/workflow-result.txt, sau đó dùng filesystem-demo_read_file đọc lại chính file đó. Trả nội dung đã đọc trong trường final_answer.",
+        runtime: "default",
+        instructions: "Use the normalized content in {{input.content}} and the review in {{input.review}} to produce a polished final answer in English. Return exactly one JSON object matching the output schema: {\"final_answer\":\"your answer\"}. Do not return Markdown, code fences, arrays, or any text outside the JSON object.",
         skillIds: [],
         mcpServerIds: [],
         inputSchema: {
@@ -180,8 +183,8 @@ const agentPythonWorkflowDraft = {
     {
       id: "end",
       type: "output.schema",
-      name: "Kết thúc",
-      note: "Trả về câu trả lời hoàn chỉnh.",
+      name: "End",
+      note: "Return the completed answer.",
       inputs: { final_answer: { from: "$nodes.final_agent.output.final_answer" } },
       schema: {
         type: "object",
@@ -207,7 +210,7 @@ export function agentPythonMcpWorkflowDraft(mcpServerId: string) {
   const finalAgent = draft.nodes.find((node) => node.id === "final_agent") as
     | { config: { mcpServerIds: string[] } }
     | undefined;
-  if (!finalAgent) throw new Error("Không tìm thấy Agent tổng hợp trong workflow demo");
+  if (!finalAgent) throw new Error("The final agent is missing from the demo workflow");
   finalAgent.config.mcpServerIds = [mcpServerId];
   return draft;
 }
@@ -217,8 +220,8 @@ export const sumWorkflowDraft = {
     {
       id: "input",
       type: "input.schema",
-      name: "Hai số đầu vào",
-      note: "Nhận num1 và num2 từ dữ liệu chạy.",
+      name: "Number Input",
+      note: "Receive num1 and num2 from the run input.",
       schema: {
         type: "object",
         properties: { num1: { type: "number" }, num2: { type: "number" } },
@@ -229,16 +232,16 @@ export const sumWorkflowDraft = {
     {
       id: "sum",
       type: "math.add",
-      name: "Cộng hai số",
-      note: "Tính num1 + num2 mà không cần gọi LLM.",
+      name: "Add Numbers",
+      note: "Calculate num1 + num2 without calling an LLM.",
       inputs: { left: { from: "$input.num1" }, right: { from: "$input.num2" } },
       config: { outputKey: "sum" },
     },
     {
       id: "output",
       type: "output.schema",
-      name: "Kết quả",
-      note: "Trả về tổng của hai số.",
+      name: "Result",
+      note: "Return the calculated sum.",
       inputs: { sum: { from: "$nodes.sum.output.sum" } },
       schema: {
         type: "object",

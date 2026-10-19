@@ -154,6 +154,8 @@ def annotate_langfuse_span(
     combined_metadata: dict[str, Any] = dict(_langfuse_context.get() or {})
     if metadata:
         combined_metadata.update(metadata)
+    if session_id := combined_metadata.get("session_id"):
+        span.set_attribute("langfuse.session.id", str(session_id)[:200])
     for key, value in combined_metadata.items():
         safe_key = re.sub(r"[^A-Za-z0-9_]", "_", str(key))[:100]
         if safe_key and value is not None:
@@ -212,7 +214,19 @@ class JsonFormatter(logging.Formatter):
         if span_context.is_valid:
             document["trace_id"] = format(span_context.trace_id, "032x")
             document["span_id"] = format(span_context.span_id, "016x")
-        for field in ("event", "run_id", "node_id", "status", "error_code"):
+        for field in (
+            "event",
+            "run_id",
+            "node_id",
+            "status",
+            "error_code",
+            "runtime",
+            "runtime_event",
+            "agent_job_id",
+            "session_id",
+            "model",
+            "elapsed_ms",
+        ):
             value = getattr(record, field, None)
             if value is not None:
                 document[field] = str(value)

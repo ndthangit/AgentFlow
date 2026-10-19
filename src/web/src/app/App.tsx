@@ -4,12 +4,7 @@ import { McpPage } from "../features/mcp/McpPage";
 import { ModelsPage } from "../features/models/ModelsPage";
 import { WorkflowEditor } from "../features/workflows/editor/WorkflowEditor";
 import { workflowNodeLabel, workflowNodeTypes } from "../features/workflows/summary";
-import {
-  agentPythonMcpWorkflowDraft,
-  FILESYSTEM_DEMO_MCP,
-  starterDraft,
-  sumWorkflowDraft,
-} from "../features/workflows/templates";
+import { starterDraft } from "../features/workflows/templates";
 import { api } from "../shared/api";
 import { keycloak } from "../shared/auth";
 import type {
@@ -26,6 +21,27 @@ import type {
 type AppTab = "workflows" | "skills" | "mcp" | "models";
 
 const emptySkill = { slug: "", name: "", description: "", instructions: "" };
+const workflowQueryParameter = "workflow";
+
+function workflowIdFromLocation() {
+  return new URLSearchParams(window.location.search).get(workflowQueryParameter) ?? undefined;
+}
+
+function updateWorkflowLocation(workflowId?: string, replace = false) {
+  const url = new URL(window.location.href);
+  const currentWorkflowId = url.searchParams.get(workflowQueryParameter) ?? undefined;
+  if (currentWorkflowId === workflowId) return;
+  if (workflowId) {
+    url.searchParams.set(workflowQueryParameter, workflowId);
+  } else {
+    url.searchParams.delete(workflowQueryParameter);
+  }
+  window.history[replace ? "replaceState" : "pushState"](
+    { ...window.history.state, workflowId },
+    "",
+    url,
+  );
+}
 
 function comparableGraph(value: Record<string, unknown>) {
   const graph = structuredClone(value);
@@ -63,7 +79,7 @@ function isCurrentDraftPublished(workflow: Workflow, version: WorkflowVersion) {
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("workflows");
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [selectedId, setSelectedId] = useState<string>();
+  const [selectedId, setSelectedId] = useState<string | undefined>(workflowIdFromLocation);
   const [editor, setEditor] = useState(JSON.stringify(starterDraft, null, 2));
   const [name, setName] = useState("");
   const [message, setMessage] = useState("Đang tải dữ liệu…");
@@ -107,10 +123,14 @@ export function App() {
   async function refreshWorkflows(select?: string) {
     const items = await api.listWorkflows();
     setWorkflows(items);
-    setSelectedId((current) => {
-      const next = select ?? current;
-      return items.some((workflow) => workflow.id === next) ? next : undefined;
-    });
+    const requestedId = select ?? selectedIdRef.current;
+    const nextId = items.some((workflow) => workflow.id === requestedId) ? requestedId : undefined;
+    setSelectedId(nextId);
+    if (select && nextId) {
+      updateWorkflowLocation(nextId);
+    } else if (requestedId && !nextId) {
+      updateWorkflowLocation(undefined, true);
+    }
     setMessage(items.length ? "Sẵn sàng" : "Tạo workflow đầu tiên để bắt đầu");
   }
 
@@ -130,30 +150,20 @@ export function App() {
     setNodeTypes(await api.listNodeTypes());
   }
 
-  async function ensureFilesystemDemoMcp(): Promise<McpServer> {
-    const existing = mcpServers.find((server) => server.slug === FILESYSTEM_DEMO_MCP.slug);
-    if (existing) {
-      if (!existing.enabled) {
-        throw new Error("MCP filesystem-demo đang bị tắt. Hãy bật lại trong trang MCP.");
-      }
-      if (existing.transport !== FILESYSTEM_DEMO_MCP.transport || existing.url !== FILESYSTEM_DEMO_MCP.url) {
-        throw new Error(`MCP filesystem-demo phải dùng URL ${FILESYSTEM_DEMO_MCP.url}`);
-      }
-      return existing;
-    }
-    const created = await api.createMcpServer({
-      ...FILESYSTEM_DEMO_MCP,
-      headers: {},
-      enabled: true,
-    });
-    setMcpServers((items) => [...items, created].sort((left, right) => left.name.localeCompare(right.name)));
-    return created;
-  }
-
   useEffect(() => {
     Promise.all([refreshWorkflows(), refreshSkills(), refreshProviders(), refreshMcpServers(), refreshNodeTypes()]).catch((error: Error) =>
       setMessage(error.message),
     );
+  }, []);
+
+  useEffect(() => {
+    const restoreLocation = () => {
+      setSelectedId(workflowIdFromLocation());
+      setActiveTab("workflows");
+      setIsRunHistoryOpen(false);
+    };
+    window.addEventListener("popstate", restoreLocation);
+    return () => window.removeEventListener("popstate", restoreLocation);
   }, []);
 
   useEffect(() => {
@@ -175,11 +185,18 @@ export function App() {
     const isAgentPythonDemo = Array.isArray(nodes) && nodes.some((node) => (
       node && typeof node === "object" && "type" in node && node.type === "code.python"
     ));
+    const isSimpleSummaryWorkflow = Array.isArray(nodes) && nodes.some((node) => (
+      node && typeof node === "object" && "id" in node && node.id === "summary_agent"
+    ));
     setRunInput(isSumWorkflow
       ? JSON.stringify({ num1: 1, num2: 3 }, null, 2)
       : isAgentPythonDemo
-        ? JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2)
-        : "{}");
+        ? JSON.stringify({ topic: "Applications of AI in education" }, null, 2)
+        : isSimpleSummaryWorkflow
+          ? JSON.stringify({
+              text: "AgentFlow helps teams design, run, and monitor structured AI workflows.",
+            }, null, 2)
+          : "{}");
     api.getCurrentWorkflowVersion(selected.id)
       .then((currentVersion) => {
         if (!cancelled) {
@@ -386,12 +403,14 @@ export function App() {
   function openWorkflow(workflowId: string) {
     setSelectedId(workflowId);
     setActiveTab("workflows");
+    updateWorkflowLocation(workflowId);
   }
 
   function showWorkflowList() {
     setSelectedId(undefined);
     setActiveTab("workflows");
     setIsRunHistoryOpen(false);
+    updateWorkflowLocation();
   }
 
   function openRunHistory() {
@@ -416,6 +435,11 @@ export function App() {
     } finally {
       setRunHistoryLoading(false);
     }
+  }
+
+  async function copySessionId(sessionId: string) {
+    await navigator.clipboard.writeText(sessionId);
+    setMessage(`Đã sao chép Langfuse session ID ${sessionId}`);
   }
 
   function closeSkillForm() {
@@ -497,19 +521,6 @@ export function App() {
               <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Tên workflow mới" maxLength={160} />
               <button disabled={busy || !name.trim()}>Tạo mới</button>
             </form>
-            <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
-              const demoMcp = await ensureFilesystemDemoMcp();
-              const created = await api.createWorkflow("Demo Agent → Parallel → MCP → Join", agentPythonMcpWorkflowDraft(demoMcp.id));
-              await refreshWorkflows(created.id);
-              setRunInput(JSON.stringify({ topic: "Ứng dụng AI trong giáo dục" }, null, 2));
-              setMessage("Đã đăng ký MCP filesystem và tạo demo dùng tool ghi/đọc file");
-            })}>＋ Tạo demo Parallel + MCP</button>
-            <button className="sample-flow-button" disabled={busy} onClick={() => void perform(async () => {
-              const created = await api.createWorkflow("Tính tổng hai số", sumWorkflowDraft);
-              await refreshWorkflows(created.id);
-              setRunInput(JSON.stringify({ num1: 1, num2: 3 }, null, 2));
-              setMessage("Đã tạo workflow mẫu tính tổng");
-            })}>＋ Tạo mẫu tính tổng</button>
           </>
         ) : activeTab === "skills" ? (
           <div className="sidebar-note">
@@ -668,7 +679,11 @@ export function App() {
                         }}
                       >
                         <span className={`run-status ${item.status}`}>{item.status}</span>
-                        <span><strong>Run {item.id.slice(0, 8)}</strong><small>{new Date(item.created_at).toLocaleString("vi-VN")}</small></span>
+                        <span>
+                          <strong>Run {item.id.slice(0, 8)}</strong>
+                          <small>{new Date(item.created_at).toLocaleString("vi-VN")}</small>
+                          <small className="run-session-id" title={item.session_id}>Session {item.session_id}</small>
+                        </span>
                         {item.status === "succeeded" && item.output && <code>{JSON.stringify(item.output)}</code>}
                         <b>Xem</b>
                       </button>
@@ -682,6 +697,10 @@ export function App() {
                         <div className="run-detail-title">
                           <div><span className={`run-status ${run.status}`}>{run.status}</span><h3>Run {run.id.slice(0, 8)}</h3></div>
                           <small>{new Date(run.created_at).toLocaleString("vi-VN")}</small>
+                        </div>
+                        <div className="run-session">
+                          <span><strong>Langfuse session ID</strong><code>{run.session_id}</code></span>
+                          <button type="button" onClick={() => void perform(() => copySessionId(run.session_id))}>Sao chép</button>
                         </div>
                         <div className="run-io-summary">
                           <div><strong>Workflow input</strong><pre>{JSON.stringify(run.input, null, 2)}</pre></div>

@@ -8,6 +8,8 @@ import { pathToFileURL } from "node:url";
 import { createOpencode } from "@opencode-ai/sdk";
 import Ajv from "ajv";
 
+import { configureOpenCodeTelemetry } from "./telemetry.mjs";
+
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_MCP_CONFIG_BYTES = 128 * 1024;
 const MAX_MCP_SERVERS = 20;
@@ -16,12 +18,79 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 150_000;
 const LOOPBACK_HOST = "127.0.0.1";
 const MCP_SERVER_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MCP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const DIAGNOSTIC_TYPE = "agentflow.runtime.log";
+const DIAGNOSTIC_VALUE_LIMIT = 300;
+const DIAGNOSTIC_FIELDS = new Set([
+  "run_id",
+  "node_id",
+  "agent_job_id",
+  "session_id",
+  "model",
+  "status",
+  "error_code",
+  "attempt",
+  "timeout_ms",
+]);
 
 class PublicAgentError extends Error {
   constructor(code, message) {
     super(message);
     this.code = code;
   }
+}
+
+function safeDiagnosticValue(value) {
+  if (typeof value === "string") return value.slice(0, DIAGNOSTIC_VALUE_LIMIT);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "boolean") return value;
+  return undefined;
+}
+
+export function createRuntimeDiagnosticWriter(stream, env = process.env) {
+  const startedAt = Date.now();
+  return (event, details = {}) => {
+    const document = {
+      type: DIAGNOSTIC_TYPE,
+      runtime: "opencode",
+      event,
+      elapsed_ms: Date.now() - startedAt,
+    };
+    for (const [key, value] of Object.entries({
+      run_id: env.AGENTFLOW_RUN_ID,
+      node_id: env.AGENTFLOW_NODE_ID,
+      agent_job_id: env.AGENTFLOW_AGENT_JOB_ID,
+      ...details,
+    })) {
+      if (!DIAGNOSTIC_FIELDS.has(key)) continue;
+      const safeValue = safeDiagnosticValue(value);
+      if (safeValue !== undefined) document[key] = safeValue;
+    }
+    stream.write(`${JSON.stringify(document)}\n`);
+  };
+}
+
+function diagnosticFromEvent(event) {
+  const type = String(event?.type ?? event?.data?.type ?? "").toLowerCase();
+  const properties = event?.properties ?? event?.data?.properties ?? {};
+  if (type === "session.error") {
+    return { event: "session.error", error_code: "PROVIDER_ERROR" };
+  }
+  if (type === "session.status") {
+    return {
+      event: "session.status",
+      status: properties.status?.type ?? properties.status,
+      attempt: properties.status?.attempt,
+    };
+  }
+  if (type === "message.part.updated" && properties.part?.type === "retry") {
+    return {
+      event: "provider.retry",
+      status: properties.part.type,
+      attempt: properties.part.attempt,
+    };
+  }
+  if (type.includes("permission")) return { event: "permission.requested" };
+  return undefined;
 }
 
 function requireEnvironment(env, name) {
@@ -451,6 +520,7 @@ export async function executeRequest(
   env = process.env,
   runtimeFactory = createOpencode,
   onEvent = () => {},
+  options = {},
 ) {
   const request = validateRequest(requestValue);
   requireEnvironment(env, "AGENT_PROVIDER_API_KEY");
@@ -465,7 +535,14 @@ export async function executeRequest(
   const baseUrl = validateBaseUrl(requireEnvironment(env, "AGENT_PROVIDER_BASE_URL"));
   const mcp = buildMcpConfiguration(env.AGENT_MCP_SERVERS);
   const outputValidator = compileOutputSchema(request.output_schema);
+  const onDiagnostic = options.onDiagnostic ?? (() => {});
+  const telemetryFactory = options.telemetryFactory ?? configureOpenCodeTelemetry;
+  const telemetry = telemetryFactory(env, onDiagnostic);
   await ensureWritableStateDirectories(env);
+  onDiagnostic("runtime.started", {
+    model,
+    timeout_ms: promptTimeoutMs(env),
+  });
 
   const controller = new AbortController();
   let runtime;
@@ -474,6 +551,13 @@ export async function executeRequest(
   const eventState = { runtimeError: undefined, notifyFailure: undefined };
   let restoreEnvironment = () => {};
   let promptTimer;
+  let generation;
+  let generationEnded = false;
+  const endGeneration = () => {
+    if (!generation || generationEnded) return;
+    generation.end();
+    generationEnded = true;
+  };
   const eventFailureOutcome = new Promise((resolve) => {
     eventState.notifyFailure = (error) => resolve({ error });
   });
@@ -505,13 +589,23 @@ export async function executeRequest(
     if (!sessionId) {
       throw new PublicAgentError("AGENT_FAILED", "OpenCode did not create a session.");
     }
+    onDiagnostic("session.created", { session_id: sessionId });
 
     const subscription = await runtime.client.event.subscribe({ signal: controller.signal });
-    eventTask = consumeEvents(subscription, sessionId, eventState, runtime.client, onEvent)
+    eventTask = consumeEvents(subscription, sessionId, eventState, runtime.client, (event) => {
+      onEvent(event);
+      const diagnostic = diagnosticFromEvent(event);
+      if (!diagnostic) return;
+      const { event: eventName, ...details } = diagnostic;
+      onDiagnostic(eventName, details);
+      generation?.addEvent(`opencode.${eventName}`, details);
+    })
       .catch((error) => {
         eventState.streamError = error;
       });
 
+    generation = telemetry.startGeneration({ model, request });
+    onDiagnostic("prompt.started", { session_id: sessionId, model });
     const outcome = await Promise.race([
       runtime.client.session.prompt({
         path: { id: sessionId },
@@ -533,6 +627,9 @@ export async function executeRequest(
     if (eventState.runtimeError) throw eventState.runtimeError;
     if (eventState.streamError) throw eventState.streamError;
     const output = validateOutput(extractStructuredOutput(response), outputValidator);
+    generation.succeed(output);
+    endGeneration();
+    onDiagnostic("prompt.succeeded", { session_id: sessionId, model });
     return {
       run_id: randomUUID(),
       status: "succeeded",
@@ -540,8 +637,15 @@ export async function executeRequest(
       output,
     };
   } catch (error) {
-    if (eventState.runtimeError) throw eventState.runtimeError;
-    throw mapOpenCodeFailure(error);
+    const publicError = eventState.runtimeError ?? mapOpenCodeFailure(error);
+    generation?.fail(publicError);
+    endGeneration();
+    onDiagnostic("prompt.failed", {
+      session_id: sessionId,
+      model,
+      error_code: publicError.code,
+    });
+    throw publicError;
   } finally {
     clearTimeout(promptTimer);
     await abortSession(runtime?.client, sessionId);
@@ -558,6 +662,9 @@ export async function executeRequest(
       ]);
     }
     restoreEnvironment();
+    endGeneration();
+    await telemetry.shutdown();
+    onDiagnostic("runtime.stopped", { session_id: sessionId, model });
   }
 }
 
@@ -579,8 +686,15 @@ async function readJsonStdin() {
 }
 
 export async function main() {
+  const onDiagnostic = createRuntimeDiagnosticWriter(process.stderr, process.env);
   try {
-    const result = await executeRequest(await readJsonStdin());
+    const result = await executeRequest(
+      await readJsonStdin(),
+      process.env,
+      createOpencode,
+      () => {},
+      { onDiagnostic },
+    );
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
     const publicError = error instanceof PublicAgentError

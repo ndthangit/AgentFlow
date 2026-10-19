@@ -64,6 +64,7 @@ async def enqueue_flow_run(
         input_data=request.input,
         metadata={
             "run_id": flow_run.id,
+            "session_id": flow_run.session_id,
             "workflow_id": workflow_id,
             "workflow_version_id": version.id,
             "workflow_version": version.version,

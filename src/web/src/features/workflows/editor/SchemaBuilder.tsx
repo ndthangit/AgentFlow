@@ -9,12 +9,12 @@ const emptyObjectSchema = {
 };
 
 const schemaTypes: { value: SchemaType; label: string }[] = [
-  { value: "string", label: "Văn bản (string)" },
-  { value: "number", label: "Số (number)" },
-  { value: "integer", label: "Số nguyên (integer)" },
-  { value: "boolean", label: "Đúng / sai (boolean)" },
-  { value: "object", label: "Đối tượng (object)" },
-  { value: "array", label: "Danh sách (array)" },
+  { value: "string", label: "Text (string)" },
+  { value: "number", label: "Number" },
+  { value: "integer", label: "Integer" },
+  { value: "boolean", label: "True / false (boolean)" },
+  { value: "object", label: "Object" },
+  { value: "array", label: "List (array)" },
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,9 +39,9 @@ export function SchemaBuilder({ label, value, onChange }: SchemaBuilderProps) {
       const schema: unknown = JSON.parse(value);
       return isRecord(schema)
         ? { schema }
-        : { schema: emptyObjectSchema, error: "Schema phải là một JSON object." };
+        : { schema: emptyObjectSchema, error: "The schema must be a JSON object." };
     } catch {
-      return { schema: emptyObjectSchema, error: "JSON nâng cao chưa hợp lệ." };
+      return { schema: emptyObjectSchema, error: "The advanced JSON is invalid." };
     }
   }, [value]);
   const properties = isRecord(parsed.schema.properties) ? parsed.schema.properties : {};
@@ -105,8 +105,8 @@ export function SchemaBuilder({ label, value, onChange }: SchemaBuilderProps) {
   return (
     <section className="schema-builder">
       <div className="schema-builder-heading">
-        <div><strong>{label}</strong><span>Khai báo các trường dữ liệu JSON</span></div>
-        <button type="button" onClick={addField}>+ Thêm trường</button>
+        <div><strong>{label}</strong><span>Define the JSON data fields</span></div>
+        <button type="button" onClick={addField}>+ Add field</button>
       </div>
       <div className="schema-field-list">
         {Object.entries(properties).map(([name, rawDefinition], index) => {
@@ -120,20 +120,20 @@ export function SchemaBuilder({ label, value, onChange }: SchemaBuilderProps) {
             : "string";
           return (
             <div className={type === "array" ? "schema-field with-items" : "schema-field"} key={index}>
-              <label>Tên trường<input value={name} placeholder="Ví dụ: email" onChange={(event) => renameField(name, event.target.value)} /></label>
-              <label>Kiểu dữ liệu<select value={type} onChange={(event) => setFieldType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+              <label>Field name<input value={name} placeholder="Example: email" onChange={(event) => renameField(name, event.target.value)} /></label>
+              <label>Data type<select value={type} onChange={(event) => setFieldType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
               {type === "array" && (
-                <label>Kiểu phần tử<select value={itemType} onChange={(event) => setArrayItemType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
+                <label>Item type<select value={itemType} onChange={(event) => setArrayItemType(name, event.target.value as SchemaType)}>{schemaTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
               )}
-              <label className="schema-required"><input type="checkbox" checked={required.includes(name)} onChange={(event) => setRequired(name, event.target.checked)} /> Bắt buộc</label>
-              <button type="button" className="schema-remove" aria-label={`Xóa trường ${name}`} onClick={() => removeField(name)}>Xóa</button>
+              <label className="schema-required"><input type="checkbox" checked={required.includes(name)} onChange={(event) => setRequired(name, event.target.checked)} /> Required</label>
+              <button type="button" className="schema-remove" aria-label={`Remove field ${name}`} onClick={() => removeField(name)}>Remove</button>
             </div>
           );
         })}
-        {!Object.keys(properties).length && <p className="schema-empty">Chưa có trường dữ liệu. Chọn “Thêm trường” để bắt đầu.</p>}
+        {!Object.keys(properties).length && <p className="schema-empty">No data fields yet. Select “Add field” to begin.</p>}
       </div>
       <details className="schema-advanced">
-        <summary>JSON Schema nâng cao</summary>
+        <summary>Advanced JSON Schema</summary>
         <textarea className="schema-textarea" value={value} spellCheck={false} onChange={(event) => onChange(event.target.value)} />
         {parsed.error && <p>{parsed.error}</p>}
       </details>

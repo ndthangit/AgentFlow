@@ -61,7 +61,7 @@ function WorkflowEditorView({
   const [form, setForm] = useState<NodeForm>();
   const [formError, setFormError] = useState("");
   const [connectionSource, setConnectionSource] = useState<{ from: string; port: string }>();
-  const [connectionMessage, setConnectionMessage] = useState("Kéo từ cổng dưới node sang node đích; chọn đường nối rồi nhấn Delete để xóa.");
+  const [connectionMessage, setConnectionMessage] = useState("Drag from a node's lower port to the target node; select an edge and press Delete to remove it.");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
   const [isJsonOpen, setIsJsonOpen] = useState(false);
   const [flowNodes, setFlowNodes] = useState<WorkflowFlowNode[]>([]);
@@ -183,26 +183,26 @@ function WorkflowEditorView({
   function connectNodes(from: string, to: string, requestedPort: string) {
     if (!graph || disabled) return false;
     if (!from || !to || from === to) {
-      setConnectionMessage("Node nguồn và node đích phải khác nhau.");
+      setConnectionMessage("The source and target nodes must be different.");
       return false;
     }
     const source = graph.nodes.find((node) => node.id === from);
     const ports = portsForType(source?.type);
     const port = ports.includes(requestedPort) ? requestedPort : ports[0];
     if (!port) {
-      setConnectionMessage("Node nguồn này không có cổng đầu ra.");
+      setConnectionMessage("This source node has no output port.");
       return false;
     }
     if (graph.edges.some((edge) => edge.from === from && edge.to === to && (edge.port ?? "success") === port)) {
-      setConnectionMessage(`Liên kết ${from} → ${to} qua cổng ${port} đã tồn tại.`);
+      setConnectionMessage(`The ${from} → ${to} connection through port ${port} already exists.`);
       return false;
     }
     if (createsCycle(graph, from, to)) {
-      setConnectionMessage("Không thể tạo liên kết vì sẽ hình thành vòng lặp trong workflow.");
+      setConnectionMessage("This connection cannot be created because it would introduce a workflow cycle.");
       return false;
     }
     commit({ ...graph, edges: [...graph.edges, { from, to, port }] });
-    setConnectionMessage(`Đã nối ${from} → ${to} qua cổng ${port}.`);
+    setConnectionMessage(`Connected ${from} → ${to} through port ${port}.`);
     return true;
   }
 
@@ -228,15 +228,15 @@ function WorkflowEditorView({
     commit({ ...graph, edges: graph.edges.filter((edge) => !removed.has(edge)) });
     setSelectedEdgeId(undefined);
     setConnectionMessage(graphEdges.length === 1
-      ? `Đã xóa kết nối ${graphEdges[0].from} → ${graphEdges[0].to}.`
-      : `Đã xóa ${graphEdges.length} kết nối.`);
+      ? `Removed the ${graphEdges[0].from} → ${graphEdges[0].to} connection.`
+      : `Removed ${graphEdges.length} connections.`);
   }
 
   function addNode(type: EditableNodeType) {
     if (!graph) return;
     const definition = nodeTypesByName.get(type);
     if (!definition) {
-      setConnectionMessage(`Node ${type} khÃ´ng Ä‘Æ°á»£c System hiá»‡n táº¡i há»— trá»£.`);
+      setConnectionMessage(`Node type ${type} is not supported by the current system.`);
       return;
     }
     if (type === "input.schema" || type === "output.schema") {
@@ -260,7 +260,7 @@ function WorkflowEditorView({
     })));
     nodes.splice(index, 0, { ...newNode(type, id, definition.typeVersion), position });
     commit({ ...graph, nodes });
-    setConnectionMessage(`Đã thêm ${id}. Kéo cổng của node nguồn sang node này để tạo kết nối.`);
+    setConnectionMessage(`Added ${id}. Drag a source node port to this node to create a connection.`);
     setSelectedId(id);
   }
 
@@ -284,10 +284,10 @@ function WorkflowEditorView({
 
   function deleteNode(node: GraphNode) {
     if (node.type === "input.schema" || node.type === "output.schema") return;
-    if (!graph || !window.confirm(`Xóa node “${typeof node.name === "string" ? node.name : node.id}”?`)) return;
+    if (!graph || !window.confirm(`Delete node “${typeof node.name === "string" ? node.name : node.id}”?`)) return;
     const edges = graph.edges.filter((edge) => edge.from !== node.id && edge.to !== node.id);
     commit({ ...graph, nodes: graph.nodes.filter((item) => item.id !== node.id), edges });
-    setConnectionMessage(`Đã xóa ${node.id} và các kết nối trực tiếp của node.`);
+    setConnectionMessage(`Deleted ${node.id} and its direct connections.`);
     setSelectedId(undefined);
   }
 
@@ -295,11 +295,11 @@ function WorkflowEditorView({
     if (!graph || !selectedNode || !form) return;
     const id = form.id.trim();
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(id)) {
-      setFormError("ID phải bắt đầu bằng chữ và chỉ gồm chữ, số, _ hoặc -.");
+      setFormError("The ID must start with a letter and contain only letters, numbers, _ or -.");
       return;
     }
     if (graph.nodes.some((node) => node !== selectedNode && node.id === id)) {
-      setFormError("ID này đã được một node khác sử dụng.");
+      setFormError("This ID is already used by another node.");
       return;
     }
 
@@ -318,7 +318,7 @@ function WorkflowEditorView({
           const properties = isRecord(schema.properties) ? schema.properties : {};
           const fields = Object.keys(properties);
           const missing = fields.filter((field) => !form.outputBindings[field]?.trim());
-          if (missing.length) throw new Error(`Hãy chọn nguồn dữ liệu trả về cho: ${missing.join(", ")}.`);
+          if (missing.length) throw new Error(`Select a return data source for: ${missing.join(", ")}.`);
           updated.inputs = Object.fromEntries(fields.map((field) => [
             field,
             { from: form.outputBindings[field].trim() },
@@ -339,15 +339,15 @@ function WorkflowEditorView({
           nextConfig.skillIds = agentSkillIds.filter((skillId) => skills.some((skill) => skill.id === skillId));
           nextConfig.mcpServerIds = agentMcpServerIds.filter((serverId) => enabledMcpServers.some((server) => server.id === serverId));
         } else {
-          if (!form.instructions.trim()) throw new Error("Prompt của LLM Call không được để trống.");
+          if (!form.instructions.trim()) throw new Error("The LLM Call prompt cannot be empty.");
           nextConfig.prompt = form.instructions.trim();
           delete nextConfig.instructions;
           delete nextConfig.skillIds;
         }
         if (form.providerId || form.model) {
-          if (!selectedProvider) throw new Error("Hãy chọn một provider đang hoạt động.");
+          if (!selectedProvider) throw new Error("Select an active provider.");
           if (!selectedProviderModels.includes(form.model)) {
-            throw new Error("Hãy chọn một model đã đăng ký của provider.");
+            throw new Error("Select a model registered for this provider.");
           }
           nextConfig.providerId = selectedProvider.id;
           nextConfig.model = form.model;
@@ -359,7 +359,7 @@ function WorkflowEditorView({
       }
       if (selectedNode.type === "code.python") {
         const config = isRecord(selectedNode.config) ? selectedNode.config : {};
-        if (!form.code.trim()) throw new Error("Python code không được để trống.");
+        if (!form.code.trim()) throw new Error("Python code cannot be empty.");
         updated.config = {
           ...config,
           language: "python",
@@ -369,7 +369,7 @@ function WorkflowEditorView({
         };
       }
       if (selectedNode.type === "if") {
-        if (!form.conditionFrom.trim()) throw new Error("Nguồn dữ liệu điều kiện không được để trống.");
+        if (!form.conditionFrom.trim()) throw new Error("The condition data source cannot be empty.");
         const config = isRecord(selectedNode.config) ? selectedNode.config : {};
         const inputs = isRecord(selectedNode.inputs) ? selectedNode.inputs : {};
         const nextConfig: Record<string, unknown> = { ...config, operator: form.operator };
@@ -379,7 +379,7 @@ function WorkflowEditorView({
           try {
             nextConfig.expected = JSON.parse(form.expected);
           } catch {
-            throw new Error("Giá trị so sánh phải là JSON hợp lệ, ví dụ true, 10 hoặc \"done\".");
+            throw new Error("The comparison value must be valid JSON, for example true, 10, or \"done\".");
           }
         }
         updated.inputs = { ...inputs, value: { from: form.conditionFrom.trim() } };
@@ -398,7 +398,7 @@ function WorkflowEditorView({
       setSelectedId(undefined);
       setFormError("");
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Không thể lưu node.");
+      setFormError(error instanceof Error ? error.message : "Unable to save the node.");
     }
   }
 
@@ -407,7 +407,7 @@ function WorkflowEditorView({
       <div className="node-toolbar">
         <div>
           <strong>Nodes</strong>
-          <span>Thêm rồi kéo node tới vị trí mong muốn; kéo từ cổng dưới node sang cổng trên node đích</span>
+          <span>Add and drag nodes into position; connect a lower port to the target node's upper port</span>
         </div>
         <div className="node-add-actions">
           {nodeTypesByName.has("input.schema") && <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "input.schema")} onClick={() => addNode("input.schema")}>+ Start</button>}
@@ -418,14 +418,14 @@ function WorkflowEditorView({
           {nodeTypesByName.has("parallel") && <button disabled={disabled || !graph} onClick={() => addNode("parallel")}>+ Song song</button>}
           {nodeTypesByName.has("output.schema") && <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "output.schema")} onClick={() => addNode("output.schema")}>+ End</button>}
           <span className="node-toolbar-divider" aria-hidden="true" />
-          <button disabled={disabled || !graph?.nodes.length} onClick={arrangeNodes}>Sắp xếp</button>
+          <button disabled={disabled || !graph?.nodes.length} onClick={arrangeNodes}>Arrange</button>
           <button className="canvas-tool-button" onClick={() => setIsJsonOpen(true)}>JSON</button>
         </div>
       </div>
 
       <div className="builder-canvas" ref={canvasRef}>
         <span className={connectionSource ? "canvas-connection-hint active" : "canvas-connection-hint"}>{connectionMessage}</span>
-        <span className="canvas-pan-hint" aria-hidden="true">Kéo nền để di chuyển · cuộn để zoom</span>
+        <span className="canvas-pan-hint" aria-hidden="true">Drag the canvas to pan · scroll to zoom</span>
         {graph ? (
           <ReactFlow<WorkflowFlowNode, WorkflowFlowEdge>
             nodes={flowNodes}
@@ -439,7 +439,7 @@ function WorkflowEditorView({
             }}
             onEdgeClick={(_event, edge) => {
               setSelectedEdgeId(edge.id);
-              setConnectionMessage(`Đã chọn kết nối ${edge.source} → ${edge.target}. Nhấn Delete để xóa.`);
+              setConnectionMessage(`Selected connection ${edge.source} → ${edge.target}. Press Delete to remove it.`);
             }}
             onPaneClick={() => setSelectedEdgeId(undefined)}
             onNodeDragStop={(_event, node) => saveNodePosition(node.id, node.position)}
@@ -448,7 +448,7 @@ function WorkflowEditorView({
               if (!params.nodeId) return;
               const port = params.handleId ?? "success";
               setConnectionSource({ from: params.nodeId, port });
-              setConnectionMessage(`Đang nối từ ${params.nodeId} qua cổng ${port}… đưa chuột tới mép để di chuyển canvas.`);
+              setConnectionMessage(`Connecting from ${params.nodeId} through port ${port}… move the pointer to an edge to pan the canvas.`);
             }}
             onConnectEnd={() => setConnectionSource(undefined)}
             onEdgesDelete={removeFlowEdges}
@@ -467,7 +467,7 @@ function WorkflowEditorView({
             elementsSelectable
             deleteKeyCode={disabled ? null : ["Backspace", "Delete"]}
             proOptions={{ hideAttribution: true }}
-            aria-label="Canvas workflow kéo thả"
+            aria-label="Drag-and-drop workflow canvas"
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#cdd6d0" />
             <MiniMap pannable zoomable nodeColor="#78936b" maskColor="rgba(238, 241, 237, .72)" />
@@ -475,7 +475,7 @@ function WorkflowEditorView({
           </ReactFlow>
         ) : (
           <div className="nodes-empty builder-invalid">
-            <strong>Không thể hiển thị workflow</strong>
+            <strong>Unable to display the workflow</strong>
             <span>{parsed.error}</span>
           </div>
         )}
@@ -484,24 +484,24 @@ function WorkflowEditorView({
       {selectedNode && form && (
           <aside className="node-inspector node-drawer" aria-labelledby="node-drawer-title">
             <div className="panel-title node-drawer-title">
-              <span id="node-drawer-title">Cấu hình · {typeof selectedNode.name === "string" ? selectedNode.name : selectedNode.id}</span>
+              <span id="node-drawer-title">Configure · {typeof selectedNode.name === "string" ? selectedNode.name : selectedNode.id}</span>
               <code>{selectedNode.type}</code>
-              <button type="button" aria-label="Đóng cửa sổ cấu hình node" onClick={closeNodeInspector}>×</button>
+              <button type="button" aria-label="Close node configuration" onClick={closeNodeInspector}>×</button>
             </div>
             <div className="node-form">
               <label>ID<input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /></label>
-              <label>Tên node<input value={form.name} maxLength={160} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-              <label>Note<textarea className="compact-textarea" value={form.note} placeholder="Mô tả vai trò của node…" onChange={(event) => setForm({ ...form, note: event.target.value })} /></label>
+              <label>Node name<input value={form.name} maxLength={160} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+              <label>Note<textarea className="compact-textarea" value={form.note} placeholder="Describe the node's role…" onChange={(event) => setForm({ ...form, note: event.target.value })} /></label>
 
               {selectedNode.type === "input.schema" && (
-                <SchemaBuilder label="Biến đầu vào ban đầu" value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
+                <SchemaBuilder label="Initial input variables" value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
               )}
 
               {selectedNode.type === "output.schema" && (
                 <>
-                  <SchemaBuilder label="Biến workflow trả về" value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
+                  <SchemaBuilder label="Workflow return variables" value={form.schema} onChange={(schema) => setForm({ ...form, schema })} />
                   <section className="output-binding-editor">
-                    <div><strong>Nguồn dữ liệu trả về</strong><span>Ánh xạ mỗi biến End tới output của node trước hoặc biến từ Start.</span></div>
+                    <div><strong>Return data sources</strong><span>Map each End variable to a previous node output or a Start variable.</span></div>
                     <datalist id={`output-references-${selectedNode.id}`}>
                       {outputReferences.map((reference) => <option value={reference} key={reference} />)}
                     </datalist>
@@ -516,7 +516,7 @@ function WorkflowEditorView({
                         })}
                       /></label>
                     ))}
-                    {!inputSchemaFields(form.schema).length && <p>Thêm biến trả về ở phần trên để cấu hình nguồn dữ liệu.</p>}
+                    {!inputSchemaFields(form.schema).length && <p>Add a return variable above to configure its data source.</p>}
                   </section>
                 </>
               )}
@@ -524,7 +524,7 @@ function WorkflowEditorView({
               {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
                 <>
                   {selectedNode.type === "agent" && <section className="agent-model-picker">
-                    <div><strong>Agent runtime</strong><span>Runtime đã chọn trong src/agents/&lt;runtime-name&gt; được tạo mới và xóa sau mỗi lần thực thi node.</span></div>
+                    <div><strong>Agent runtime</strong><span>The selected runtime in src/agents/&lt;runtime-name&gt; is created and removed for each node execution.</span></div>
                     <label>Runtime<input list="agent-runtime-options" value={form.runtime} placeholder="default" onChange={(event) => {
                       const runtime = event.target.value;
                       setForm({ ...form, runtime, ...(runtime === "direct" ? { mcpServerIds: [] } : {}) });
@@ -533,13 +533,14 @@ function WorkflowEditorView({
                       <option value="default">Default container runtime</option>
                       <option value="codex">OpenAI Codex CLI runtime</option>
                       <option value="opencode">OpenCode SDK runtime</option>
+                      <option value="openhands">OpenHands Software Agent SDK runtime</option>
                       <option value="agent">Legacy default alias</option>
                       <option value="direct">Direct provider</option>
                     </datalist>
-                    <p>Nhập runtime id đã đăng ký trong <code>AGENT_RUNTIME_IMAGES</code>.</p>
+                    <p>Enter a runtime ID registered in <code>AGENT_RUNTIME_IMAGES</code>.</p>
                   </section>}
                   <section className="agent-model-picker">
-                    <div><strong>{selectedNode.type === "agent" ? "Model của Agent" : "Model của LLM Call"}</strong><span>Chọn model từ các provider đang hoạt động đã đăng ký.</span></div>
+                    <div><strong>{selectedNode.type === "agent" ? "Agent model" : "LLM Call model"}</strong><span>Select a model from the registered active providers.</span></div>
                     <label>Provider<select
                       value={form.providerId}
                       onChange={(event) => {
@@ -552,7 +553,7 @@ function WorkflowEditorView({
                         setForm({ ...form, providerId, model });
                       }}
                     >
-                      <option value="">Dùng provider/model mặc định đã đăng ký</option>
+                      <option value="">Use the registered default provider/model</option>
                       {enabledProviders.map((provider) => (
                         <option value={provider.id} key={provider.id}>{provider.name} ({provider.kind})</option>
                       ))}
@@ -562,18 +563,18 @@ function WorkflowEditorView({
                       disabled={!selectedProvider}
                       onChange={(event) => setForm({ ...form, model: event.target.value })}
                     >
-                      <option value="">{selectedProvider ? "Chọn model…" : "Chọn provider trước"}</option>
+                      <option value="">{selectedProvider ? "Select a model…" : "Select a provider first"}</option>
                       {selectedProviderModels.map((model) => <option value={model} key={model}>{model}</option>)}
                     </select></label>
-                    {!enabledProviders.length && <p>Chưa có provider đang hoạt động. Hãy đăng ký provider và chọn model trong trang Models.</p>}
-                    {form.providerId && !selectedProvider && <p>Provider đã lưu không còn hoạt động. Hãy chọn provider khác.</p>}
-                    {selectedProvider && !selectedProviderModels.length && <p>Provider này chưa có model đã đăng ký.</p>}
-                    {selectedProvider && form.model && !selectedProviderModels.includes(form.model) && <p>Model đã lưu không còn được bật cho provider này. Hãy chọn model khác.</p>}
-                    {selectedNode.type === "agent" && form.runtime !== "direct" && <p>Provider, model và API key đã lưu được truyền tạm thời vào container của lần chạy này; Agent không lấy cấu hình model từ .env.</p>}
+                    {!enabledProviders.length && <p>No active provider is available. Register a provider and select a model on the Models page.</p>}
+                    {form.providerId && !selectedProvider && <p>The saved provider is no longer active. Select another provider.</p>}
+                    {selectedProvider && !selectedProviderModels.length && <p>This provider has no registered models.</p>}
+                    {selectedProvider && form.model && !selectedProviderModels.includes(form.model) && <p>The saved model is no longer enabled for this provider. Select another model.</p>}
+                    {selectedNode.type === "agent" && form.runtime !== "direct" && <p>The saved provider, model, and API key are passed temporarily to the run container; the agent does not load model configuration from .env.</p>}
                   </section>
-                  <label>{selectedNode.type === "agent" ? "Instructions" : "Prompt"}<textarea className="compact-textarea instructions" value={form.instructions} placeholder={selectedNode.type === "agent" ? "Agent cần thực hiện điều gì?" : "Model cần xử lý dữ liệu đầu vào như thế nào?"} onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
+                  <label>{selectedNode.type === "agent" ? "Instructions" : "Prompt"}<textarea className="compact-textarea instructions" value={form.instructions} placeholder={selectedNode.type === "agent" ? "What should the agent do?" : "How should the model process the input?"} onChange={(event) => setForm({ ...form, instructions: event.target.value })} /></label>
                   <section className="prompt-variable-picker">
-                    <div><strong>Input trong prompt</strong><span>Output của node trước trở thành input của node này. Chèn biến để dùng trực tiếp trong prompt.</span></div>
+                    <div><strong>Prompt input</strong><span>The previous node output becomes this node's input. Insert variables to use them directly in the prompt.</span></div>
                     <div className="prompt-variable-list">
                       {["input", ...promptInputFields.map((field) => `input.${field}`)].map((path) => {
                         const reference = `{{${path}}}`;
@@ -583,11 +584,11 @@ function WorkflowEditorView({
                         }}><code>{reference}</code></button>;
                       })}
                     </div>
-                    <p>Dùng <code>{"{{input.field}}"}</code> cho một trường, hoặc <code>{"{{input}}"}</code> cho toàn bộ JSON. Có thể dùng đường dẫn lồng nhau như <code>{"{{input.article.title}}"}</code>.</p>
+                    <p>Use <code>{"{{input.field}}"}</code> for one field or <code>{"{{input}}"}</code> for the full JSON object. Nested paths such as <code>{"{{input.article.title}}"}</code> are supported.</p>
                   </section>
-                  {selectedNode.type === "llm.call" && <p className="node-form-hint">Node này gửi một request duy nhất tới model, không nạp skill và không chạy vòng lặp Agent.</p>}
+                  {selectedNode.type === "llm.call" && <p className="node-form-hint">This node sends one request to the model without loading skills or running an agent loop.</p>}
                   {selectedNode.type === "agent" && <section className="agent-skill-picker">
-                    <div><strong>Skills của Agent</strong><span>Mỗi Agent chỉ nhận các skill được chọn tại đây.</span></div>
+                    <div><strong>Agent skills</strong><span>Each agent receives only the skills selected here.</span></div>
                     <select
                       value=""
                       disabled={!skills.some((skill) => !agentSkillIds.includes(skill.id))}
@@ -595,19 +596,19 @@ function WorkflowEditorView({
                         if (event.target.value) setForm({ ...form, skillIds: [...agentSkillIds, event.target.value] });
                       }}
                     >
-                      <option value="">+ Thêm skill…</option>
+                      <option value="">+ Add skill…</option>
                       {skills.filter((skill) => !agentSkillIds.includes(skill.id)).map((skill) => <option value={skill.id} key={skill.id}>{skill.name}</option>)}
                     </select>
                     <div className="agent-skill-list">
                       {agentSkillIds.flatMap((skillId) => {
                         const skill = skills.find((item) => item.id === skillId);
-                        return skill ? [<span key={skill.id}><b>{skill.name}</b><small>{skill.slug} · v{skill.version}</small><button type="button" aria-label={`Bỏ skill ${skill.name}`} onClick={() => setForm({ ...form, skillIds: agentSkillIds.filter((id) => id !== skill.id) })}>×</button></span>] : [];
+                        return skill ? [<span key={skill.id}><b>{skill.name}</b><small>{skill.slug} · v{skill.version}</small><button type="button" aria-label={`Remove skill ${skill.name}`} onClick={() => setForm({ ...form, skillIds: agentSkillIds.filter((id) => id !== skill.id) })}>×</button></span>] : [];
                       })}
-                      {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>Chưa chọn skill. Hãy thêm skill trong trang quản lý rồi chọn tại đây.</p>}
+                      {!agentSkillIds.some((skillId) => skills.some((skill) => skill.id === skillId)) && <p>No skill selected. Add a skill on the management page, then select it here.</p>}
                     </div>
                   </section>}
                   {selectedNode.type === "agent" && form.runtime !== "direct" && <section className="agent-skill-picker">
-                    <div><strong>MCP của Agent</strong><span>Agent chỉ kết nối tới các MCP server được chọn cho node này.</span></div>
+                    <div><strong>Agent MCP servers</strong><span>The agent connects only to the MCP servers selected for this node.</span></div>
                     <select
                       value=""
                       disabled={!enabledMcpServers.some((server) => !agentMcpServerIds.includes(server.id))}
@@ -615,15 +616,15 @@ function WorkflowEditorView({
                         if (event.target.value) setForm({ ...form, mcpServerIds: [...agentMcpServerIds, event.target.value] });
                       }}
                     >
-                      <option value="">+ Thêm MCP…</option>
+                      <option value="">+ Add MCP…</option>
                       {enabledMcpServers.filter((server) => !agentMcpServerIds.includes(server.id)).map((server) => <option value={server.id} key={server.id}>{server.name}</option>)}
                     </select>
                     <div className="agent-skill-list">
                       {agentMcpServerIds.flatMap((serverId) => {
                         const server = mcpServers.find((item) => item.id === serverId);
-                        return server ? [<span key={server.id}><b>{server.name}</b><small>{server.transport === "streamable_http" ? "HTTP" : "SSE"} · {server.slug}</small><button type="button" aria-label={`Bỏ MCP ${server.name}`} onClick={() => setForm({ ...form, mcpServerIds: agentMcpServerIds.filter((id) => id !== server.id) })}>×</button></span>] : [];
+                        return server ? [<span key={server.id}><b>{server.name}</b><small>{server.transport === "streamable_http" ? "HTTP" : "SSE"} · {server.slug}</small><button type="button" aria-label={`Remove MCP ${server.name}`} onClick={() => setForm({ ...form, mcpServerIds: agentMcpServerIds.filter((id) => id !== server.id) })}>×</button></span>] : [];
                       })}
-                      {!agentMcpServerIds.some((serverId) => mcpServers.some((server) => server.id === serverId)) && <p>Chưa chọn MCP. Hãy đăng ký server trong trang MCP rồi chọn tại đây.</p>}
+                      {!agentMcpServerIds.some((serverId) => mcpServers.some((server) => server.id === serverId)) && <p>No MCP server selected. Register one on the MCP page, then select it here.</p>}
                     </div>
                   </section>}
                   <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
@@ -633,32 +634,32 @@ function WorkflowEditorView({
 
               {selectedNode.type === "if" && (
                 <section className="branch-config">
-                  <div><strong>Điều kiện rẽ nhánh</strong><span>Đúng chạy cổng true, sai chạy cổng false.</span></div>
-                  <label>Nguồn dữ liệu<input value={form.conditionFrom} placeholder="$input.approved" onChange={(event) => setForm({ ...form, conditionFrom: event.target.value })} /></label>
-                  <label>Phép so sánh<select value={form.operator} onChange={(event) => setForm({ ...form, operator: event.target.value as IfOperator })}>
-                    <option value="truthy">Có giá trị / true</option>
-                    <option value="falsy">Không có giá trị / false</option>
-                    <option value="equals">Bằng</option>
-                    <option value="notEquals">Khác</option>
-                    <option value="greaterThan">Lớn hơn</option>
-                    <option value="greaterThanOrEqual">Lớn hơn hoặc bằng</option>
-                    <option value="lessThan">Nhỏ hơn</option>
-                    <option value="lessThanOrEqual">Nhỏ hơn hoặc bằng</option>
+                  <div><strong>Branch condition</strong><span>True uses the true port; false uses the false port.</span></div>
+                  <label>Data source<input value={form.conditionFrom} placeholder="$input.approved" onChange={(event) => setForm({ ...form, conditionFrom: event.target.value })} /></label>
+                  <label>Comparison<select value={form.operator} onChange={(event) => setForm({ ...form, operator: event.target.value as IfOperator })}>
+                    <option value="truthy">Has a value / true</option>
+                    <option value="falsy">No value / false</option>
+                    <option value="equals">Equals</option>
+                    <option value="notEquals">Does not equal</option>
+                    <option value="greaterThan">Greater than</option>
+                    <option value="greaterThanOrEqual">Greater than or equal</option>
+                    <option value="lessThan">Less than</option>
+                    <option value="lessThanOrEqual">Less than or equal</option>
                   </select></label>
-                  {form.operator !== "truthy" && form.operator !== "falsy" && <label>Giá trị so sánh (JSON)<input value={form.expected} placeholder="true" onChange={(event) => setForm({ ...form, expected: event.target.value })} /></label>}
+                  {form.operator !== "truthy" && form.operator !== "falsy" && <label>Comparison value (JSON)<input value={form.expected} placeholder="true" onChange={(event) => setForm({ ...form, expected: event.target.value })} /></label>}
                 </section>
               )}
 
               {selectedNode.type === "parallel" && (
                 <section className="branch-config">
-                  <div><strong>Rẽ nhánh song song</strong><span>Tạo ít nhất hai kết nối cổng parallel. Mỗi nhánh nhận cùng output của node này.</span></div>
+                  <div><strong>Parallel branches</strong><span>Create at least two parallel-port connections. Each branch receives the same output from this node.</span></div>
                 </section>
               )}
 
               {selectedNode.type === "code.python" && (
                 <>
                   <label>Python code<textarea className="code-textarea" value={form.code} spellCheck={false} onChange={(event) => setForm({ ...form, code: event.target.value })} /></label>
-                  <p className="node-form-hint">Khai báo hàm main(inputs) và trả về một JSON object.</p>
+                  <p className="node-form-hint">Define a main(inputs) function that returns a JSON object.</p>
                   <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
                   <SchemaBuilder label="Output schema" value={form.outputSchema} onChange={(outputSchema) => setForm({ ...form, outputSchema })} />
                 </>
@@ -666,8 +667,8 @@ function WorkflowEditorView({
 
               {formError && <p className="form-error">{formError}</p>}
               <div className="node-drawer-actions">
-                <button type="button" className="cancel-node" onClick={closeNodeInspector}>Hủy</button>
-                <button type="button" className="save-node" disabled={disabled} onClick={saveNode}>Lưu thay đổi node</button>
+                <button type="button" className="cancel-node" onClick={closeNodeInspector}>Cancel</button>
+                <button type="button" className="save-node" disabled={disabled} onClick={saveNode}>Save node changes</button>
               </div>
             </div>
           </aside>
@@ -679,8 +680,8 @@ function WorkflowEditorView({
         }}>
           <section className="workflow-tool-panel raw-json-panel" role="dialog" aria-modal="true" aria-labelledby="json-panel-title">
             <div className="workflow-tool-heading">
-              <div><strong id="json-panel-title">Graph definition</strong><span>Chỉnh trực tiếp JSON nâng cao của workflow.</span></div>
-              <button type="button" aria-label="Đóng trình chỉnh JSON" onClick={() => setIsJsonOpen(false)}>×</button>
+              <div><strong id="json-panel-title">Graph definition</strong><span>Edit the workflow's advanced JSON directly.</span></div>
+              <button type="button" aria-label="Close JSON editor" onClick={() => setIsJsonOpen(false)}>×</button>
             </div>
             <textarea
               value={value}

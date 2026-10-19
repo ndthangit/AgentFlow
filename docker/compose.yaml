@@ -103,6 +103,7 @@ services:
       OIDC_ISSUER: http://localhost:8080/realms/agentflow
       OIDC_AUDIENCE: agentflow-api
       OIDC_JWKS_URL: http://keycloak:8080/realms/agentflow/protocol/openid-connect/certs
+      DEFAULT_WORKFLOW_OWNER_SUBJECT: ${KEYCLOAK_DEV_USER_ID:?Set KEYCLOAK_DEV_USER_ID in .env}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       REDIS_URL: redis://redis:6379/0
       WORKFLOW_QUEUE_STREAM: agentflow:workflow-runs
@@ -149,6 +150,15 @@ services:
     restart: "no"
     network_mode: none
 
+  agent-runtime-openhands-image:
+    image: agentflow-agent-openhands:${AGENT_RUNTIME_OPENHANDS_IMAGE_VERSION:-0.1.0}
+    build:
+      context: ../src/agents/openhands
+      dockerfile: Dockerfile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+    network_mode: none
+
   filesystem-mcp:
     image: agentflow-filesystem-mcp
     build:
@@ -184,8 +194,9 @@ services:
       WORKFLOW_HEARTBEAT_SECONDS: ${WORKFLOW_HEARTBEAT_SECONDS:-10}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       AGENT_RUNTIME_DEFAULT: ${AGENT_RUNTIME_DEFAULT:-default}
-      AGENT_RUNTIME_IMAGES: '{"default":"agentflow-agent-default:${AGENT_RUNTIME_DEFAULT_IMAGE_VERSION:-0.1.0}","codex":"agentflow-agent-codex:${AGENT_RUNTIME_CODEX_IMAGE_VERSION:-0.1.0}","opencode":"agentflow-agent-opencode:${AGENT_RUNTIME_OPENCODE_IMAGE_VERSION:-0.1.0}"}'
+      AGENT_RUNTIME_IMAGES: '{"default":"agentflow-agent-default:${AGENT_RUNTIME_DEFAULT_IMAGE_VERSION:-0.1.0}","codex":"agentflow-agent-codex:${AGENT_RUNTIME_CODEX_IMAGE_VERSION:-0.1.0}","opencode":"agentflow-agent-opencode:${AGENT_RUNTIME_OPENCODE_IMAGE_VERSION:-0.1.0}","openhands":"agentflow-agent-openhands:${AGENT_RUNTIME_OPENHANDS_IMAGE_VERSION:-0.1.0}"}'
       AGENT_RUNTIME_TIMEOUT_SECONDS: ${AGENT_RUNTIME_TIMEOUT_SECONDS:-180}
+      AGENT_RUNTIME_MAX_STEPS: ${AGENT_RUNTIME_MAX_STEPS:-8}
       AGENT_RUNTIME_MAX_CONTAINERS: ${AGENT_RUNTIME_MAX_CONTAINERS:-2}
       AGENT_RUNTIME_CPUS: ${AGENT_RUNTIME_CPUS:-1}
       AGENT_RUNTIME_MEMORY: ${AGENT_RUNTIME_MEMORY:-1g}
@@ -206,6 +217,8 @@ services:
       agent-runtime-codex-image:
         condition: service_completed_successfully
       agent-runtime-opencode-image:
+        condition: service_completed_successfully
+      agent-runtime-openhands-image:
         condition: service_completed_successfully
       filesystem-mcp:
         condition: service_healthy

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "openhands",
+  "image": "agentflow-agent-openhands:0.1.0",
+  "description": "OpenHands Software Agent SDK one-shot runtime for AgentFlow"
+}

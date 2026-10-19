@@ -67,6 +67,7 @@ class FlowRunCreate(BaseModel):
 class FlowRunView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
+    session_id: str
     workflow_version_id: uuid.UUID
     status: str
     input: dict[str, Any]

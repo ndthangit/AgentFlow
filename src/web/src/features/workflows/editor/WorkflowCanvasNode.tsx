@@ -43,22 +43,22 @@ function WorkflowCanvasNode({ data, selected }: NodeProps<WorkflowFlowNode>) {
           </span>
         </div>
         <div className="node-row-actions nodrag nowheel">
-          <button type="button" title="Cấu hình node" onClick={() => data.onConfigure(node.id)}>
-            Cấu hình
+          <button type="button" title="Configure node" onClick={() => data.onConfigure(node.id)}>
+            Configure
           </button>
           <button
             type="button"
             className="danger"
-            title={protectedNode ? "Start và End là node bắt buộc" : "Xóa node"}
+            title={protectedNode ? "Start and End are required nodes" : "Delete node"}
             disabled={data.disabled || protectedNode}
             onClick={() => data.onDelete(node)}
           >
-            Xóa
+            Delete
           </button>
         </div>
       </div>
       {!!data.ports.length && (
-        <div className="node-connection-labels" aria-label={`Điểm nối của node ${node.id}`}>
+        <div className="node-connection-labels" aria-label={`Connection points for node ${node.id}`}>
           {data.ports.map((port) => (
             <span className={`port-${port}`} key={port}>{port}</span>
           ))}

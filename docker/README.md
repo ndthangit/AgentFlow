@@ -222,6 +222,7 @@ Direct Access Grant của CLI local.
 | `agent-runtime-default-image` | Build/pull image Deep Agents mặc định trước khi worker chạy |
 | `agent-runtime-codex-image` | Build/pull image Codex CLI trước khi worker chạy |
 | `agent-runtime-opencode-image` | Build/pull image OpenCode SDK/server trước khi worker chạy |
+| `agent-runtime-openhands-image` | Build/pull image OpenHands Software Agent SDK trước khi worker chạy |
 | `filesystem-mcp` | MCP demo trên network runtime riêng |
 | `web` | React UI được phục vụ bởi Nginx |
 

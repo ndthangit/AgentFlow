@@ -28,25 +28,25 @@ export function parseGraph(value: string): { graph?: Graph; error?: string } {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed) || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-      return { error: "Draft phải có hai mảng nodes và edges." };
+      return { error: "The draft must contain nodes and edges arrays." };
     }
     if (!parsed.nodes.every((node) => (
       isRecord(node)
       && typeof node.id === "string"
       && (node.type === undefined || typeof node.type === "string")
     ))) {
-      return { error: "Mỗi node phải là object, có id dạng chuỗi và type hợp lệ." };
+      return { error: "Each node must be an object with a string ID and a valid type." };
     }
     if (!parsed.edges.every((edge) => (
       isRecord(edge)
       && typeof edge.from === "string"
       && typeof edge.to === "string"
     ))) {
-      return { error: "Mỗi edge phải có from và to dạng chuỗi." };
+      return { error: "Each edge must have string from and to fields." };
     }
     return { graph: parsed as Graph };
   } catch {
-    return { error: "JSON chưa hợp lệ. Hãy sửa JSON để tiếp tục dùng trình thiết kế." };
+    return { error: "The JSON is invalid. Fix it before returning to the visual editor." };
   }
 }
 
@@ -225,9 +225,9 @@ export function parseSchema(value: string, label: string): Record<string, unknow
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error(`${label} phải là JSON hợp lệ.`);
+    throw new Error(`${label} must be valid JSON.`);
   }
-  if (!isRecord(parsed)) throw new Error(`${label} phải là một JSON object.`);
+  if (!isRecord(parsed)) throw new Error(`${label} must be a JSON object.`);
   return parsed;
 }
 
@@ -296,8 +296,8 @@ export function newNode(
       id,
       type,
       typeVersion,
-      name: "Điều kiện If / Else",
-      note: "Chỉ chạy nhánh true hoặc false theo điều kiện.",
+      name: "If / Else condition",
+      note: "Run either the true or false branch based on the condition.",
       inputs: { value: { from: "$input.condition" } },
       config: { operator: "truthy" },
     };
@@ -307,8 +307,8 @@ export function newNode(
       id,
       type,
       typeVersion,
-      name: "Rẽ nhánh song song",
-      note: "Chạy đồng thời tất cả nhánh con và truyền output cha cho từng nhánh.",
+      name: "Parallel branches",
+      note: "Run all child branches concurrently and pass the parent output to each branch.",
     };
   }
   if (type === "agent") {
@@ -317,7 +317,7 @@ export function newNode(
       type,
       typeVersion,
       name: "Agent",
-      note: "Mô tả ngắn nhiệm vụ của agent.",
+      note: "Briefly describe the agent's task.",
       config: {
         runtime: "default",
         instructions: "",
@@ -334,9 +334,9 @@ export function newNode(
       type,
       typeVersion,
       name: "LLM Call",
-      note: "Gọi model đúng một lần, không dùng skill hay vòng lặp Agent.",
+      note: "Call the model once without skills or an agent loop.",
       config: {
-        prompt: "Xử lý dữ liệu đầu vào và trả về kết quả theo output schema.",
+        prompt: "Process the input and return exactly one JSON object matching the output schema.",
         inputSchema: emptyObjectSchema,
         outputSchema: emptyObjectSchema,
       },
@@ -348,7 +348,7 @@ export function newNode(
       type,
       typeVersion,
       name: "Python code",
-      note: "Xử lý dữ liệu bằng một hàm Python thuần.",
+      note: "Process the input with a pure Python function.",
       config: {
         language: "python",
         code: "def main(inputs):\n    return inputs\n",
@@ -362,10 +362,10 @@ export function newNode(
     id,
     type,
     typeVersion,
-    name: input ? "Bắt đầu" : "Kết thúc",
+    name: input ? "Start" : "End",
     note: input
-      ? "Định nghĩa các biến đầu vào ban đầu của workflow."
-      : "Định nghĩa các biến workflow trả về.",
+      ? "Define the workflow's initial input variables."
+      : "Define the variables returned by the workflow.",
     schema: emptyObjectSchema,
     ...(input ? {} : { inputs: {} }),
   };

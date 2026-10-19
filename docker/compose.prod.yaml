@@ -61,6 +61,11 @@ services:
     build: !reset null
     pull_policy: always
 
+  agent-runtime-openhands-image:
+    image: ${AGENTFLOW_AGENT_OPENHANDS_IMAGE:?Set AGENTFLOW_AGENT_OPENHANDS_IMAGE in .env.prod}
+    build: !reset null
+    pull_policy: always
+
   filesystem-mcp:
     image: ${AGENTFLOW_FILESYSTEM_MCP_IMAGE:?Set AGENTFLOW_FILESYSTEM_MCP_IMAGE in .env.prod}
     build: !reset null
@@ -74,7 +79,7 @@ services:
     pull_policy: always
     restart: always
     environment:
-      AGENT_RUNTIME_IMAGES: '{"default":"${AGENTFLOW_AGENT_DEFAULT_IMAGE:?Set AGENTFLOW_AGENT_DEFAULT_IMAGE in .env.prod}","codex":"${AGENTFLOW_AGENT_CODEX_IMAGE:?Set AGENTFLOW_AGENT_CODEX_IMAGE in .env.prod}","opencode":"${AGENTFLOW_AGENT_OPENCODE_IMAGE:?Set AGENTFLOW_AGENT_OPENCODE_IMAGE in .env.prod}"}'
+      AGENT_RUNTIME_IMAGES: '{"default":"${AGENTFLOW_AGENT_DEFAULT_IMAGE:?Set AGENTFLOW_AGENT_DEFAULT_IMAGE in .env.prod}","codex":"${AGENTFLOW_AGENT_CODEX_IMAGE:?Set AGENTFLOW_AGENT_CODEX_IMAGE in .env.prod}","opencode":"${AGENTFLOW_AGENT_OPENCODE_IMAGE:?Set AGENTFLOW_AGENT_OPENCODE_IMAGE in .env.prod}","openhands":"${AGENTFLOW_AGENT_OPENHANDS_IMAGE:?Set AGENTFLOW_AGENT_OPENHANDS_IMAGE in .env.prod}"}'
       AGENT_RUNTIME_NETWORK: ${AGENT_RUNTIME_NETWORK:-agentflow-prod-runtime}
       AGENT_RUNTIME_PULL_POLICY: never
     logging: *server-logging

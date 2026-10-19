@@ -18,6 +18,7 @@ export type WorkflowVersion = {
 
 export type FlowRun = {
   id: string;
+  session_id: string;
   workflow_version_id: string;
   status: string;
   input: Record<string, unknown>;

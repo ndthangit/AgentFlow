@@ -24,7 +24,7 @@ Quyết định này thay thế đường production dùng một HTTP agent serv
 
 Repository hiện có hai đường thực thi cho Agent node:
 
-1. `agent` là alias của runtime mặc định, tạo container `agentflow-agent-*` từ image allow-list trong `AGENT_RUNTIME_IMAGES`, chạy CLI `agent` đúng một lần và luôn gọi provider/model thật đã cấu hình. Stack hiện đăng ký `default`, `codex` và `opencode`.
+1. `agent` là alias của runtime mặc định, tạo container `agentflow-agent-*` từ image allow-list trong `AGENT_RUNTIME_IMAGES`, chạy CLI `agent` đúng một lần và luôn gọi provider/model thật đã cấu hình. Stack hiện đăng ký `default`, `codex`, `opencode` và `openhands`.
 2. `direct` gọi LLM provider trực tiếp trong workflow-worker làm đường tương thích.
 
 Lát cắt local hiện để workflow-worker gọi Docker Engine trực tiếp và luôn cleanup trong `finally`. Đây chưa phải mô hình production đích: vẫn cần **Agent Runner Supervisor** độc lập, job/attempt bền vững và reconciler để workflow-worker không nắm Docker socket.

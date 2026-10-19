@@ -10,6 +10,7 @@ from domain.errors import WorkflowExecutionError
 from runtime.agent_container import (
     AgentContainerExecutor,
     AgentContainerSettings,
+    _runtime_diagnostics,
     build_agent_docker_command,
 )
 from runtime.agent_executor import create_agent_executor
@@ -59,6 +60,9 @@ class AgentDockerCommandTests(unittest.TestCase):
         self.assertIn("AGENT_PROVIDER_API_KEY", command)
         self.assertIn("OPENROUTER_API_KEY", command)
         self.assertIn("AGENT_RUNTIME_TIMEOUT_SECONDS", command)
+        self.assertIn("AGENT_RUNTIME_MAX_STEPS", command)
+        self.assertIn("AGENTFLOW_RUN_ID", command)
+        self.assertIn("LANGFUSE_MAX_IO_BYTES", command)
         self.assertNotIn("OPENAI_COMPATIBLE_API_KEY", command)
         self.assertNotIn("ANTHROPIC_API_KEY", command)
         self.assertEqual(command[command.index("--network") + 1], "bridge")
@@ -90,6 +94,30 @@ class AgentDockerCommandTests(unittest.TestCase):
 
 
 class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
+    def test_accepts_only_structured_bounded_runtime_diagnostics(self):
+        stderr = b"\n".join(
+            (
+                (
+                    b'{"type":"agentflow.runtime.log","runtime":"opencode",'
+                    b'"event":"prompt.failed","error_code":"TIMEOUT",'
+                    b'"elapsed_ms":165000,"secret":"must-not-appear"}'
+                ),
+                b"untrusted provider stderr with secret",
+            )
+        )
+
+        self.assertEqual(
+            _runtime_diagnostics(stderr),
+            [
+                {
+                    "runtime": "opencode",
+                    "event": "prompt.failed",
+                    "error_code": "TIMEOUT",
+                    "elapsed_ms": 165000,
+                }
+            ],
+        )
+
     async def test_injects_current_run_lease_labels_into_the_container(self):
         calls = []
 

@@ -39,11 +39,19 @@ TELEMETRY_ENV = (
     "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_SERVICE_NAME",
     "DEPLOYMENT_ENVIRONMENT",
+    "LANGFUSE_ENABLED",
+    "LANGFUSE_MAX_IO_BYTES",
     "OPENINFERENCE_HIDE_INPUTS",
     "OPENINFERENCE_HIDE_OUTPUTS",
+    "AGENTFLOW_RUN_ID",
+    "AGENTFLOW_NODE_ID",
+    "AGENTFLOW_AGENT_JOB_ID",
 )
 
-RUNTIME_CONTROL_ENV = ("AGENT_RUNTIME_TIMEOUT_SECONDS",)
+RUNTIME_CONTROL_ENV = (
+    "AGENT_RUNTIME_TIMEOUT_SECONDS",
+    "AGENT_RUNTIME_MAX_STEPS",
+)
 
 PASSTHROUGH_ENV = MODEL_PASSTHROUGH_ENV + TELEMETRY_ENV + RUNTIME_CONTROL_ENV
 
@@ -70,6 +78,24 @@ PUBLIC_AGENT_ERROR_CODES = {
     "AGENT_FAILED",
 }
 
+RUNTIME_DIAGNOSTIC_TYPE = "agentflow.runtime.log"
+MAX_RUNTIME_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_RUNTIME_DIAGNOSTICS = 100
+RUNTIME_DIAGNOSTIC_FIELDS = {
+    "runtime",
+    "event",
+    "run_id",
+    "node_id",
+    "agent_job_id",
+    "session_id",
+    "model",
+    "status",
+    "error_code",
+    "attempt",
+    "timeout_ms",
+    "elapsed_ms",
+}
+
 
 def _public_agent_error(stdout: bytes, max_output_bytes: int) -> tuple[str, str] | None:
     """Read only the Agent runtime's bounded, explicitly public error contract."""
@@ -94,6 +120,63 @@ def _public_agent_error(stdout: bytes, max_output_bytes: int) -> tuple[str, str]
     if not message or len(message) > 500 or any(ord(char) < 32 for char in message):
         return None
     return code, message
+
+
+def _runtime_diagnostics(stderr: bytes) -> list[dict[str, str | int | bool]]:
+    """Accept only the bounded, structured diagnostic contract from a runtime."""
+    if not stderr:
+        return []
+    try:
+        text = stderr[:MAX_RUNTIME_DIAGNOSTIC_BYTES].decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    diagnostics: list[dict[str, str | int | bool]] = []
+    for line in text.splitlines()[:MAX_RUNTIME_DIAGNOSTICS]:
+        try:
+            document = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(document, dict) or document.get("type") != RUNTIME_DIAGNOSTIC_TYPE:
+            continue
+        diagnostic: dict[str, str | int | bool] = {}
+        for key in RUNTIME_DIAGNOSTIC_FIELDS:
+            value = document.get(key)
+            if isinstance(value, (bool, int)) or (
+                isinstance(value, str) and len(value) <= 300
+            ):
+                diagnostic[key] = value
+        if diagnostic.get("runtime") and diagnostic.get("event"):
+            diagnostics.append(diagnostic)
+    return diagnostics
+
+
+def _log_runtime_diagnostics(
+    stderr: bytes,
+    execution: Any,
+) -> None:
+    for diagnostic in _runtime_diagnostics(stderr):
+        run_id = str(execution.run_id) if execution is not None else diagnostic.get("run_id")
+        node_id = execution.node_id if execution is not None else diagnostic.get("node_id")
+        runtime_event = str(diagnostic["event"])
+        logger.info(
+            "Agent runtime diagnostic runtime=%s event=%s elapsed_ms=%s",
+            diagnostic["runtime"],
+            runtime_event,
+            diagnostic.get("elapsed_ms", "unknown"),
+            extra={
+                "event": "agent.runtime.diagnostic",
+                "run_id": run_id,
+                "node_id": node_id,
+                "status": diagnostic.get("status"),
+                "error_code": diagnostic.get("error_code"),
+                "runtime": diagnostic.get("runtime"),
+                "runtime_event": runtime_event,
+                "agent_job_id": diagnostic.get("agent_job_id"),
+                "session_id": diagnostic.get("session_id"),
+                "model": diagnostic.get("model"),
+                "elapsed_ms": diagnostic.get("elapsed_ms"),
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -253,6 +336,11 @@ class AgentContainerExecutor:
         if environment_overrides:
             environment.update(environment_overrides)
         environment["OTEL_SERVICE_NAME"] = "agentflow-agent-runtime"
+        environment["AGENTFLOW_AGENT_JOB_ID"] = job_id
+        if execution is not None:
+            environment["AGENTFLOW_RUN_ID"] = str(execution.run_id)
+            if execution.node_id:
+                environment["AGENTFLOW_NODE_ID"] = execution.node_id
         carrier: dict[str, str] = {}
         inject(carrier)
         if traceparent := carrier.get("traceparent"):
@@ -267,6 +355,7 @@ class AgentContainerExecutor:
                 environment,
                 self.settings.timeout_seconds,
             )
+        _log_runtime_diagnostics(result.stderr, execution)
         if result.returncode != 0:
             public_error = _public_agent_error(
                 result.stdout, self.settings.max_output_bytes

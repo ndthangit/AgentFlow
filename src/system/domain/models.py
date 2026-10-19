@@ -120,6 +120,11 @@ class FlowRun(Base):
         back_populates="run", cascade="all, delete-orphan"
     )
 
+    @property
+    def session_id(self) -> str:
+        """Stable Langfuse session identifier for this workflow run."""
+        return str(self.id)
+
 
 class RunExecutionLease(Base):
     """Database ownership and cleanup state for one workflow execution."""

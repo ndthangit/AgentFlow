@@ -5,6 +5,7 @@ import {
   buildMcpConfiguration,
   buildOpenCodeConfig,
   buildPrompt,
+  createRuntimeDiagnosticWriter,
   eventBelongsToSession,
   executeRequest,
 } from "../agent.mjs";
@@ -82,6 +83,23 @@ function fakeRuntimeFactory({
     };
   };
   return { factory, calls, get options() { return options; } };
+}
+
+function fakeTelemetryFactory() {
+  const calls = [];
+  const factory = () => ({
+    startGeneration({ model }) {
+      calls.push(["start", model]);
+      return {
+        addEvent(name) { calls.push(["event", name]); },
+        succeed(output) { calls.push(["succeed", output]); },
+        fail(error) { calls.push(["fail", error.code]); },
+        end() { calls.push(["end"]); },
+      };
+    },
+    async shutdown() { calls.push(["shutdown"]); },
+  });
+  return { factory, calls };
 }
 
 test("configuration binds loopback, allowlists OpenRouter, and never embeds its key", () => {
@@ -199,16 +217,51 @@ test("provider retry events stop an otherwise hanging prompt", async () => {
 
 test("adapter deadline aborts a prompt before the outer container timeout", async () => {
   const runtime = fakeRuntimeFactory({ pendingPrompt: true });
+  const telemetry = fakeTelemetryFactory();
+  const diagnostics = [];
   await assert.rejects(
     executeRequest(
       request,
       { ...environment, AGENT_RUNTIME_TIMEOUT_SECONDS: "0.04" },
       runtime.factory,
+      () => {},
+      {
+        telemetryFactory: telemetry.factory,
+        onDiagnostic: (event, details) => diagnostics.push([event, details]),
+      },
     ),
     (error) => error.code === "TIMEOUT",
   );
   assert.ok(runtime.calls.includes("abort"));
   assert.ok(runtime.calls.includes("close"));
+  assert.ok(telemetry.calls.some(([event, code]) => event === "fail" && code === "TIMEOUT"));
+  assert.equal(telemetry.calls.filter(([event]) => event === "end").length, 1);
+  assert.ok(telemetry.calls.some(([event]) => event === "shutdown"));
+  assert.ok(diagnostics.some(([event, details]) => (
+    event === "prompt.failed" && details.error_code === "TIMEOUT"
+  )));
+});
+
+test("structured runtime diagnostics are bounded and exclude unknown secret fields", () => {
+  let output = "";
+  const writer = createRuntimeDiagnosticWriter({
+    write(value) { output += value; },
+  }, {
+    AGENTFLOW_RUN_ID: "run-1",
+    AGENTFLOW_NODE_ID: "agent-1",
+  });
+
+  writer("prompt.started", {
+    model: "openai/test-model",
+    api_key: "must-not-appear",
+  });
+
+  const document = JSON.parse(output);
+  assert.equal(document.type, "agentflow.runtime.log");
+  assert.equal(document.run_id, "run-1");
+  assert.equal(document.node_id, "agent-1");
+  assert.equal(document.model, "openai/test-model");
+  assert.ok(!output.includes("must-not-appear"));
 });
 
 test("MCP configuration uses remote servers and environment references for header secrets", () => {

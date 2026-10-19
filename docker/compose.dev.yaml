@@ -50,6 +50,9 @@ services:
   agent-runtime-opencode-image:
     image: ${AGENTFLOW_AGENT_OPENCODE_IMAGE:-agentflow-agent-opencode:dev}
 
+  agent-runtime-openhands-image:
+    image: ${AGENTFLOW_AGENT_OPENHANDS_IMAGE:-agentflow-agent-openhands:dev}
+
   filesystem-mcp:
     image: ${AGENTFLOW_FILESYSTEM_MCP_IMAGE:-agentflow-filesystem-mcp:dev}
     ports: !override
@@ -59,7 +62,7 @@ services:
   workflow-worker:
     image: ${AGENTFLOW_SYSTEM_IMAGE:-agentflow-system:dev}
     environment:
-      AGENT_RUNTIME_IMAGES: '{"default":"${AGENTFLOW_AGENT_DEFAULT_IMAGE:-agentflow-agent-default:dev}","codex":"${AGENTFLOW_AGENT_CODEX_IMAGE:-agentflow-agent-codex:dev}","opencode":"${AGENTFLOW_AGENT_OPENCODE_IMAGE:-agentflow-agent-opencode:dev}"}'
+      AGENT_RUNTIME_IMAGES: '{"default":"${AGENTFLOW_AGENT_DEFAULT_IMAGE:-agentflow-agent-default:dev}","codex":"${AGENTFLOW_AGENT_CODEX_IMAGE:-agentflow-agent-codex:dev}","opencode":"${AGENTFLOW_AGENT_OPENCODE_IMAGE:-agentflow-agent-opencode:dev}","openhands":"${AGENTFLOW_AGENT_OPENHANDS_IMAGE:-agentflow-agent-openhands:dev}"}'
       AGENT_RUNTIME_NETWORK: ${AGENT_RUNTIME_NETWORK:-agentflow-dev-runtime}
     logging: *server-logging
 

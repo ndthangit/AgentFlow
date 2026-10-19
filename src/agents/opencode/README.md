@@ -20,6 +20,12 @@ stdin/stdout của AgentFlow. Image khóa cùng phiên bản cho `opencode-ai` v
   retry. Adapter cũng tự abort trước deadline của supervisor để OpenCode không biến lỗi
   429/5xx thành container timeout do retry vô hạn.
 - Structured output do OpenCode tạo được adapter validate lại bằng JSON Schema.
+- Mỗi `session.prompt()` tạo một OpenTelemetry `generation` span con của
+  `agent.container.run`. Span luôn ghi success/error/timeout và runtime force-flush
+  OTLP trước khi container dùng một lần kết thúc.
+- Runtime chỉ phát structured diagnostic không chứa prompt hay credential. Worker
+  ghi lại các event này vào JSON log với `run_id`, `node_id`, model và elapsed time,
+  vì vậy có thể truy vấn theo run trong Loki kể cả khi container đã bị `--rm`.
 
 ## Build và kiểm tra
 

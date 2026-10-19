@@ -13,15 +13,15 @@ def default_workflow_draft() -> dict[str, Any]:
             {
                 "id": "start",
                 "type": "input.schema",
-                "name": "Bắt đầu",
-                "note": "Định nghĩa các biến đầu vào ban đầu của workflow.",
+                "name": "Start",
+                "note": "Define the initial workflow input fields.",
                 "schema": _object_schema(),
             },
             {
                 "id": "agent",
                 "type": "agent",
                 "name": "Agent",
-                "note": "Mô tả ngắn nhiệm vụ của agent.",
+                "note": "Describe the task this agent should complete.",
                 "config": {
                     "runtime": "agent",
                     "instructions": "",
@@ -33,8 +33,8 @@ def default_workflow_draft() -> dict[str, Any]:
             {
                 "id": "end",
                 "type": "output.schema",
-                "name": "Kết thúc",
-                "note": "Định nghĩa các biến workflow trả về.",
+                "name": "End",
+                "note": "Define the fields returned by the workflow.",
                 "inputs": {},
                 "schema": _object_schema(),
             },
@@ -46,14 +46,82 @@ def default_workflow_draft() -> dict[str, Any]:
     }
 
 
+def simple_agent_workflow_draft() -> dict[str, Any]:
+    """Default runnable example that does not grant skills or MCP servers."""
+    return {
+        "nodes": [
+            {
+                "id": "input",
+                "type": "input.schema",
+                "name": "Text Input",
+                "note": "Receive the text supplied in the run input.",
+                "schema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "id": "summary_agent",
+                "type": "agent",
+                "name": "Summary Agent",
+                "note": "Summarize the text with the default model without MCP or skills.",
+                "inputs": {"text": {"from": "$input.text"}},
+                "config": {
+                    "runtime": "default",
+                    "instructions": (
+                        "Summarize the text in {{input.text}} in two or three clear "
+                        "English sentences. Return exactly one JSON object matching "
+                        "the output schema with a single summary string."
+                    ),
+                    "skillIds": [],
+                    "mcpServerIds": [],
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                        "additionalProperties": False,
+                    },
+                    "outputSchema": {
+                        "type": "object",
+                        "properties": {"summary": {"type": "string"}},
+                        "required": ["summary"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "id": "output",
+                "type": "output.schema",
+                "name": "Summary",
+                "note": "Return the summary created by the agent.",
+                "inputs": {
+                    "summary": {"from": "$nodes.summary_agent.output.summary"}
+                },
+                "schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+            },
+        ],
+        "edges": [
+            {"from": "input", "to": "summary_agent", "port": "success"},
+            {"from": "summary_agent", "to": "output", "port": "success"},
+        ],
+    }
+
+
 def sum_workflow_draft() -> dict[str, Any]:
     return {
         "nodes": [
             {
                 "id": "input",
                 "type": "input.schema",
-                "name": "Hai số đầu vào",
-                "note": "Nhận num1 và num2 từ dữ liệu chạy.",
+                "name": "Number Input",
+                "note": "Receive num1 and num2 from the run input.",
                 "schema": {
                     "type": "object",
                     "properties": {
@@ -67,8 +135,8 @@ def sum_workflow_draft() -> dict[str, Any]:
             {
                 "id": "sum",
                 "type": "math.add",
-                "name": "Cộng hai số",
-                "note": "Tính num1 + num2 mà không cần gọi LLM.",
+                "name": "Add Numbers",
+                "note": "Calculate num1 + num2 without calling an LLM.",
                 "inputs": {
                     "left": {"from": "$input.num1"},
                     "right": {"from": "$input.num2"},
@@ -78,8 +146,8 @@ def sum_workflow_draft() -> dict[str, Any]:
             {
                 "id": "output",
                 "type": "output.schema",
-                "name": "Kết quả",
-                "note": "Trả về tổng của hai số.",
+                "name": "Result",
+                "note": "Return the calculated sum.",
                 "inputs": {"sum": {"from": "$nodes.sum.output.sum"}},
                 "schema": {
                     "type": "object",

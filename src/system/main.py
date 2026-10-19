@@ -19,6 +19,7 @@ from core.database import engine as database_engine
 from core.telemetry import configure_telemetry, instrument_fastapi
 from runtime.orchestrator import orchestrate
 from services.skills import sync_builtin_skills
+from services.workflows import sync_default_workflows
 
 configure_telemetry("agentflow-system", sqlalchemy_engine=database_engine.sync_engine)
 
@@ -27,6 +28,10 @@ configure_telemetry("agentflow-system", sqlalchemy_engine=database_engine.sync_e
 async def lifespan(_app: FastAPI):
     async with SessionFactory() as session:
         await sync_builtin_skills(session)
+        await sync_default_workflows(
+            session,
+            os.getenv("DEFAULT_WORKFLOW_OWNER_SUBJECT", ""),
+        )
 
     stop_event = Event()
     task = create_task(orchestrate(stop_event), name="workflow-orchestrator")

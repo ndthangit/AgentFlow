@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from api.workflows import _version_snapshot
 from domain.errors import WorkflowExecutionError
-from domain.examples import sum_workflow_draft
+from domain.examples import simple_agent_workflow_draft, sum_workflow_draft
 from domain.schemas import WorkflowCreate
 from domain.validation import (
     agent_mcp_server_ids,
@@ -23,9 +23,23 @@ from runtime.builtin import (
     execute_builtin_workflow_detailed,
 )
 from services.skills import WorkflowSkillSelection, content_hash
+from services.workflows import default_workflow_id
 
 
 class WorkflowValidationTests(unittest.TestCase):
+    def test_default_simple_agent_workflow_is_valid_and_has_no_mcp(self):
+        graph = simple_agent_workflow_draft()
+
+        self.assertEqual(validate_graph(graph), [])
+        self.assertEqual(agent_mcp_server_ids(graph), [])
+        agent = next(node for node in graph["nodes"] if node["type"] == "agent")
+        self.assertEqual(agent["config"]["mcpServerIds"], [])
+        self.assertEqual(agent["config"]["skillIds"], [])
+
+    def test_default_workflow_id_is_stable_and_scoped_to_owner(self):
+        self.assertEqual(default_workflow_id("user-1"), default_workflow_id("user-1"))
+        self.assertNotEqual(default_workflow_id("user-1"), default_workflow_id("user-2"))
+
     def test_agent_mcp_selections_are_scoped_and_validated(self):
         graph = {
             "nodes": [
@@ -463,8 +477,8 @@ class WorkflowValidationTests(unittest.TestCase):
             [node["id"] for node in draft["nodes"]],
             ["start", "agent", "end"],
         )
-        self.assertEqual(draft["nodes"][0]["name"], "Bắt đầu")
-        self.assertEqual(draft["nodes"][-1]["name"], "Kết thúc")
+        self.assertEqual(draft["nodes"][0]["name"], "Start")
+        self.assertEqual(draft["nodes"][-1]["name"], "End")
         self.assertEqual(draft["nodes"][-1]["inputs"], {})
         self.assertEqual(draft["nodes"][1]["config"]["skillIds"], [])
         self.assertEqual(validate_graph(draft), [])

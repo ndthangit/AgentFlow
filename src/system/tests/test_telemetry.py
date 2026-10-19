@@ -23,7 +23,7 @@ class LangfuseTelemetryTests(unittest.TestCase):
             "os.environ",
             {"LANGFUSE_ENABLED": "true", "DEPLOYMENT_ENVIRONMENT": "test"},
             clear=True,
-        ), langfuse_trace_context(run_id="run-1"):
+        ), langfuse_trace_context(run_id="run-1", session_id="session-1"):
             annotate_langfuse_span(
                 span,
                 "agent",
@@ -50,6 +50,7 @@ class LangfuseTelemetryTests(unittest.TestCase):
         self.assertEqual(
             attributes["langfuse.observation.metadata.node_id"], "agent-1"
         )
+        self.assertEqual(attributes["langfuse.session.id"], "session-1")
 
     def test_oversized_payload_is_replaced_by_digest(self) -> None:
         span = Mock()
