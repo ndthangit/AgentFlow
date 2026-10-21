@@ -149,6 +149,11 @@ export const api = {
   listWorkflowRuns: (workflowId: string) =>
     request<FlowRun[]>(`/v1/workflows/${workflowId}/runs`),
   getRun: (runId: string) => request<FlowRun>(`/v1/runs/${runId}`),
+  cancelRun: (runId: string) =>
+    request<FlowRun>(`/v1/runs/${runId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+    }),
   listRunSteps: (runId: string) =>
     request<RunStep[]>(`/v1/runs/${runId}/steps`),
 };

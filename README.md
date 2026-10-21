@@ -86,6 +86,7 @@ HTTPS và cấu hình image trong [hướng dẫn Docker](docker/README.md).
 - [Bản đồ codebase](docs/codebase-map.md)
 - [Workflow và cơ chế thực thi](docs/workflow-execution.md)
 - [Quản lý Agent runtime](docs/agent-runtime-management.md)
+- [Kế hoạch worker chạy đồng thời và quản lý nhiều Agent container](docs/worker-concurrency-and-agent-runtime-scaling.md)
 - [Tích hợp Codex và OpenCode](docs/codex-opencode-runtime-integration.md)
 - [Provider và model LLM](docs/llm-providers.md)
 - [Tích hợp và test OpenAI, Anthropic, NVIDIA không cần key thật](docs/provider-integration-testing.md)

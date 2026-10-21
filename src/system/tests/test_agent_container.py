@@ -244,6 +244,7 @@ class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
                             "code": "PROVIDER_OVERLOADED",
                             "message": "Model provider is temporarily overloaded "
                             "(HTTP 503). Retry later or select another model.",
+                            "detail": "HTTP 503: upstream temporarily unavailable",
                         }
                     }
                 ).encode(),
@@ -256,7 +257,31 @@ class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.code, "PROVIDER_OVERLOADED")
         self.assertIn("HTTP 503", str(raised.exception))
+        self.assertEqual(
+            raised.exception.detail,
+            "HTTP 503: upstream temporarily unavailable",
+        )
         self.assertNotIn("secret provider response", str(raised.exception))
+
+    async def test_propagates_runtime_start_detail(self):
+        async def runner(*_args):
+            return ContainerResult(
+                1,
+                b'{"error":{"code":"RUNTIME_START_FAILED",'
+                b'"message":"OpenCode server did not start.",'
+                b'"detail":"Timeout waiting for server to start after 5000ms"}}',
+                b"runtime details",
+            )
+
+        executor = AgentContainerExecutor(settings(), runner=runner)
+        with self.assertRaises(WorkflowExecutionError) as raised:
+            await executor.execute({"task": "Plan", "context": "", "skills": []})
+
+        self.assertEqual(raised.exception.code, "RUNTIME_START_FAILED")
+        self.assertEqual(
+            raised.exception.detail,
+            "Timeout waiting for server to start after 5000ms",
+        )
 
     async def test_propagates_capability_unsupported_from_a_runtime(self):
         async def runner(*_args):

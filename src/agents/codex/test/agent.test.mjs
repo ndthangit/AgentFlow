@@ -127,7 +127,9 @@ test("adapter maps an incompatible model response to a public error", async () =
 
   await assert.rejects(
     executeRequest(request, environment, fakeRunner),
-    (error) => error.code === "MODEL_REQUEST_REJECTED" && !error.message.includes("HTTP 400"),
+    (error) => error.code === "MODEL_REQUEST_REJECTED"
+      && !error.message.includes("HTTP 400")
+      && error.detail === "HTTP 400: unsupported model",
   );
 });
 
@@ -169,6 +171,25 @@ test("adapter maps provider credit exhaustion without exposing provider details"
 
   await assert.rejects(
     executeRequest(request, environment, fakeRunner),
-    (error) => error.code === "RATE_LIMITED" && !error.message.includes("account 123"),
+    (error) => error.code === "RATE_LIMITED"
+      && !error.message.includes("account 123")
+      && error.detail.includes("402 Payment Required")
+      && error.detail.includes("account [REDACTED]")
+      && !error.detail.includes("account 123"),
+  );
+});
+
+test("adapter preserves an unknown Codex failure with secrets redacted", async () => {
+  const fakeRunner = async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "compiler crashed while using managed-secret",
+    exceededLimit: false,
+  });
+
+  await assert.rejects(
+    executeRequest(request, environment, fakeRunner),
+    (error) => error.code === "AGENT_FAILED"
+      && error.detail === "compiler crashed while using [REDACTED]",
   );
 });

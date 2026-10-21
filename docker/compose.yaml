@@ -192,6 +192,7 @@ services:
       WORKFLOW_RECLAIM_IDLE_MS: ${WORKFLOW_RECLAIM_IDLE_MS:-300000}
       WORKFLOW_LEASE_TTL_SECONDS: ${WORKFLOW_LEASE_TTL_SECONDS:-60}
       WORKFLOW_HEARTBEAT_SECONDS: ${WORKFLOW_HEARTBEAT_SECONDS:-10}
+      WORKFLOW_TIMEOUT_SECONDS: ${WORKFLOW_TIMEOUT_SECONDS:-900}
       PROVIDER_SECRETS_KEY_FILE: /var/lib/agentflow/provider-secrets.key
       AGENT_RUNTIME_DEFAULT: ${AGENT_RUNTIME_DEFAULT:-default}
       AGENT_RUNTIME_IMAGES: '{"default":"agentflow-agent-default:${AGENT_RUNTIME_DEFAULT_IMAGE_VERSION:-0.1.0}","codex":"agentflow-agent-codex:${AGENT_RUNTIME_CODEX_IMAGE_VERSION:-0.1.0}","opencode":"agentflow-agent-opencode:${AGENT_RUNTIME_OPENCODE_IMAGE_VERSION:-0.1.0}","openhands":"agentflow-agent-openhands:${AGENT_RUNTIME_OPENHANDS_IMAGE_VERSION:-0.1.0}"}'
@@ -234,6 +235,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
       WORKFLOW_RECOVERY_INTERVAL_SECONDS: ${WORKFLOW_RECOVERY_INTERVAL_SECONDS:-10}
+      WORKFLOW_TIMEOUT_SECONDS: ${WORKFLOW_TIMEOUT_SECONDS:-900}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

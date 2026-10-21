@@ -29,12 +29,16 @@ DEFAULT_OUTER_TIMEOUT_SECONDS = 180.0
 DEADLINE_CLEANUP_SECONDS = 20.0
 MCP_SERVER_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MCP_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+PUBLIC_ERROR_DETAIL_LIMIT = 500
 
 
 class PublicAgentError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str, detail: str | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -420,9 +424,72 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
     return chain
 
 
-def map_openhands_failure(error: BaseException) -> PublicAgentError:
+def _secret_values(environment: dict[str, str]) -> set[str]:
+    values = {
+        value
+        for name, value in environment.items()
+        if len(value) >= 4
+        and re.search(
+            r"(?:api[_-]?key|token|secret|password|authorization)$", name, re.I
+        )
+    }
+    try:
+        mcp = json.loads(environment.get("AGENT_MCP_SERVERS", "{}"))
+        for connection in mcp.values():
+            for value in connection.get("headers", {}).values():
+                if isinstance(value, str) and len(value) >= 4:
+                    values.add(value)
+    except (AttributeError, json.JSONDecodeError):
+        pass
+    return values
+
+
+def _safe_error_detail(
+    error: BaseException, environment: dict[str, str]
+) -> str | None:
+    detail = " — ".join(
+        str(current).strip()
+        for current in _exception_chain(error)
+        if str(current).strip()
+    )
+    for secret in _secret_values(environment):
+        detail = detail.replace(secret, "[REDACTED]")
+    detail = re.sub(
+        r"(bearer\s+)[^\s,;\"']+", r"\1[REDACTED]", detail, flags=re.I
+    )
+    detail = re.sub(
+        r"((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^,\s}]+)",
+        r"\1[REDACTED]",
+        detail,
+        flags=re.I,
+    )
+    detail = re.sub(
+        r"(account\s+)[\"']?[A-Za-z0-9_-]{3,}[\"']?",
+        r"\1[REDACTED]",
+        detail,
+        flags=re.I,
+    )
+    detail = re.sub(r"[\x00-\x1f\x7f]+", " ", detail)
+    detail = re.sub(r"\s+", " ", detail).strip()
+    return detail[:PUBLIC_ERROR_DETAIL_LIMIT] or None
+
+
+def _public_failure(
+    code: str,
+    message: str,
+    error: BaseException,
+    environment: dict[str, str],
+) -> PublicAgentError:
+    return PublicAgentError(code, message, _safe_error_detail(error, environment))
+
+
+def map_openhands_failure(
+    error: BaseException, environment: dict[str, str] | None = None
+) -> PublicAgentError:
     if isinstance(error, PublicAgentError):
         return error
+    environment = environment or {}
     diagnostic = " ".join(
         str(value)
         for current in _exception_chain(error)
@@ -435,47 +502,49 @@ def map_openhands_failure(error: BaseException) -> PublicAgentError:
         if value
     ).lower()
     if isinstance(error, TimeoutError) or "timed out" in diagnostic or "timeout" in diagnostic:
-        return PublicAgentError("TIMEOUT", "OpenHands did not finish before the runtime deadline.")
+        return _public_failure("TIMEOUT", "OpenHands did not finish before the runtime deadline.", error, environment)
     if "maxiterations" in diagnostic or "max iterations" in diagnostic:
-        return PublicAgentError("STEP_LIMIT", "OpenHands reached the configured step limit.")
+        return _public_failure("STEP_LIMIT", "OpenHands reached the configured step limit.", error, environment)
     if "mcp" in diagnostic and any(
         marker in diagnostic for marker in ("connect", "initialize", "unavailable", "failed")
     ):
-        return PublicAgentError(
-            "MCP_CONNECTION_FAILED", "Could not connect to one or more selected MCP servers."
+        return _public_failure(
+            "MCP_CONNECTION_FAILED", "Could not connect to one or more selected MCP servers.", error, environment
         )
     if "402" in diagnostic or "payment required" in diagnostic or "credits" in diagnostic:
-        return PublicAgentError(
-            "RATE_LIMITED", "The model provider credit or quota limit was reached."
+        return _public_failure(
+            "RATE_LIMITED", "The model provider credit or quota limit was reached.", error, environment
         )
     if "429" in diagnostic or "rate limit" in diagnostic:
-        return PublicAgentError(
-            "RATE_LIMITED", "The model provider rate limit was reached. Retry later."
+        return _public_failure(
+            "RATE_LIMITED", "The model provider rate limit was reached. Retry later.", error, environment
         )
     if any(marker in diagnostic for marker in ("401", "403", "authentication", "unauthorized")):
-        return PublicAgentError(
-            "PROVIDER_AUTH_ERROR", "The model provider rejected its managed API key."
+        return _public_failure(
+            "PROVIDER_AUTH_ERROR", "The model provider rejected its managed API key.", error, environment
         )
     if "404" in diagnostic or "model not found" in diagnostic:
-        return PublicAgentError(
-            "MODEL_NOT_FOUND", "The selected model is not available from the provider."
+        return _public_failure(
+            "MODEL_NOT_FOUND", "The selected model is not available from the provider.", error, environment
         )
     if "503" in diagnostic or "overloaded" in diagnostic:
-        return PublicAgentError(
-            "PROVIDER_OVERLOADED", "The model provider is temporarily overloaded. Retry later."
+        return _public_failure(
+            "PROVIDER_OVERLOADED", "The model provider is temporarily overloaded. Retry later.", error, environment
         )
     if any(marker in diagnostic for marker in ("400", "invalid request", "unsupported model")):
-        return PublicAgentError(
-            "MODEL_REQUEST_REJECTED", "The selected model rejected the OpenHands request."
+        return _public_failure(
+            "MODEL_REQUEST_REJECTED", "The selected model rejected the OpenHands request.", error, environment
         )
     if any(
         marker in diagnostic
         for marker in ("502", "504", "connection refused", "connection error", "fetch failed")
     ):
-        return PublicAgentError(
-            "PROVIDER_UNAVAILABLE", "The model provider is temporarily unavailable. Retry later."
+        return _public_failure(
+            "PROVIDER_UNAVAILABLE", "The model provider is temporarily unavailable. Retry later.", error, environment
         )
-    return PublicAgentError("AGENT_FAILED", "OpenHands runtime failed to complete the task.")
+    return _public_failure(
+        "AGENT_FAILED", "OpenHands runtime failed to complete the task.", error, environment
+    )
 
 
 def emit_failure_diagnostic(error: BaseException, public_error: PublicAgentError) -> None:
@@ -504,7 +573,8 @@ def execute_request(
     runner: RuntimeRunner = run_openhands,
 ) -> dict[str, Any]:
     request = validate_request(request_value)
-    config = build_runtime_config(environment or dict(os.environ))
+    resolved_environment = environment or dict(os.environ)
+    config = build_runtime_config(resolved_environment)
     try:
         output = runner(request, config)
         if not isinstance(output, dict):
@@ -515,7 +585,7 @@ def execute_request(
             "OUTPUT_INVALID", "OpenHands returned output that does not match the required schema."
         ) from exc
     except Exception as exc:
-        raise map_openhands_failure(exc) from exc
+        raise map_openhands_failure(exc, resolved_environment) from exc
     return {
         "run_id": str(uuid.uuid4()),
         "status": "succeeded",
@@ -543,11 +613,17 @@ def main() -> int:
     # The CLI boundary must turn unexpected SDK/provider failures into the
     # bounded public error envelope instead of leaking a traceback to callers.
     except Exception as exc:  # noqa: BLE001
-        public_error = map_openhands_failure(exc)
+        public_error = map_openhands_failure(exc, dict(os.environ))
         emit_failure_diagnostic(exc, public_error)
+        error_document = {
+            "code": public_error.code,
+            "message": str(public_error),
+        }
+        if public_error.detail:
+            error_document["detail"] = public_error.detail
         sys.stdout.write(
             json.dumps(
-                {"error": {"code": public_error.code, "message": str(public_error)}},
+                {"error": error_document},
                 ensure_ascii=False,
                 separators=(",", ":"),
             )

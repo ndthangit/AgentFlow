@@ -92,6 +92,7 @@ export function App() {
   const [isRunInputOpen, setIsRunInputOpen] = useState(false);
   const [isRunHistoryOpen, setIsRunHistoryOpen] = useState(false);
   const [runHistoryLoading, setRunHistoryLoading] = useState(false);
+  const [stoppingRunIds, setStoppingRunIds] = useState<Set<string>>(() => new Set());
   const [runDetailsRefreshKey, setRunDetailsRefreshKey] = useState(0);
   const [runInput, setRunInput] = useState("{}");
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -175,6 +176,7 @@ export function App() {
     setEditor(serializedDraft);
     setVersion(undefined);
     setRun(undefined);
+    setStoppingRunIds(new Set());
     setRuns([]);
     setIsRunInputOpen(false);
     setIsRunHistoryOpen(false);
@@ -267,6 +269,15 @@ export function App() {
         if (latest.status !== previousStatus) {
           if (latest.status === "succeeded") setMessage("Worker đã chạy xong workflow");
           if (latest.status === "failed") setMessage("Workflow thất bại — mở lịch sử chạy để xem lỗi từng bước");
+          if (latest.status === "cancelled") {
+            setStoppingRunIds((current) => {
+              if (!current.has(latest.id)) return current;
+              const next = new Set(current);
+              next.delete(latest.id);
+              return next;
+            });
+            setMessage("Đã dừng workflow");
+          }
           previousStatus = latest.status;
         }
         if (latest.status === "pending" || latest.status === "running") {
@@ -298,6 +309,44 @@ export function App() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [isRunHistoryOpen]);
 
+  useEffect(() => {
+    if (!isRunHistoryOpen || !selected) return;
+    let cancelled = false;
+    let polling: number | undefined;
+
+    const pollRunHistory = async () => {
+      try {
+        const items = await api.listWorkflowRuns(selected.id);
+        if (cancelled) return;
+        setRuns(items);
+        setRun((current) => current
+          ? items.find((item) => item.id === current.id) ?? items[0]
+          : items[0]);
+        setStoppingRunIds((current) => {
+          const activeIds = new Set(
+            items
+              .filter((item) => ["pending", "running"].includes(item.status))
+              .map((item) => item.id),
+          );
+          const next = new Set([...current].filter((id) => activeIds.has(id)));
+          return next.size === current.size ? current : next;
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Không thể cập nhật lịch sử chạy");
+        }
+      } finally {
+        if (!cancelled) polling = window.setTimeout(() => void pollRunHistory(), 1500);
+      }
+    };
+
+    polling = window.setTimeout(() => void pollRunHistory(), 1500);
+    return () => {
+      cancelled = true;
+      if (polling !== undefined) window.clearTimeout(polling);
+    };
+  }, [isRunHistoryOpen, selected?.id]);
+
   async function perform(action: () => Promise<void>) {
     setBusy(true);
     try {
@@ -306,6 +355,33 @@ export function App() {
       setMessage(error instanceof Error ? error.message : "Có lỗi xảy ra");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function stopRun(flowRun: FlowRun) {
+    setStoppingRunIds((current) => new Set(current).add(flowRun.id));
+    try {
+      const stopped = await api.cancelRun(flowRun.id);
+      setRun((current) => current?.id === stopped.id ? stopped : current);
+      setRuns((items) => items.map((item) => item.id === stopped.id ? stopped : item));
+      setRunDetailsRefreshKey((key) => key + 1);
+      setMessage(stopped.status === "cancelled"
+        ? `Đã dừng session ${stopped.session_id}`
+        : `Đang dừng session ${stopped.session_id}…`);
+      if (!["pending", "running"].includes(stopped.status)) {
+        setStoppingRunIds((current) => {
+          const next = new Set(current);
+          next.delete(stopped.id);
+          return next;
+        });
+      }
+    } catch (error) {
+      setStoppingRunIds((current) => {
+        const next = new Set(current);
+        next.delete(flowRun.id);
+        return next;
+      });
+      setMessage(error instanceof Error ? error.message : "Không thể dừng workflow");
     }
   }
 
@@ -428,6 +504,15 @@ export function App() {
       const items = await api.listWorkflowRuns(selected.id);
       setRuns(items);
       setRun((current) => current ? items.find((item) => item.id === current.id) ?? items[0] : items[0]);
+      setStoppingRunIds((current) => {
+        const activeIds = new Set(
+          items
+            .filter((item) => ["pending", "running"].includes(item.status))
+            .map((item) => item.id),
+        );
+        const next = new Set([...current].filter((id) => activeIds.has(id)));
+        return next.size === current.size ? current : next;
+      });
       if (isRefresh) setRunDetailsRefreshKey((current) => current + 1);
       setMessage(items.length
         ? isRefresh ? "Đã tải lại lịch sử chạy" : `Đã tải ${items.length} lần chạy gần nhất`
@@ -669,25 +754,40 @@ export function App() {
                 </div>
                 <div className="run-history-body">
                   <div className="run-history-list">
-                    {runs.map((item) => (
-                      <button
-                        className={run?.id === item.id ? "run-history-row selected" : "run-history-row"}
-                        key={item.id}
-                        onClick={() => {
-                          setRun(item);
-                          setRunInput(JSON.stringify(item.input, null, 2));
-                        }}
-                      >
-                        <span className={`run-status ${item.status}`}>{item.status}</span>
-                        <span>
-                          <strong>Run {item.id.slice(0, 8)}</strong>
-                          <small>{new Date(item.created_at).toLocaleString("vi-VN")}</small>
-                          <small className="run-session-id" title={item.session_id}>Session {item.session_id}</small>
-                        </span>
-                        {item.status === "succeeded" && item.output && <code>{JSON.stringify(item.output)}</code>}
-                        <b>Xem</b>
-                      </button>
-                    ))}
+                    {runs.map((item) => {
+                      const isActive = ["pending", "running"].includes(item.status);
+                      const isStopping = stoppingRunIds.has(item.id);
+                      return (
+                        <div className={run?.id === item.id ? "run-history-entry selected" : "run-history-entry"} key={item.id}>
+                          <button
+                            className="run-history-row"
+                            onClick={() => {
+                              setRun(item);
+                              setRunInput(JSON.stringify(item.input, null, 2));
+                            }}
+                          >
+                            <span className={`run-status ${item.status}`}>{item.status}</span>
+                            <span>
+                              <strong>Run {item.id.slice(0, 8)}</strong>
+                              <small>{new Date(item.created_at).toLocaleString("vi-VN")}</small>
+                              <small className="run-session-id" title={item.session_id}>Session {item.session_id}</small>
+                            </span>
+                            {item.status === "succeeded" && item.output && <code>{JSON.stringify(item.output)}</code>}
+                          </button>
+                          {isActive && (
+                            <button
+                              className="run-history-stop"
+                              type="button"
+                              disabled={isStopping}
+                              aria-label={`Dừng session ${item.session_id}`}
+                              onClick={() => void stopRun(item)}
+                            >
+                              {isStopping ? "Đang dừng…" : "■ Dừng"}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
                     {!runs.length && <div className="run-history-empty">{runHistoryLoading ? "Đang tải lịch sử chạy…" : "Chưa có lịch sử. Publish workflow rồi bấm Chạy để tạo lần chạy đầu tiên."}</div>}
                   </div>
 

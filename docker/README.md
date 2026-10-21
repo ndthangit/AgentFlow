@@ -261,6 +261,14 @@ sang `failed` với mã `WORKER_LOST`, rồi dọn container theo label. Chu k�
 `pending` sau `WORKFLOW_OUTBOX_REDISPATCH_SECONDS`, vì vậy Redis restart hoặc mất
 dữ liệu stream không làm run bị kẹt vĩnh viễn.
 
+`WORKFLOW_TIMEOUT_SECONDS` (mặc định 900 giây) giới hạn toàn bộ thời gian chạy của
+một workflow, độc lập với `AGENT_RUNTIME_TIMEOUT_SECONDS` của từng Agent node.
+Worker chủ động hủy task/container khi quá hạn; recovery cũng đánh `failed` với mã
+`WORKFLOW_TIMEOUT` cho run `pending` hoặc `running` bị treo nên trạng thái không thể
+nằm vô hạn. Nút Dừng phát sự kiện Redis tới đúng worker, không polling database;
+command bền vững trong PostgreSQL chỉ được đọc lúc subscribe/reconnect để chống
+mất tín hiệu do race hoặc Redis reconnect.
+
 Agent node chọn image theo runtime id trong `AGENT_RUNTIME_IMAGES` (`default`,
 `codex` hoặc `opencode` trong stack hiện tại). Provider, model và API key được lấy từ Models và
 workflow đã đăng ký rồi inject tạm thời vào container qua contract

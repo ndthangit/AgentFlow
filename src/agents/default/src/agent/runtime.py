@@ -1,7 +1,10 @@
 """One bounded, stateless invocation usable by Python, CLI or HTTP."""
 
 import asyncio
+import json
 import logging
+import os
+import re
 from uuid import uuid4
 
 from langchain.agents.structured_output import StructuredOutputError
@@ -14,6 +17,60 @@ from agent.graph import build_agent, build_configured_model
 from agent.mcp import load_mcp_tools
 
 logger = logging.getLogger(__name__)
+PUBLIC_ERROR_DETAIL_LIMIT = 500
+
+
+def _secret_values() -> set[str]:
+    values = {
+        value
+        for name, value in os.environ.items()
+        if len(value) >= 4
+        and re.search(
+            r"(?:api[_-]?key|token|secret|password|authorization)$", name, re.I
+        )
+    }
+    try:
+        mcp = json.loads(os.getenv("AGENT_MCP_SERVERS", "{}"))
+        for connection in mcp.values():
+            for value in connection.get("headers", {}).values():
+                if isinstance(value, str) and len(value) >= 4:
+                    values.add(value)
+    except (AttributeError, json.JSONDecodeError):
+        pass
+    return values
+
+
+def _safe_provider_detail(exc: Exception) -> str | None:
+    fragments: list[str] = []
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited and len(fragments) < 8:
+        visited.add(id(current))
+        if str(current).strip():
+            fragments.append(str(current).strip())
+        current = current.__cause__ or current.__context__
+    detail = " — ".join(fragments)
+    for secret in _secret_values():
+        detail = detail.replace(secret, "[REDACTED]")
+    detail = re.sub(
+        r"(bearer\s+)[^\s,;\"']+", r"\1[REDACTED]", detail, flags=re.I
+    )
+    detail = re.sub(
+        r"((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^,\s}]+)",
+        r"\1[REDACTED]",
+        detail,
+        flags=re.I,
+    )
+    detail = re.sub(
+        r"(account\s+)[\"']?[A-Za-z0-9_-]{3,}[\"']?",
+        r"\1[REDACTED]",
+        detail,
+        flags=re.I,
+    )
+    detail = re.sub(r"[\x00-\x1f\x7f]+", " ", detail)
+    detail = re.sub(r"\s+", " ", detail).strip()
+    return detail[:PUBLIC_ERROR_DETAIL_LIMIT] or None
 
 
 def _status_code(value: object) -> int | None:
@@ -27,7 +84,7 @@ def _status_code(value: object) -> int | None:
 
 
 def _provider_failure(exc: Exception) -> AgentRunError:
-    """Map provider failures to stable, non-sensitive public error details."""
+    """Map provider failures to stable messages plus a sanitized original cause."""
     status_code: int | None = None
     error_type = ""
     exception_names: set[str] = set()
@@ -53,17 +110,21 @@ def _provider_failure(exc: Exception) -> AgentRunError:
                 error_type = metadata["error_type"].strip().lower()
         current = current.__cause__ or current.__context__
 
+    detail = _safe_provider_detail(exc)
+
     if error_type == "provider_overloaded" or status_code == 503:
         return AgentRunError(
             "PROVIDER_OVERLOADED",
             "Model provider is temporarily overloaded (HTTP 503). "
             "Retry later or select another model.",
+            detail,
         )
     if status_code == 429 or "ratelimiterror" in exception_names:
         return AgentRunError(
             "RATE_LIMITED",
             "Model provider rate limit reached (HTTP 429). "
             "Retry later or select another model.",
+            detail,
         )
     if status_code in {401, 403} or exception_names & {
         "authenticationerror",
@@ -72,17 +133,20 @@ def _provider_failure(exc: Exception) -> AgentRunError:
         return AgentRunError(
             "PROVIDER_AUTH_ERROR",
             "Model provider rejected the configured API key or permissions.",
+            detail,
         )
     if status_code == 404 or "notfounderror" in exception_names:
         return AgentRunError(
             "MODEL_NOT_FOUND",
             "The selected model was not found or is not available to this API key.",
+            detail,
         )
     if status_code in {400, 422} or "badrequesterror" in exception_names:
         return AgentRunError(
             "MODEL_REQUEST_REJECTED",
             "The selected model rejected the Agent request. Verify that it "
             "supports tool calling and structured output.",
+            detail,
         )
     if status_code in {500, 502, 504} or exception_names & {
         "apiconnectionerror",
@@ -93,8 +157,9 @@ def _provider_failure(exc: Exception) -> AgentRunError:
             "PROVIDER_UNAVAILABLE",
             "Model provider is temporarily unavailable. Retry later or select "
             "another model.",
+            detail,
         )
-    return AgentRunError("AGENT_FAILED", "Agent execution failed.")
+    return AgentRunError("AGENT_FAILED", "Agent execution failed.", detail)
 
 
 def _render_skill_instructions(request: RunRequest) -> str:

@@ -186,6 +186,21 @@ class OpenHandsAgentTests(unittest.TestCase):
             mapped = agent.map_openhands_failure(exc)
         self.assertEqual(mapped.code, "RATE_LIMITED")
 
+    def test_preserves_sanitized_provider_detail(self):
+        mapped = agent.map_openhands_failure(
+            RuntimeError(
+                "[Nvidia] Function function-id not found for account account-id "
+                "using managed-secret"
+            ),
+            ENVIRONMENT,
+        )
+
+        self.assertEqual(mapped.code, "AGENT_FAILED")
+        self.assertIn("[Nvidia] Function function-id not found", mapped.detail)
+        self.assertIn("account [REDACTED]", mapped.detail)
+        self.assertNotIn("account-id", mapped.detail)
+        self.assertNotIn("managed-secret", mapped.detail)
+
     def test_failure_diagnostic_contains_types_but_not_messages(self):
         try:
             try:

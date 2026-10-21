@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-from runtime.recovery import ManagedContainer, reap_orphan_containers
+from runtime.recovery import ManagedContainer, reap_orphan_containers, recovery_iteration
 
 
 class ContainerRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -39,6 +39,33 @@ class ContainerRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(errors, [])
         removed_ids = [call.args[-1] for call in docker.await_args_list]
         self.assertEqual(removed_ids, ["old-generation", "expired", "legacy"])
+
+    async def test_iteration_recovers_timeout_and_expired_runs(self):
+        timed_out = uuid.uuid4()
+        expired = uuid.uuid4()
+        with (
+            patch(
+                "runtime.recovery.recover_timed_out_runs",
+                AsyncMock(return_value=[timed_out]),
+            ) as recover_timeouts,
+            patch(
+                "runtime.recovery.recover_expired_runs",
+                AsyncMock(return_value=[expired]),
+            ),
+            patch(
+                "runtime.recovery.reap_orphan_containers",
+                AsyncMock(return_value=(0, [])),
+            ),
+            patch(
+                "runtime.recovery.mark_cleanup_results",
+                AsyncMock(),
+            ),
+            patch.dict("os.environ", {"WORKFLOW_TIMEOUT_SECONDS": "42"}),
+        ):
+            recovered, removed = await recovery_iteration()
+
+        self.assertEqual((recovered, removed), (2, 0))
+        recover_timeouts.assert_awaited_once_with(42.0)
 
 
 if __name__ == "__main__":

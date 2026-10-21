@@ -76,6 +76,11 @@ class FlowRunView(BaseModel):
     updated_at: datetime
 
 
+class FlowRunCancel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
 class RunStepView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID

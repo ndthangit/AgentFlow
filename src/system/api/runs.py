@@ -1,16 +1,28 @@
-"""Workflow run dispatch and execution-history endpoints."""
+"""Workflow run dispatch, cancellation, and execution-history endpoints."""
 
+import hashlib
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from opentelemetry import trace
 from opentelemetry.propagate import inject
-from sqlalchemy import select
+from redis.exceptions import RedisError
+from sqlalchemy import select, update
 
 from api.dependencies import Claims, DatabaseSession, get_owned_workflow
 from core.telemetry import annotate_langfuse_span, record_run_started
-from domain.models import FlowRun, RunDispatch, RunStep, WorkflowVersion
-from domain.schemas import FlowRunCreate, FlowRunView, RunStepView
+from domain.models import (
+    FlowRun,
+    RunCommand,
+    RunCommandStatus,
+    RunCommandType,
+    RunDispatch,
+    RunStep,
+    WorkflowVersion,
+)
+from domain.schemas import FlowRunCancel, FlowRunCreate, FlowRunView, RunStepView
+from runtime.cancellation import CANCELLED_ERROR, publish_run_cancellation
 from runtime.engine import ordered_nodes
 
 router = APIRouter(tags=["runs"])
@@ -101,6 +113,102 @@ async def get_flow_run(
     )
     if flow_run is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    return flow_run
+
+
+@router.post(
+    "/v1/runs/{run_id}/cancel",
+    response_model=FlowRunView,
+    status_code=202,
+)
+async def cancel_flow_run(
+    run_id: uuid.UUID,
+    request: FlowRunCancel,
+    claims: Claims,
+    session: DatabaseSession,
+):
+    """Record a durable stop request; pending runs are cancelled immediately."""
+
+    flow_run = await session.scalar(
+        select(FlowRun)
+        .where(
+            FlowRun.id == run_id,
+            FlowRun.owner_subject == claims["sub"],
+        )
+        .with_for_update()
+    )
+    if flow_run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    scope = f"run:{run_id}"
+    payload_hash = hashlib.sha256(b"{}").hexdigest()
+    existing = await session.scalar(
+        select(RunCommand).where(
+            RunCommand.owner_subject == claims["sub"],
+            RunCommand.scope == scope,
+            RunCommand.idempotency_key == request.idempotency_key,
+        )
+    )
+    if existing is not None:
+        if (
+            existing.type != RunCommandType.CANCEL
+            or existing.payload_hash != payload_hash
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency key was already used for another command",
+            )
+        should_publish = (
+            existing.status == RunCommandStatus.ACCEPTED
+            and flow_run.status == "running"
+        )
+        await session.commit()
+        if should_publish:
+            try:
+                await publish_run_cancellation(run_id)
+            except (RedisError, OSError):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Stop command was saved but the worker signal failed; retry Stop",
+                ) from None
+        return flow_run
+
+    if flow_run.status not in {"pending", "running"}:
+        return flow_run
+
+    now = datetime.now(UTC)
+    command = RunCommand(
+        run_id=flow_run.id,
+        owner_subject=claims["sub"],
+        scope=scope,
+        type=RunCommandType.CANCEL,
+        idempotency_key=request.idempotency_key,
+        payload_hash=payload_hash,
+        payload={},
+        status=RunCommandStatus.ACCEPTED,
+    )
+    session.add(command)
+    should_publish = flow_run.status == "running"
+    if flow_run.status == "pending":
+        flow_run.status = "cancelled"
+        command.status = RunCommandStatus.APPLIED
+        command.result = {"status": "cancelled"}
+        command.applied_at = now
+        await session.execute(
+            update(RunStep)
+            .where(RunStep.run_id == flow_run.id, RunStep.status == "pending")
+            .values(status="cancelled", error=CANCELLED_ERROR, completed_at=now)
+        )
+    await session.commit()
+    await session.refresh(flow_run)
+    if should_publish:
+        try:
+            await publish_run_cancellation(run_id)
+        except (RedisError, OSError):
+            raise HTTPException(
+                status_code=503,
+                detail="Stop command was saved but the worker signal failed; retry Stop",
+            ) from None
     return flow_run
 
 

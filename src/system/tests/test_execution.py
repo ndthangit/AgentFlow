@@ -36,8 +36,48 @@ class RestrictedPythonTests(unittest.TestCase):
                 {},
             )
 
+    def test_syntax_error_reports_its_location(self):
+        with self.assertRaisesRegex(
+            RestrictedPythonError,
+            r"invalid Python syntax at line 2, column \d+",
+        ):
+            execute_restricted_python(
+                "def main(inputs):\n    return {'value': }\n",
+                {},
+            )
+
 
 class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_code_node_exposes_the_specific_execution_error(self):
+        graph = {
+            "nodes": [
+                {
+                    "id": "python",
+                    "type": "code.python",
+                    "config": {
+                        "code": "def main(inputs):\n    return {'value': inputs['missing']}\n",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+
+        async def unused_agent(_node, _inputs):
+            raise AssertionError("agent should not be called")
+
+        result = await execute_workflow(graph, {}, unused_agent)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(
+            result.steps[0].error,
+            {
+                "code": "STEP_EXECUTION_FAILED",
+                "message": "invalid subscript: 'missing'",
+            },
+        )
+
     async def test_llm_call_uses_direct_executor_exactly_once(self):
         node = {
             "id": "summarize",
@@ -383,6 +423,7 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
             raise WorkflowExecutionError(
                 "Model provider is temporarily overloaded.",
                 code="PROVIDER_OVERLOADED",
+                detail="HTTP 503 from upstream inference endpoint",
             )
 
         result = await execute_workflow(graph, {}, overloaded_agent)
@@ -393,6 +434,7 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
             {
                 "code": "PROVIDER_OVERLOADED",
                 "message": "Model provider is temporarily overloaded.",
+                "detail": "HTTP 503 from upstream inference endpoint",
             },
         )
 

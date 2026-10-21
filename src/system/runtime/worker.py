@@ -28,6 +28,12 @@ from domain.models import FlowRun, LlmProvider, McpServer, RunStep, WorkflowVers
 from providers.adapters import validate_provider_endpoint_configuration
 from providers.secrets import ProviderSecretStore
 from runtime.agent_executor import create_agent_executor, create_llm_executor
+from runtime.cancellation import (
+    RunCancellationRequested,
+    accepted_cancel_command,
+    apply_run_cancellation,
+    wait_for_run_cancellation,
+)
 from runtime.engine import ExecutionStep, WorkflowExecution, execute_workflow
 from runtime.execution_context import bind_run_execution
 from runtime.leases import (
@@ -45,6 +51,10 @@ configure_telemetry(
 )
 logger = logging.getLogger("agentflow.worker")
 tracer = trace.get_tracer("agentflow.worker")
+
+
+class WorkflowDeadlineExceeded(RuntimeError):
+    """Raised only when the configured whole-workflow deadline expires."""
 
 
 async def load_and_execute(
@@ -145,13 +155,15 @@ async def persist_execution(
 ) -> None:
     async with SessionFactory() as session:
         lease = await lock_owned_lease(session, claim)
-        result = await session.execute(
-            update(FlowRun)
-            .where(FlowRun.id == run_id, FlowRun.status == "running")
-            .values(status=execution.status, output=execution.output)
+        flow_run = await session.scalar(
+            select(FlowRun).where(FlowRun.id == run_id).with_for_update()
         )
-        if not result.rowcount:
+        if flow_run is None or flow_run.status != "running":
             raise LeaseLostError(f"Run {run_id} is no longer running")
+        if await accepted_cancel_command(session, run_id) is not None:
+            raise RunCancellationRequested(f"Cancellation requested for run {run_id}")
+        flow_run.status = execution.status
+        flow_run.output = execution.output
         for step in execution.steps:
             await session.execute(
                 update(RunStep)
@@ -212,15 +224,22 @@ async def _execute_with_heartbeat(
     )
     execution = asyncio.create_task(load_and_execute(run_id, claim))
     lost_waiter = asyncio.create_task(lease_lost.wait())
+    cancel_waiter = asyncio.create_task(wait_for_run_cancellation(run_id))
     try:
         done, _pending = await asyncio.wait(
-            {execution, lost_waiter}, return_when=asyncio.FIRST_COMPLETED
+            {execution, lost_waiter, cancel_waiter},
+            return_when=asyncio.FIRST_COMPLETED,
         )
         if lost_waiter in done and lease_lost.is_set():
             execution.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await execution
             raise LeaseLostError(f"Execution lease for run {run_id} was lost")
+        if cancel_waiter in done:
+            execution.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await execution
+            raise RunCancellationRequested(f"Cancellation requested for run {run_id}")
         return await execution
     finally:
         if not execution.done():
@@ -229,10 +248,48 @@ async def _execute_with_heartbeat(
                 await execution
         heartbeat.cancel()
         lost_waiter.cancel()
+        cancel_waiter.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat
         with contextlib.suppress(asyncio.CancelledError):
             await lost_waiter
+        with contextlib.suppress(asyncio.CancelledError):
+            await cancel_waiter
+
+
+async def _execute_with_timeout(
+    run_id: uuid.UUID,
+    claim: RunLeaseClaim,
+    *,
+    ttl_seconds: float,
+    heartbeat_seconds: float,
+    timeout_seconds: float,
+) -> WorkflowExecution:
+    """Enforce the workflow deadline without masking inner TimeoutError values."""
+
+    execution = asyncio.create_task(
+        _execute_with_heartbeat(
+            run_id,
+            claim,
+            ttl_seconds=ttl_seconds,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+    )
+    try:
+        done, _pending = await asyncio.wait({execution}, timeout=timeout_seconds)
+        if execution not in done:
+            execution.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await execution
+            raise WorkflowDeadlineExceeded(
+                f"Workflow {run_id} exceeded {timeout_seconds:g} seconds"
+            )
+        return await execution
+    finally:
+        if not execution.done():
+            execution.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await execution
 
 
 async def process_message(
@@ -242,6 +299,7 @@ async def process_message(
     owner_id: str,
     lease_ttl_seconds: float,
     heartbeat_seconds: float,
+    workflow_timeout_seconds: float,
 ) -> None:
     try:
         run_id = uuid.UUID(message.run_id)
@@ -293,11 +351,12 @@ async def process_message(
                 run_id,
                 extra={"event": "workflow.run.started", "run_id": run_id},
             )
-            execution = await _execute_with_heartbeat(
+            execution = await _execute_with_timeout(
                 run_id,
                 claim,
                 ttl_seconds=lease_ttl_seconds,
                 heartbeat_seconds=heartbeat_seconds,
+                timeout_seconds=workflow_timeout_seconds,
             )
             await persist_execution(run_id, execution, claim)
             duration = time.perf_counter() - started
@@ -320,6 +379,54 @@ async def process_message(
                     "status": execution.status,
                 },
             )
+        except WorkflowDeadlineExceeded as exc:
+            duration = time.perf_counter() - started
+            span.record_exception(exc)
+            span.set_attribute("agentflow.run.status", "failed")
+            span.set_status(Status(StatusCode.ERROR, "WORKFLOW_TIMEOUT"))
+            annotate_langfuse_span(
+                span,
+                "chain",
+                metadata={"status": "failed", "error_code": "WORKFLOW_TIMEOUT"},
+                level="ERROR",
+                status_message="Workflow execution timed out",
+            )
+            failed = await fail_owned_run(
+                claim,
+                code="WORKFLOW_TIMEOUT",
+                message=(
+                    "The workflow exceeded its configured timeout of "
+                    f"{workflow_timeout_seconds:g} seconds."
+                ),
+            )
+            record_run_completed("failed", duration)
+            logger.warning(
+                "Workflow run %s timed out after %.1f seconds; persisted=%s",
+                run_id,
+                workflow_timeout_seconds,
+                failed,
+                extra={"event": "workflow.run.timed_out", "run_id": run_id},
+            )
+            if not failed:
+                return
+        except RunCancellationRequested:
+            cancelled = await apply_run_cancellation(claim)
+            duration = time.perf_counter() - started
+            span.set_attribute("agentflow.run.status", "cancelled")
+            annotate_langfuse_span(
+                span,
+                "chain",
+                metadata={"status": "cancelled"},
+            )
+            record_run_completed("cancelled", duration)
+            logger.info(
+                "Workflow run %s was cancelled; terminal state persisted=%s",
+                run_id,
+                cancelled,
+                extra={"event": "workflow.run.cancelled", "run_id": run_id},
+            )
+            if not cancelled:
+                return
         except asyncio.CancelledError:
             if claim is not None:
                 await asyncio.shield(
@@ -385,6 +492,10 @@ async def run_worker() -> None:
             lease_ttl_seconds / 2,
         ),
     )
+    workflow_timeout_seconds = max(
+        1.0,
+        float(os.getenv("WORKFLOW_TIMEOUT_SECONDS", "900")),
+    )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for name in (signal.SIGINT, signal.SIGTERM):
@@ -415,6 +526,7 @@ async def run_worker() -> None:
                             owner_id=consumer,
                             lease_ttl_seconds=lease_ttl_seconds,
                             heartbeat_seconds=heartbeat_seconds,
+                            workflow_timeout_seconds=workflow_timeout_seconds,
                         )
                     )
                     stop_waiter = asyncio.create_task(stop.wait())

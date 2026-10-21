@@ -72,7 +72,13 @@ def create_app() -> FastAPI:
             }.get(exc.code, 502)
             return JSONResponse(
                 status_code=response_status,
-                content={"error": {"code": exc.code, "message": exc.message}},
+                content={
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        **({"detail": exc.detail} if exc.detail else {}),
+                    }
+                },
             )
 
     return app

@@ -92,7 +92,12 @@ def execute_restricted_python(code: str, inputs: dict[str, Any]) -> dict[str, An
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError as exc:
-        raise RestrictedPythonError(f"invalid Python syntax: {exc.msg}") from exc
+        location = f"line {exc.lineno}"
+        if exc.offset is not None:
+            location += f", column {exc.offset}"
+        raise RestrictedPythonError(
+            f"invalid Python syntax at {location}: {exc.msg}"
+        ) from exc
 
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise RestrictedPythonError(

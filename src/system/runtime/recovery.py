@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from core.database import SessionFactory
 from domain.models import RunExecutionLease
-from runtime.leases import recover_expired_runs
+from runtime.leases import recover_expired_runs, recover_timed_out_runs
 
 logger = logging.getLogger("agentflow.recovery")
 
@@ -154,18 +154,24 @@ async def mark_cleanup_results(errors: list[CleanupFailure]) -> None:
 
 
 async def recovery_iteration() -> tuple[int, int]:
+    timeout_seconds = max(
+        1.0,
+        float(os.getenv("WORKFLOW_TIMEOUT_SECONDS", "900")),
+    )
+    timed_out = await recover_timed_out_runs(timeout_seconds)
     recovered = await recover_expired_runs()
     removed, errors = await reap_orphan_containers()
     await mark_cleanup_results(errors)
     if errors:
         logger.warning("Container cleanup had %s error(s)", len(errors))
-    if recovered or removed:
+    recovered_count = len(timed_out) + len(recovered)
+    if recovered_count or removed:
         logger.warning(
-            "Recovery reconciled %s lost run(s) and removed %s container(s)",
-            len(recovered),
+            "Recovery reconciled %s failed/expired run(s) and removed %s container(s)",
+            recovered_count,
             removed,
         )
-    return len(recovered), removed
+    return recovered_count, removed
 
 
 async def run_recovery_controller() -> None:

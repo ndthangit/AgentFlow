@@ -73,9 +73,10 @@ class RunResult(BaseModel):
 
 
 class AgentRunError(Exception):
-    """Public error text must not contain provider responses or credentials."""
+    """Public error fields must not contain provider credentials."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, detail: str | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.detail = detail

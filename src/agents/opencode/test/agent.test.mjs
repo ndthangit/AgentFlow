@@ -138,6 +138,7 @@ test("one-shot adapter subscribes before prompt and always aborts and closes", a
   });
 
   assert.equal(runtime.options.hostname, "127.0.0.1");
+  assert.equal(runtime.options.timeout, 30_000);
   assert.ok(runtime.calls.indexOf("subscribe") < runtime.calls.indexOf("prompt"));
   assert.ok(runtime.calls.includes("abort"));
   assert.ok(runtime.calls.includes("close"));
@@ -363,7 +364,46 @@ test("adapter maps provider errors without exposing provider details", async () 
     executeRequest(request, environment, runtimeFactory),
     (error) => error.code === "PROVIDER_AUTH_ERROR"
       && !error.message.includes("managed-secret")
-      && !error.message.includes("account 123"),
+      && error.detail.includes("HTTP 401")
+      && !error.detail.includes("managed-secret")
+      && !error.detail.includes("account 123"),
+  );
+});
+
+test("adapter exposes a sanitized OpenCode startup failure", async () => {
+  const runtimeFactory = async () => {
+    throw new Error("Timeout waiting for server to start after 5000ms");
+  };
+  await assert.rejects(
+    executeRequest(request, environment, runtimeFactory),
+    (error) => error.code === "RUNTIME_START_FAILED"
+      && error.detail === "Timeout waiting for server to start after 5000ms",
+  );
+});
+
+test("adapter preserves an unknown provider cause while redacting identifiers", async () => {
+  const runtime = fakeRuntimeFactory({
+    pendingPrompt: true,
+    events: [{
+      type: "session.status",
+      properties: {
+        sessionID: "session-1",
+        status: {
+          type: "retry",
+          attempt: 2,
+          message: "[Nvidia] Function 'function-id': Not found for account 'account-id' using managed-secret",
+        },
+      },
+    }],
+  });
+
+  await assert.rejects(
+    executeRequest(request, environment, runtime.factory),
+    (error) => error.code === "AGENT_FAILED"
+      && error.detail.includes("[Nvidia] Function 'function-id': Not found")
+      && error.detail.includes("account [REDACTED]")
+      && !error.detail.includes("account-id")
+      && !error.detail.includes("managed-secret"),
   );
 });
 

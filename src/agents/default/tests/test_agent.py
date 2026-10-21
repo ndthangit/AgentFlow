@@ -326,30 +326,37 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 await AgentRuntime(model=object()).run(RunRequest(task="test"))
 
     async def test_error_mapping_and_provider_message_redaction(self):
-        for result, error, code in [
-            ({"structured_response": {"summary": "invalid"}}, None, "OUTPUT_INVALID"),
-            (None, GraphRecursionError("limit"), "STEP_LIMIT"),
-            (
-                None,
-                ValueError(
-                    {
-                        "message": "secret-provider-response",
-                        "code": 503,
-                        "metadata": {"error_type": "provider_overloaded"},
-                    }
+        with patch.dict(
+            os.environ,
+            {"AGENT_PROVIDER_API_KEY": "secret-provider-response"},
+        ):
+            for result, error, code in [
+                ({"structured_response": {"summary": "invalid"}}, None, "OUTPUT_INVALID"),
+                (None, GraphRecursionError("limit"), "STEP_LIMIT"),
+                (
+                    None,
+                    ValueError(
+                        {
+                            "message": "secret-provider-response",
+                            "code": 503,
+                            "metadata": {"error_type": "provider_overloaded"},
+                        }
+                    ),
+                    "PROVIDER_OVERLOADED",
                 ),
-                "PROVIDER_OVERLOADED",
-            ),
-            (None, RuntimeError("secret-provider-response"), "AGENT_FAILED"),
-        ]:
-            with self.subTest(code=code), patch("agent.runtime.build_agent") as factory:
-                factory.return_value.ainvoke = AsyncMock(
-                    return_value=result, side_effect=error
-                )
-                with self.assertRaises(AgentRunError) as caught:
-                    await AgentRuntime(model=object()).run(RunRequest(task="test"))
-                self.assertEqual(caught.exception.code, code)
-                self.assertNotIn("secret-provider-response", str(caught.exception))
+                (None, RuntimeError("secret-provider-response"), "AGENT_FAILED"),
+            ]:
+                with self.subTest(code=code), patch("agent.runtime.build_agent") as factory:
+                    factory.return_value.ainvoke = AsyncMock(
+                        return_value=result, side_effect=error
+                    )
+                    with self.assertRaises(AgentRunError) as caught:
+                        await AgentRuntime(model=object()).run(RunRequest(task="test"))
+                    self.assertEqual(caught.exception.code, code)
+                    self.assertNotIn("secret-provider-response", str(caught.exception))
+                    self.assertNotIn(
+                        "secret-provider-response", caught.exception.detail or ""
+                    )
 
     async def test_http_roundtrip_and_input_validation(self):
         with patch("agent.runtime.build_agent") as factory:

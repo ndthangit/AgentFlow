@@ -11,14 +11,57 @@ const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 const MAX_MCP_CONFIG_BYTES = 128 * 1024;
 const MAX_MCP_SERVERS = 20;
+const PUBLIC_ERROR_DETAIL_LIMIT = 500;
 const MCP_SERVER_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MCP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 class PublicAgentError extends Error {
-  constructor(code, message) {
+  constructor(code, message, detail) {
     super(message);
     this.code = code;
+    this.detail = detail;
   }
+}
+
+function secretValues(env) {
+  const values = new Set();
+  for (const [name, value] of Object.entries(env ?? {})) {
+    if (
+      typeof value === "string"
+      && value.length >= 4
+      && /(api[_-]?key|token|secret|password|authorization)$/i.test(name)
+    ) {
+      values.add(value);
+    }
+  }
+  try {
+    const mcp = JSON.parse(env?.AGENT_MCP_SERVERS ?? "{}");
+    for (const connection of Object.values(mcp)) {
+      for (const value of Object.values(connection?.headers ?? {})) {
+        if (typeof value === "string" && value.length >= 4) values.add(value);
+      }
+    }
+  } catch {
+    // Invalid MCP JSON is reported by configuration validation.
+  }
+  return values;
+}
+
+function sanitizeCommandDetail(result, env = {}) {
+  let detail = `${result.stderr ?? ""}\n${result.stdout ?? ""}`.trim().slice(-2000);
+  for (const secret of secretValues(env)) detail = detail.replaceAll(secret, "[REDACTED]");
+  detail = detail
+    .replace(/(bearer\s+)[^\s,;"']+/gi, "$1[REDACTED]")
+    .replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,\s}]+)/gi, "$1[REDACTED]")
+    .replace(/(account\s+)["']?[A-Za-z0-9_-]{3,}["']?/gi, "$1[REDACTED]")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return detail ? detail.slice(0, PUBLIC_ERROR_DETAIL_LIMIT) : undefined;
+}
+
+function commandFailure(code, message, result, env) {
+  return new PublicAgentError(code, message, sanitizeCommandDetail(result, env));
 }
 
 function tomlString(value) {
@@ -290,7 +333,7 @@ export function runCodex(binary, args, prompt, env) {
   });
 }
 
-function mapCodexFailure(result) {
+function mapCodexFailure(result, env = {}) {
   if (result.exceededLimit) {
     return new PublicAgentError("AGENT_FAILED", "Codex runtime output exceeded its safety limit.");
   }
@@ -304,9 +347,11 @@ function mapCodexFailure(result) {
       || diagnostic.includes("timed out")
     )
   ) {
-    return new PublicAgentError(
+    return commandFailure(
       "MCP_CONNECTION_FAILED",
       "Could not connect to one or more selected MCP servers.",
+      result,
+      env,
     );
   }
   if (
@@ -314,25 +359,27 @@ function mapCodexFailure(result) {
     || diagnostic.includes("payment required")
     || diagnostic.includes("more credits")
   ) {
-    return new PublicAgentError(
+    return commandFailure(
       "RATE_LIMITED",
       "The model provider credit or quota limit was reached.",
+      result,
+      env,
     );
   }
   if (diagnostic.includes("429") || diagnostic.includes("rate limit")) {
-    return new PublicAgentError("RATE_LIMITED", "The model provider rate limit was reached. Retry later.");
+    return commandFailure("RATE_LIMITED", "The model provider rate limit was reached. Retry later.", result, env);
   }
   if (diagnostic.includes("401") || diagnostic.includes("403") || diagnostic.includes("authentication")) {
-    return new PublicAgentError("PROVIDER_AUTH_ERROR", "The model provider rejected its managed API key.");
+    return commandFailure("PROVIDER_AUTH_ERROR", "The model provider rejected its managed API key.", result, env);
   }
   if (diagnostic.includes("404") || diagnostic.includes("model not found")) {
-    return new PublicAgentError("MODEL_NOT_FOUND", "The selected model is not available from the provider.");
+    return commandFailure("MODEL_NOT_FOUND", "The selected model is not available from the provider.", result, env);
   }
   if (diagnostic.includes("503") || diagnostic.includes("overloaded")) {
-    return new PublicAgentError("PROVIDER_OVERLOADED", "The model provider is temporarily overloaded. Retry later.");
+    return commandFailure("PROVIDER_OVERLOADED", "The model provider is temporarily overloaded. Retry later.", result, env);
   }
   if (diagnostic.includes("400") || diagnostic.includes("invalid request") || diagnostic.includes("unsupported model")) {
-    return new PublicAgentError("MODEL_REQUEST_REJECTED", "The selected model rejected the Codex request.");
+    return commandFailure("MODEL_REQUEST_REJECTED", "The selected model rejected the Codex request.", result, env);
   }
   if (
     diagnostic.includes("502")
@@ -342,9 +389,9 @@ function mapCodexFailure(result) {
     || diagnostic.includes("stream disconnected before completion")
     || diagnostic.includes("timed out")
   ) {
-    return new PublicAgentError("PROVIDER_UNAVAILABLE", "The model provider is temporarily unavailable. Retry later.");
+    return commandFailure("PROVIDER_UNAVAILABLE", "The model provider is temporarily unavailable. Retry later.", result, env);
   }
-  return new PublicAgentError("AGENT_FAILED", "Codex runtime failed to complete the task.");
+  return commandFailure("AGENT_FAILED", "Codex runtime failed to complete the task.", result, env);
 }
 
 export async function executeRequest(requestValue, env = process.env, commandRunner = runCodex) {
@@ -374,7 +421,7 @@ export async function executeRequest(requestValue, env = process.env, commandRun
       buildPrompt(request),
       mcp.environment,
     );
-    if (result.code !== 0) throw mapCodexFailure(result);
+    if (result.code !== 0) throw mapCodexFailure(result, env);
 
     let output;
     try {
@@ -420,8 +467,19 @@ export async function main() {
   } catch (error) {
     const publicError = error instanceof PublicAgentError
       ? error
-      : new PublicAgentError("AGENT_FAILED", "Codex runtime failed to complete the task.");
-    process.stdout.write(`${JSON.stringify({ error: { code: publicError.code, message: publicError.message } })}\n`);
+      : commandFailure(
+        "AGENT_FAILED",
+        "Codex runtime failed to complete the task.",
+        { stderr: error?.message ?? String(error), stdout: "" },
+        process.env,
+      );
+    process.stdout.write(`${JSON.stringify({
+      error: {
+        code: publicError.code,
+        message: publicError.message,
+        ...(publicError.detail ? { detail: publicError.detail } : {}),
+      },
+    })}\n`);
     process.exitCode = publicError.code === "INVALID_INPUT" ? 2 : 1;
   }
 }

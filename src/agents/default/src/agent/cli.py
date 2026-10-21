@@ -45,7 +45,10 @@ def main() -> None:
         )
         raise SystemExit(2) from None
     except AgentRunError as exc:
-        print(json.dumps({"error": {"code": exc.code, "message": exc.message}}))
+        error = {"code": exc.code, "message": exc.message}
+        if exc.detail:
+            error["detail"] = exc.detail
+        print(json.dumps({"error": error}))
         raise SystemExit(1) from None
     finally:
         shutdown_agent_telemetry(telemetry)

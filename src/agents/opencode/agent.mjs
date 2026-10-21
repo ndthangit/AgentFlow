@@ -15,11 +15,13 @@ const MAX_MCP_CONFIG_BYTES = 128 * 1024;
 const MAX_MCP_SERVERS = 20;
 const MAX_PROVIDER_RETRY_ATTEMPTS = 2;
 const DEFAULT_PROMPT_TIMEOUT_MS = 150_000;
+const DEFAULT_SERVER_START_TIMEOUT_MS = 30_000;
 const LOOPBACK_HOST = "127.0.0.1";
 const MCP_SERVER_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MCP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const DIAGNOSTIC_TYPE = "agentflow.runtime.log";
 const DIAGNOSTIC_VALUE_LIMIT = 300;
+const PUBLIC_ERROR_DETAIL_LIMIT = 500;
 const DIAGNOSTIC_FIELDS = new Set([
   "run_id",
   "node_id",
@@ -33,10 +35,66 @@ const DIAGNOSTIC_FIELDS = new Set([
 ]);
 
 class PublicAgentError extends Error {
-  constructor(code, message) {
+  constructor(code, message, detail) {
     super(message);
     this.code = code;
+    this.detail = detail;
   }
+}
+
+function secretValues(env) {
+  const values = new Set();
+  for (const [name, value] of Object.entries(env ?? {})) {
+    if (
+      typeof value === "string"
+      && value.length >= 4
+      && /(api[_-]?key|token|secret|password|authorization)$/i.test(name)
+    ) {
+      values.add(value);
+    }
+  }
+  try {
+    const mcp = JSON.parse(env?.AGENT_MCP_SERVERS ?? "{}");
+    for (const connection of Object.values(mcp)) {
+      for (const value of Object.values(connection?.headers ?? {})) {
+        if (typeof value === "string" && value.length >= 4) values.add(value);
+      }
+    }
+  } catch {
+    // Invalid MCP JSON is reported separately by the configuration validator.
+  }
+  return values;
+}
+
+function sanitizeErrorDetail(error, env = {}) {
+  const nested = error?.data ?? error?.body ?? error?.response?.data;
+  const fragments = [
+    error?.message,
+    nested?.message,
+    nested?.error?.message,
+    typeof nested === "string" ? nested : undefined,
+  ].filter((value) => typeof value === "string" && value.trim());
+  if (!fragments.length && nested && typeof nested === "object") {
+    try {
+      fragments.push(JSON.stringify(nested));
+    } catch {
+      // Some SDK error objects contain cycles.
+    }
+  }
+  let detail = fragments.join(" — ");
+  for (const secret of secretValues(env)) detail = detail.replaceAll(secret, "[REDACTED]");
+  detail = detail
+    .replace(/(bearer\s+)[^\s,;"']+/gi, "$1[REDACTED]")
+    .replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,\s}]+)/gi, "$1[REDACTED]")
+    .replace(/(account\s+)["']?[A-Za-z0-9_-]{3,}["']?/gi, "$1[REDACTED]")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return detail ? detail.slice(0, PUBLIC_ERROR_DETAIL_LIMIT) : undefined;
+}
+
+function publicFailure(code, message, error, env) {
+  return new PublicAgentError(code, message, sanitizeErrorDetail(error, env));
 }
 
 function safeDiagnosticValue(value) {
@@ -372,20 +430,23 @@ function isPermissionRequest(event) {
   return type.includes("permission") && !type.includes("replied") && !type.includes("resolved");
 }
 
-function failureFromEvent(event) {
+function failureFromEvent(event, env) {
   const type = String(event?.type ?? event?.data?.type ?? "").toLowerCase();
   const properties = event?.properties ?? event?.data?.properties ?? {};
   if (type === "session.error") {
-    return mapOpenCodeFailure(properties.error ?? properties);
+    return mapOpenCodeFailure(properties.error ?? properties, env);
   }
   if (type === "message.part.updated" && properties.part?.type === "retry") {
     if (Number(properties.part.attempt ?? 0) >= MAX_PROVIDER_RETRY_ATTEMPTS) {
-      return mapOpenCodeFailure(properties.part.error ?? properties.part);
+      return mapOpenCodeFailure(properties.part.error ?? properties.part, env);
     }
   }
   if (type === "session.status" && properties.status?.type === "retry") {
     if (Number(properties.status.attempt ?? 0) >= MAX_PROVIDER_RETRY_ATTEMPTS) {
-      return mapOpenCodeFailure(new Error(String(properties.status.message ?? "provider retry")));
+      return mapOpenCodeFailure(
+        new Error(String(properties.status.message ?? "provider retry")),
+        env,
+      );
     }
   }
   return undefined;
@@ -400,7 +461,7 @@ async function abortSession(client, sessionId) {
   }
 }
 
-async function consumeEvents(subscription, sessionId, state, client, onEvent) {
+async function consumeEvents(subscription, sessionId, state, client, onEvent, env) {
   const stream = subscription?.stream ?? unwrapResponse(subscription)?.stream;
   if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
     throw new PublicAgentError("AGENT_FAILED", "OpenCode did not provide an event stream.");
@@ -417,7 +478,7 @@ async function consumeEvents(subscription, sessionId, state, client, onEvent) {
       await abortSession(client, sessionId);
       return;
     }
-    const runtimeError = failureFromEvent(event);
+    const runtimeError = failureFromEvent(event, env);
     if (runtimeError) {
       state.runtimeError = runtimeError;
       state.notifyFailure?.(runtimeError);
@@ -475,26 +536,34 @@ function errorDiagnostic(error) {
   return fragments.filter(Boolean).join(" ").toLowerCase();
 }
 
-function mapOpenCodeFailure(error) {
+function mapOpenCodeFailure(error, env = {}) {
   if (error instanceof PublicAgentError) return error;
   const diagnostic = errorDiagnostic(error);
+  if (diagnostic.includes("timeout waiting for server to start")) {
+    return publicFailure(
+      "RUNTIME_START_FAILED",
+      "OpenCode server did not start before its startup deadline.",
+      error,
+      env,
+    );
+  }
   if (diagnostic.includes("structuredoutputerror") || diagnostic.includes("structured output")) {
-    return new PublicAgentError("OUTPUT_INVALID", "OpenCode could not produce the required structured output.");
+    return publicFailure("OUTPUT_INVALID", "OpenCode could not produce the required structured output.", error, env);
   }
   if (diagnostic.includes("402") || diagnostic.includes("payment required") || diagnostic.includes("credits")) {
-    return new PublicAgentError("RATE_LIMITED", "The model provider credit or quota limit was reached.");
+    return publicFailure("RATE_LIMITED", "The model provider credit or quota limit was reached.", error, env);
   }
   if (diagnostic.includes("429") || diagnostic.includes("rate limit")) {
-    return new PublicAgentError("RATE_LIMITED", "The model provider rate limit was reached. Retry later.");
+    return publicFailure("RATE_LIMITED", "The model provider rate limit was reached. Retry later.", error, env);
   }
   if (diagnostic.includes("401") || diagnostic.includes("403") || diagnostic.includes("authentication")) {
-    return new PublicAgentError("PROVIDER_AUTH_ERROR", "The model provider rejected its managed API key.");
+    return publicFailure("PROVIDER_AUTH_ERROR", "The model provider rejected its managed API key.", error, env);
   }
   if (diagnostic.includes("404") || diagnostic.includes("model not found")) {
-    return new PublicAgentError("MODEL_NOT_FOUND", "The selected model is not available from the provider.");
+    return publicFailure("MODEL_NOT_FOUND", "The selected model is not available from the provider.", error, env);
   }
   if (diagnostic.includes("400") || diagnostic.includes("unsupported model") || diagnostic.includes("invalid request")) {
-    return new PublicAgentError("MODEL_REQUEST_REJECTED", "The selected model rejected the OpenCode request.");
+    return publicFailure("MODEL_REQUEST_REJECTED", "The selected model rejected the OpenCode request.", error, env);
   }
   if (
     diagnostic.includes("502")
@@ -503,10 +572,11 @@ function mapOpenCodeFailure(error) {
     || diagnostic.includes("connection refused")
     || diagnostic.includes("fetch failed")
     || diagnostic.includes("timed out")
+    || diagnostic.includes("timeout")
   ) {
-    return new PublicAgentError("PROVIDER_UNAVAILABLE", "The model provider is temporarily unavailable. Retry later.");
+    return publicFailure("PROVIDER_UNAVAILABLE", "The model provider is temporarily unavailable. Retry later.", error, env);
   }
-  return new PublicAgentError("AGENT_FAILED", "OpenCode runtime failed to complete the task.");
+  return publicFailure("AGENT_FAILED", "OpenCode runtime failed to complete the task.", error, env);
 }
 
 async function ensureWritableStateDirectories(env) {
@@ -573,6 +643,7 @@ export async function executeRequest(
     restoreEnvironment = installMcpEnvironment(mcp.environment);
     runtime = await runtimeFactory({
       hostname: LOOPBACK_HOST,
+      timeout: Math.min(DEFAULT_SERVER_START_TIMEOUT_MS, promptTimeoutMs(env)),
       signal: controller.signal,
       config: buildOpenCodeConfig({
         model,
@@ -599,7 +670,7 @@ export async function executeRequest(
       const { event: eventName, ...details } = diagnostic;
       onDiagnostic(eventName, details);
       generation?.addEvent(`opencode.${eventName}`, details);
-    })
+    }, env)
       .catch((error) => {
         eventState.streamError = error;
       });
@@ -637,7 +708,7 @@ export async function executeRequest(
       output,
     };
   } catch (error) {
-    const publicError = eventState.runtimeError ?? mapOpenCodeFailure(error);
+    const publicError = eventState.runtimeError ?? mapOpenCodeFailure(error, env);
     generation?.fail(publicError);
     endGeneration();
     onDiagnostic("prompt.failed", {
@@ -699,8 +770,14 @@ export async function main() {
   } catch (error) {
     const publicError = error instanceof PublicAgentError
       ? error
-      : new PublicAgentError("AGENT_FAILED", "OpenCode runtime failed to complete the task.");
-    process.stdout.write(`${JSON.stringify({ error: { code: publicError.code, message: publicError.message } })}\n`);
+      : mapOpenCodeFailure(error, process.env);
+    process.stdout.write(`${JSON.stringify({
+      error: {
+        code: publicError.code,
+        message: publicError.message,
+        ...(publicError.detail ? { detail: publicError.detail } : {}),
+      },
+    })}\n`);
     process.exitCode = publicError.code === "INVALID_INPUT" ? 2 : 1;
   }
 }

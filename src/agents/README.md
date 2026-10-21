@@ -51,4 +51,4 @@ Request hiện tại có các field `task`, `context`, `skills` và `output_sche
 }
 ```
 
-Khi thất bại, runtime nên trả JSON `{ "error": { "code": "...", "message": "..." } }` và exit code khác `0`. Có thể sao chép [`default`](default/README.md) làm điểm khởi đầu, nhưng không nên commit `.env`, `.venv`, cache hoặc credential vào runtime mới.
+Khi thất bại, runtime nên trả JSON `{ "error": { "code": "...", "message": "...", "detail": "..." } }` và exit code khác `0`. `message` là mô tả ổn định; `detail` là nguyên nhân gốc đã giới hạn 500 ký tự và phải loại bỏ API key, token, mật khẩu cùng thông tin xác thực trước khi trả về. Có thể sao chép [`default`](default/README.md) làm điểm khởi đầu, nhưng không nên commit `.env`, `.venv`, cache hoặc credential vào runtime mới.

@@ -75,6 +75,7 @@ PUBLIC_AGENT_ERROR_CODES = {
     "PROVIDER_UNAVAILABLE",
     "MCP_CONNECTION_FAILED",
     "CAPABILITY_UNSUPPORTED",
+    "RUNTIME_START_FAILED",
     "AGENT_FAILED",
 }
 
@@ -97,7 +98,9 @@ RUNTIME_DIAGNOSTIC_FIELDS = {
 }
 
 
-def _public_agent_error(stdout: bytes, max_output_bytes: int) -> tuple[str, str] | None:
+def _public_agent_error(
+    stdout: bytes, max_output_bytes: int
+) -> tuple[str, str, str | None] | None:
     """Read only the Agent runtime's bounded, explicitly public error contract."""
     if not stdout or len(stdout) > max_output_bytes:
         return None
@@ -110,6 +113,7 @@ def _public_agent_error(stdout: bytes, max_output_bytes: int) -> tuple[str, str]
     error = document["error"]
     code = error.get("code")
     message = error.get("message")
+    detail = error.get("detail")
     if (
         not isinstance(code, str)
         or code not in PUBLIC_AGENT_ERROR_CODES
@@ -119,7 +123,17 @@ def _public_agent_error(stdout: bytes, max_output_bytes: int) -> tuple[str, str]
     message = message.strip()
     if not message or len(message) > 500 or any(ord(char) < 32 for char in message):
         return None
-    return code, message
+    if detail is not None:
+        if not isinstance(detail, str):
+            return None
+        detail = detail.strip()
+        if (
+            not detail
+            or len(detail) > 500
+            or any(ord(char) < 32 for char in detail)
+        ):
+            return None
+    return code, message, detail
 
 
 def _runtime_diagnostics(stderr: bytes) -> list[dict[str, str | int | bool]]:
@@ -369,8 +383,8 @@ class AgentContainerExecutor:
                 len(result.stderr),
             )
             if public_error:
-                code, message = public_error
-                raise WorkflowExecutionError(message, code=code)
+                code, message, detail = public_error
+                raise WorkflowExecutionError(message, code=code, detail=detail)
             raise WorkflowExecutionError("Agent runtime container failed")
         if len(result.stdout) > self.settings.max_output_bytes:
             raise WorkflowExecutionError(
