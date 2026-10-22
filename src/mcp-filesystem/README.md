@@ -1,19 +1,21 @@
 # Filesystem MCP demo
 
-MCP server tối giản cho demo AgentFlow. Server cung cấp ba tool:
+A minimal MCP server for the AgentFlow demo. It provides three tools:
 
-- `write_file`: ghi file UTF-8 trong `/data`.
-- `read_file`: đọc file UTF-8 trong `/data`.
-- `list_files`: liệt kê file trong `/data`.
+- `write_file`: writes a UTF-8 file under `/data`.
+- `read_file`: reads a UTF-8 file under `/data`.
+- `list_files`: lists files under `/data`.
 
-Đường dẫn tuyệt đối, `..`, symlink thoát khỏi `/data`, file quá 1 MiB và kết quả liệt kê quá 200 mục đều bị chặn.
+Absolute paths, `..`, symlinks that escape `/data`, files larger than 1 MiB, and
+directory listings over 200 entries are rejected.
 
-Khi chạy bằng Docker Compose, đăng ký trong trang MCP với:
+When running with Docker Compose, register it on the MCP page with:
 
 - Slug: `filesystem-demo`
 - Transport: `Streamable HTTP`
 - URL: `http://filesystem-mcp:8002/mcp`
-- Header xác thực: để trống
+- Authentication header: leave blank
 
-Sau đó chọn MCP này trong cấu hình node Agent. Dữ liệu được giữ trong volume `agentflow_mcp_files`.
+Then select this MCP server in the Agent node configuration. Data is persisted in
+the `agentflow_mcp_files` volume.
 

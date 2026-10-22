@@ -1,34 +1,37 @@
 # Codex runtime
 
-Runtime one-shot dùng OpenAI Codex CLI và tuân theo contract JSON stdin/stdout của
-AgentFlow. Image đã pin `@openai/codex` để mỗi lần deploy có thể tái lập.
-Image cài system CA bundle vì Codex native binary cần trust store của hệ điều hành
-để kết nối HTTPS tới model provider.
+This one-shot runtime uses the OpenAI Codex CLI and follows AgentFlow's JSON
+stdin/stdout contract. The image pins `@openai/codex` for reproducible deployments.
+It installs the system CA bundle because the native Codex binary requires the
+operating system trust store for HTTPS connections to model providers.
 
-## Credential và model
+## Credentials and models
 
-Không cấu hình API key trong Dockerfile, Compose hoặc `.env`. Khi workflow chạy,
-System lấy provider/model của Agent node từ trang **Models**, giải mã key trong
-worker rồi chỉ truyền vào container dùng một lần:
+Do not configure API keys in the Dockerfile, Compose, or `.env`. When a workflow
+runs, the System reads the Agent node's provider and model from **Models**, decrypts
+the key in the worker, and passes it only to the single-use container:
 
 - `AGENT_MODEL`
 - `AGENT_PROVIDER_BASE_URL`
 - `AGENT_PROVIDER_API_KEY`
 
-Adapter cấu hình một custom Codex model provider dùng Responses API. Phiên Codex
-chạy `--ephemeral`, bỏ qua user config, dùng sandbox `read-only`, không xin quyền
-và trả kết quả theo `output_schema` của node.
+The adapter configures a custom Codex model provider that uses the Responses API.
+The Codex session runs with `--ephemeral`, ignores user configuration, uses the
+`read-only` sandbox, never requests approval, and returns data matching the node's
+`output_schema`.
 
-MCP được chọn cho node được ánh xạ từ `AGENT_MCP_SERVERS` sang cấu hình Codex
-`mcp_servers.<slug>`. Runtime hỗ trợ Streamable HTTP; SSE bị từ chối vì Codex CLI
-không hỗ trợ transport này. Header xác thực được đặt trong biến môi trường tạm và
-Codex chỉ nhận ánh xạ `env_http_headers`, nên giá trị secret không xuất hiện trong argv.
+MCP servers selected for the node are mapped from `AGENT_MCP_SERVERS` to Codex
+`mcp_servers.<slug>` configuration. The runtime supports Streamable HTTP; SSE is
+rejected because the Codex CLI does not support that transport. Authentication
+headers are stored in temporary environment variables and Codex receives only the
+`env_http_headers` mapping, so secret values never appear in argv.
 
-Model được chọn phải hỗ trợ Responses API và tool semantics mà Codex CLI sử dụng.
-Với OpenRouter, nên chọn model Codex/GPT tương thích Responses; adapter sẽ trả lỗi
-public nếu provider từ chối model thay vì fallback sang model khác.
+The selected model must support the Responses API and the tool semantics used by
+the Codex CLI. For OpenRouter, select a Responses-compatible Codex/GPT model. If the
+provider rejects the model, the adapter returns a public error instead of falling
+back to another model.
 
-## Build và kiểm tra
+## Build and test
 
 ```bash
 docker build -t agentflow-agent-codex:0.1.0 src/agents/codex
@@ -36,5 +39,6 @@ docker run --rm --entrypoint codex agentflow-agent-codex:0.1.0 --version
 cd src/agents/codex && npm test
 ```
 
-Khi chạy qua AgentFlow, chọn runtime `codex` trong Agent node. Nếu dùng MCP, hãy
-chọn server có transport Streamable HTTP trong cùng cấu hình node.
+When running through AgentFlow, select the `codex` runtime in the Agent node. If you
+use MCP, select a server with the Streamable HTTP transport in the same node
+configuration.

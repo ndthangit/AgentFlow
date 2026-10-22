@@ -1,43 +1,43 @@
-# Lộ trình MVP và vận hành
+# MVP roadmap and operations
 
-Trạng thái: kế hoạch đề xuất ngày **05/09/2026**, đã điều chỉnh để bắt đầu từ [agent Deep Agents trong `src/agents/default`](../src/agents/default/README.md), hỗ trợ [thêm runtime dưới `src/agents`](../src/agents/README.md) và [runtime container dùng một lần](ephemeral-agent-runtime.md). CLI/HTTP, đường supervisor Docker local và kiểm thử offline đã có; agent job bền vững, runner nhiều host và các phần còn lại dưới đây chưa triển khai đầy đủ.
+Status: proposed plan date **September 5, 2026**, adjusted to start from [agent Deep Agents under `src/agents/default`](../src/agents/default/README.md), support for [add runtime under times](ephemeral-agent-runtime.md). CLI/HTTP, Docker local supervisor path and offline testing are available; Agent job is sustainable, runs multiple hosts, and the rest below are not fully implemented.
 
-Backlog kỹ thuật theo dependency, schema/API dự kiến và tiêu chí nghiệm thu được theo dõi tại [kế hoạch bổ sung lõi workflow và Agent Runtime](core-runtime-implementation-plan.md).
+Technical backlog by dependency, expected schema/API and acceptance criteria are tracked at [core workflow and Agent Runtime implementation plan](core-runtime-implementation-plan.md).
 
-## 1. Kết quả MVP cần đạt
+## 1. MVP results to achieve
 
-Người dùng tạo flow bằng canvas, publish một version, chạy Codex hoặc OpenCode trong workspace riêng, xem tiến độ, nhận artifact, chờ duyệt và thực hiện một connector action. Run phải có thể tiếp tục sau khi API/worker restart mà không âm thầm nhân đôi tác động bên ngoài.
+Users create a flow using canvas, publish a version, run Codex or OpenCode in their own workspace, view progress, receive artifacts, wait for approval, and perform a connector action. Run must be able to continue after an API/worker restart without silently duplicating external impacts.
 
-Chưa chốt số tuần vì chưa có nhân lực và yêu cầu hạ tầng. Thứ tự dưới đây theo dependency và rủi ro cần kiểm chứng, không phải cam kết thời gian.
+The number of weeks has not yet been finalized because there are no human resources and infrastructure requirements. The order below is based on dependencies and risks that need to be verified, not time commitment.
 
-## 2. Mốc triển khai
+## 2. Implementation milestone
 
-| Mốc | Công việc | Tiêu chí nghiệm thu |
+| Mold | Work | Acceptance criteria |
 | --- | --- | --- |
-| M0a — Agent mẫu | Deep Agents/LangGraph, tool nhỏ, output schema, CLI/HTTP, model thật | Đã có mã mẫu; cần cấu hình provider/model và credential hợp lệ để chạy |
-| M0b — PoC ephemeral agent | Flow ngắn tạo một container từ image đã khóa cho mỗi attempt và gọi agent qua file JSON | Nhận output/error đúng; container luôn được dọn; xác minh deadline, redelivery và policy retry trước khi thêm runtime khác |
-| M1 — Lõi workflow | DSL validator/interpreter; versioning; Postgres; start command/outbox; HTTP/Transform/If | Webhook trùng tạo một logical run; branch inactive không làm join treo; restart tiếp tục đúng |
-| M2 — Agent runner | Job queue riêng, lease/fencing, workspace, container supervisor, result manifest, quota và reconciler | Agent sửa repo mẫu; test từ snapshot; worker chết có thể lấy kết quả đã lưu hoặc báo unknown đúng; container mồ côi được dọn |
-| M3 — Editor và quan sát | React Flow, node form, input mapping, publish, run timeline và SSE | Reload trình duyệt xem lại run; node lỗi hiển thị nguyên nhân và artifact liên quan |
-| M4 — Approval và connector | Durable approval, GitHub connector, cancellation và đối soát | Duyệt đúng snapshot; deny/expiry không tạo PR; lỗi mất ACK không tự tạo PR thứ hai |
-| M5 — Bản thử nội bộ | OIDC/RBAC, backup, telemetry, failure drills, tài liệu chạy local | Cài từ repo sạch; chạy flow mẫu; restore backup; kiểm tra isolation và runbook |
+| M0a — Sample Agent | Deep Agents/LangGraph, small tool, output schema, CLI/HTTP, real model | Sample code is available; Needs valid provider/model and credential configuration to run |
+| M0b — PoC ephemeral agent | The short flow creates a container from the locked image for each attempt and calls the agent via a JSON file | Get correct output/error; Containers are always cleaned; Verify deadlines, redelivery and policy retry before adding another runtime |
+| M1 — Workflow core | DSL validator/interpreter; versioning; Postgres; start command/outbox; HTTP/Transform/If | Webhooks create a logical run; branch inactive does not cause the join to hang; restart continue true |
+| M2 — Agent runner | Private job queue, lease/fencing, workspace, container supervisor, result manifest, quota and reconciler | Agent edits sample repo; test from snapshot; A dead worker can retrieve saved results or report unknown correctly; Orphaned containers are cleaned up |
+| M3 — Editor and Viewer | React Flow, node form, input mapping, publish, run timeline and SSE | Reload browser to see run again; Error node displays cause and related artifact |
+| M4 — Approval and connector | Durable approval, GitHub connector, cancellation and reconciliation | Browse the correct snapshot; deny/expiry does not generate PR; ACK loss error does not automatically create a second PR |
+| M5 — Internal Demo | OIDC/RBAC, backup, telemetry, failure drills, local running documentation | Install from clean repo; run sample flow; restore backup; check isolation and runbook |
 
-Nếu interactive permission của agent chưa phục hồi được sau server chết, M4 chỉ hỗ trợ Approval node ở ranh giới tác vụ. Giới hạn này phải thể hiện rõ trong node capabilities và UI.
+If the agent's interactive permission has not been restored after the server dies, M4 only supports Approval nodes at the task boundary. This limit must be clearly shown in node capabilities and UI.
 
-## 3. Cấu trúc mã nguồn dự kiến
+## 3. Expected source code structure
 
 ```text
 apps/
   web/                      # Canvas, forms, run viewer
   api/                      # Auth, workflow, run, approval, artifact API
   dispatcher/               # Durable command outbox -> Temporal
-  workflow-worker/          # Graph interpreter và projection activities
-  connector-worker/         # HTTP/GitHub và các connector
-  agent-worker/             # Temporal activity giám sát runner job
+  workflow-worker/ # Graph interpreter and projection activities
+  connector-worker/ # HTTP/GitHub and connectors
+  agent-worker/ # Temporal activity monitors runner jobs
   runner/                   # Adapter host, process supervisor, artifact collection
 packages/
-  workflow-schema/          # DSL, node schema và validator
-  node-registry/            # Node metadata và versions
+  workflow-schema/ # DSL, node schema and validator
+  node-registry/ # Node metadata and versions
   agent-contracts/          # Capabilities, result/error/event contracts
   adapter-codex/
   adapter-opencode/
@@ -46,98 +46,98 @@ packages/
   policy/
 infra/
   compose/                  # Local development
-  deployment/               # Thêm cấu hình production sau PoC
+  deployment/ # Add production configuration after PoC
 docs/
 ```
 
-Đây là cây dự kiến, chưa có các thư mục ứng dụng. Có thể gộp dispatcher/projection vào một worker process ban đầu; giữ ranh giới module để tách sau. Không tạo microservice chỉ vì sơ đồ có nhiều khối.
+This is a tentative tree, without application folders. Dispatcher/projection can be merged into an original worker process; keep module boundaries for later separation. Don't create microservices just because the diagram has many blocks.
 
-## 4. Các thử nghiệm bắt buộc trước bản thử nội bộ
+## 4. Mandatory tests before internal demo
 
-| Kịch bản | Kết quả cần chứng minh |
+| Script | Results need to be proven |
 | --- | --- |
-| Gửi cùng webhook nhiều lần | Một run theo delivery ID, response nhất quán |
-| Crash sau DB commit, trước start Temporal | Dispatcher gửi lại; run không mất |
-| Crash sau Temporal accept, trước outbox ACK | Cùng workflow ID; không tạo execution thứ hai |
-| Worker chết sau agent xong, trước Activity completion | Lấy result manifest cũ; không gọi agent lại mặc định |
-| Worker chết khi agent còn chạy | Worker mới attach/reconcile; không có hai writer |
-| Runner mất volume/session | Hiển thị lỗi hoặc quy trình recovery rõ, không giả vờ resume thành công |
-| Event lặp, đảo thứ tự, cursor hết hạn | Không đổi terminal status về running; UI phục hồi bằng snapshot |
-| Approval đồng thời, hết hạn, API restart | Một decision được áp dụng; approval sống qua restart |
-| Artifact thay đổi sau approval | Connector từ chối action hash cũ |
-| API tạo PR thành công nhưng client timeout | Đối soát kết quả trước retry |
-| Cancel khi shell sinh process con | Dừng cả cây process/container; cleanup artifact tạm theo policy |
-| Nhánh true/false, skipped join | Không chạy nhánh bị bỏ qua và không deadlock |
-| Provider 429, output sai JSON, budget cạn | Retry/repair có giới hạn; thông báo đúng loại lỗi |
-| Tenant A đoán ID của tenant B | Không đọc được run, stream, credential, snapshot hoặc artifact |
-| Repo chứa prompt yêu cầu lấy secret | Runner không có đường quyền truy cập secret/control plane tương ứng |
-| Deploy interpreter mới cho run cũ | Replay test không phát sinh nondeterminism |
+| Send the same webhook multiple times | One run by delivery ID, consistent response |
+| Crash after DB commit, before start Temporal | Dispatcher sends again; trembling without loss |
+| Crash after Temporal accept, before outbox ACK | Same workflow ID; do not create a second execution |
+| The worker dies after the agent finishes, before the Activity completes | Get the old result manifest; do not call agent again by default |
+| Worker dies while agent is running | New worker attach/reconcile; There are no two writers |
+| Runner loses volume/session | Show errors or recovery process clearly, do not pretend to resume successfully |
+| Event repeats, reverse order, cursor expires | Do not change terminal status to running; UI restored by snapshot |
+| Concurrent approval, expiration, API restart | A decision is applied; approval live via restart |
+| Artifact changes after approval | Connector rejects old action hash |
+| API created PR successfully but client timeout | Check the results before retry |
+| Cancel when the shell spawns a child process | Stop the entire process/container tree; cleanup artifact temporarily according to policy |
+| Branch true/false, skipped join | Do not run skipped branches and do not deadlock |
+| Provider 429, output wrong JSON, budget exhausted | Retry/repair is limited; Report the correct type of error |
+| Tenant A guesses tenant B's ID | Cannot read run, stream, credential, snapshot or artifact |
+| The repo contains a prompt asking to get the secret | Runner does not have a corresponding secret/control plane access path
+| Deploy new interpreter for old run | Replay test does not generate nondeterminism |
 
-Unit test tập trung vào graph validation, branch/join, idempotency và policy. Integration test dùng Temporal/PostgreSQL thực trong môi trường test và fake provider để chủ động gây lỗi. End-to-end với runtime thật dùng repo mẫu nhỏ và budget riêng; không gọi model thật trong mọi unit test.
+Unit testing focuses on graph validation, branch/join, idempotency and policy. Integration testing uses real Temporal/PostgreSQL in the test environment and a fake provider to proactively cause errors. End-to-end with real runtime using small sample repo and separate budget; Do not call the real model in every unit test.
 
-## 5. Triển khai local và production
+## 5. Deploy locally and to production
 
-Local development dự kiến dùng Docker Compose: PostgreSQL, Temporal development service, API, worker và web; artifact local volume. Development server và cấu hình local không phải mặc định production. Trên máy Windows có thể phát triển editor/API và chạy runner Linux qua môi trường container phù hợp; phải kiểm tra path/permission bằng chính nền tảng mục tiêu.
+Local development plans to use Docker Compose: PostgreSQL, Temporal development service, API, worker and web; artifact local volume. Development server and local configuration are not production defaults. On Windows machines, it is possible to develop editor/API and run Linux runner through a suitable container environment; must check path/permission using the target platform itself.
 
-Production nội bộ ban đầu:
+Initial internal production:
 
-- TLS reverse proxy trước API/UI; không public Temporal, database hoặc agent server.
-- Persistence Temporal được triển khai theo hướng dẫn production hoặc dịch vụ managed; lưu application database riêng.
-- Runner pool tách host hoặc security boundary khỏi API; controller tin cậy cấp sandbox, agent không có quyền quản lý container host.
-- Object storage cho artifact; backup database và artifact metadata, kiểm tra restore.
-- Secret manager/KMS của hạ tầng; OIDC và RBAC project; token ngắn hạn cho runner.
-- Khóa image/package versions và có migration/rollback plan; tiếp tục hỗ trợ worker version của run đang mở.
+- TLS reverse proxy before API/UI; No public Temporal, database or agent server.
+- Persistence Temporal is deployed according to production or managed service guidelines; Save separate application database.
+- Runner pool separates the host or security boundary from the API; sandbox-level trusted controller, the agent does not have authority to manage the container host.
+- Object storage for artifacts; backup database and artifact metadata, check restore.
+- Secret manager/KMS of the infrastructure; OIDC and RBAC project; short-term token for runner.
+- Lock image/package versions and have a migration/rollback plan; continues to support the worker version of the open run.
 
-Chuyển sang Kubernetes khi cần scheduling runner nhiều máy, node pool riêng hoặc HA; cần benchmark trước khi chọn resource requests. Việc thêm Kubernetes không tự bảo đảm sandbox an toàn cho mã không tin cậy.
+Switch to Kubernetes when you need to schedule multiple machines, private node pools, or HA; Need benchmark before choosing resource requests. Adding Kubernetes does not by itself ensure a secure sandbox for untrusted code.
 
-## 6. Chỉ số và mục tiêu thử nghiệm
+## 6. Testing metrics and goals
 
-Các số dưới đây là **mục tiêu PoC**, chưa được benchmark và không phải SLA:
+The numbers below are **PoC targets**, have not been benchmarked and are not SLAs:
 
-| Chỉ số | Mục tiêu ban đầu |
+| Index | Initial goal |
 | --- | --- |
-| Tải nghiệm thu | 10 agent jobs đồng thời trên runner pool được ghi rõ cấu hình |
-| Start API latency | p95 dưới 500 ms cho payload nhỏ, chỉ tính durable acceptance |
-| Tiến độ tới UI | p95 dưới 2 giây trong tải nghiệm thu, không gồm độ trễ provider |
-| Phát hiện worker mất heartbeat | Dưới 60 giây với cấu hình PoC; recovery còn phụ thuộc runtime |
-| Input/control payload | Giới hạn mặc định 64 KiB; file lớn chuyển artifact |
-| Giới hạn flow | Tối đa 100 nodes/run trong MVP; cấu hình concurrency riêng |
+| Download for acceptance | 10 simultaneous agent jobs on the runner pool are clearly configured |
+| Start API latency | p95 under 500 ms for small payload, only counts durable acceptance |
+| Progress towards UI | p95 under 2 seconds in acceptance load, not including provider latency |
+| Detect worker losing heartbeat | Under 60 seconds with PoC configuration; Recovery also depends on runtime |
+| Input/control payload | Default limit 64 KiB; large file transfer artifact |
+| Flow limit | Maximum 100 nodes/run in MVP; private concurrency configuration |
 
-Theo dõi queue wait, active runners, heartbeat age, workflow/node duration, retries, errors theo provider, outbox lag, projection lag, approval age, artifact bytes và cost estimate so với usage. Tách thời gian người dùng chờ duyệt khỏi thời gian máy thực thi.
+Track queue wait, active runners, heartbeat age, workflow/node duration, retries, errors by provider, outbox lag, projection lag, approval age, artifact bytes and cost estimate vs usage. Separate the time the user waits for approval from the time the machine takes to execute.
 
-Không dùng run ID/session ID làm metric label có cardinality cao; giữ chúng trong trace/log. Chỉ ghi prompt/tool output khi có policy retention phù hợp và đã che dữ liệu nhạy cảm. Sử dụng OpenTelemetry để liên kết trace từ trigger qua Activity và adapter: [OpenTelemetry](https://opentelemetry.io/docs/what-is-opentelemetry/).
+Do not use run IDs or session IDs as high-cardinality metric labels; keep them in traces and logs. Record prompt/tool output only when an appropriate retention policy exists and sensitive data is masked. Use OpenTelemetry to link traces from triggers through Activities and adapters: [OpenTelemetry](https://opentelemetry.io/docs/what-is-opentelemetry/).
 
-## 7. Runbook tối thiểu
+## 7. Minimum runbook
 
-| Sự cố | Hướng xử lý |
+| Incident | Processing directions |
 | --- | --- |
-| Temporal ngừng | API lưu command nếu DB còn khỏe; giới hạn backlog; dispatcher retry khi phục hồi |
-| Database ứng dụng ngừng | Không ACK trigger mới; không xác nhận approval chưa lưu; tránh ghi side effect khi thiếu ledger |
-| Provider lỗi/rate limit | Giảm concurrency, backoff theo provider; giữ deadline và budget |
-| Runner mồ côi | Reconciler kiểm tra lease/job; fence hoặc dừng trước khi cho attempt mới |
-| Outbox bị kẹt | Kiểm tra lỗi, schema và quyền; redrive với cùng command/event ID |
-| Projection lệch | Nạp trạng thái Temporal và result manifests; sửa read model qua reconciler |
-| Artifact mất | Đánh dấu không thể dùng output; phục hồi backup hoặc tạo rerun rõ provenance |
-| Bản deploy lỗi history | Giữ worker phiên bản cũ, rollback worker mới; không sửa history trực tiếp |
+| Temporal stop | The API saves the command if the database is healthy; backlog limit; dispatcher retry on recovery |
+| Application database stopped | Do not ACK new trigger; no unsaved approval confirmation; Avoid recording side effects when ledger | is missing
+| Provider error/rate limit | Reduce concurrency and backoff by provider; keep deadlines and budget |
+| Orphan Runner | Reconciler checks lease/job; fence or stop before giving a new attempt |
+| Outbox stuck | Check for errors, schema and permissions; redrive with the same command/event ID |
+| Deviation Projection | Load Temporal state and result manifests; Edit read model via reconciler |
+| Artifact loss | Mark cannot use output; restore backup or create rerun with clear provenance |
+| Error deployment history | Keep old worker version, rollback new worker; Do not edit history directly |
 
-Retention cần thống nhất giữa history, result manifest, event log và artifact: không xóa snapshot/session mà run đang mở hoặc approval còn cần. Dedup ledger phải tồn tại ít nhất bằng khoảng retry/redelivery được hỗ trợ. Xóa dữ liệu theo tenant phải bao phủ cả database, object storage, session store và log theo chính sách.
+Retention needs to be consistent between history, result manifest, event log and artifact: do not delete snapshots/sessions where the run is open or approval is still needed. The dedup ledger must exist at least as long as the supported retry/redelivery interval. Deleting data by tenant must cover the database, object storage, session store, and log according to the policy.
 
-## 8. Sau MVP
+## 8. After the MVP
 
-Codex/OpenCode adapters được thực hiện sau khi đường tích hợp agent mẫu ổn định; không phải điều kiện để thử flow đầu tiên.
+Codex/OpenCode adapters are implemented after the sample agent integration path is stable; not a condition to try the first flow.
 
-1. Subflow, bounded loops, Map với concurrency limit và version pinning.
-2. Interactive agent approval/steering sau khi chứng minh recovery theo runtime.
-3. Tool gateway/MCP cho agent dùng connector đã quản lý quyền. MCP mô tả host/client/server và trao đổi tool/context, không thay engine; nguồn: [MCP architecture](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture).
-4. NATS JetStream khi có consumer độc lập cần replay/fan-out; không thêm để thay Temporal task queue.
-5. Multi-tenant SaaS, sandbox tăng cường, quota/billing và audit mở rộng.
-6. Plugin SDK, connector marketplace, template gallery và workflow import có phạm vi tương thích công bố rõ.
-7. RAG/vector search hoặc LangGraph node khi có use case cụ thể cần memory và agent loop tự xây.
+1. Subflow, bounded loops, Map with concurrency limit and version pinning.
+2. Interactive agent approval/steering after demonstrating runtime recovery.
+3. Tool gateway/MCP for agents using a permission-managed connector. MCP describes host/client/server and tool/context exchange, not engine; source: [MCP architecture](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture).
+4. NATS JetStream when there are independent consumers that need replay/fan-out; Do not add to replace Temporal task queue.
+5. Multi-tenant SaaS, enhanced sandbox, quota/billing and expanded audit.
+6. Plugin SDK, connector marketplace, template gallery and import workflow have clearly stated compatibility scope.
+7. RAG/vector search or LangGraph node when there is a specific use case that needs memory and a self-built agent loop.
 
-## 9. Giới hạn của đợt nghiên cứu
+## 9. Limitations of the study
 
-Đã đọc tài liệu chính thức của Codex, OpenCode, Temporal, React Flow, NATS, BullMQ, LangGraph, PostgreSQL, OpenTelemetry, MCP, gVisor và AWS outbox. Các link đặt cạnh thông tin liên quan trong bộ tài liệu.
+Read the official documentation of Codex, OpenCode, Temporal, React Flow, NATS, BullMQ, LangGraph, PostgreSQL, OpenTelemetry, MCP, gVisor and AWS outbox. Links are placed next to relevant information in the document set.
 
-Trang n8n queue mode không lấy được nội dung bằng công cụ nghiên cứu ở phiên này, nên không dùng để kết luận chi tiết engine nội bộ n8n. Đối chiếu tính năng AI/human review sử dụng trang Gmail node của n8n truy cập được. Kiến trúc AgentFlow là đề xuất độc lập từ yêu cầu sản phẩm.
+The n8n queue mode page cannot retrieve content using the research tool in this session, so it cannot be used to conclude details of the n8n internal engine. Compare the AI/human review feature using the accessible n8n Gmail node page. The AgentFlow architecture is proposed independently of the product requirements.
 
-Chưa chạy thử CLI/SDK, chưa chốt runtime versions, chưa đo hiệu năng hay chi phí model. M0 cần hoàn thành các kiểm chứng này trước khi biến các đề xuất thành hợp đồng triển khai.
+Haven't tested CLI/SDK, haven't finalized runtime versions, haven't measured performance or model cost. M0 needs to complete these validations before turning proposals into implementation contracts.

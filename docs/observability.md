@@ -1,42 +1,42 @@
-# Tích hợp giám sát và observability cho AgentFlow
+# Integrated monitoring and observability for AgentFlow
 
-Ngày cập nhật: **11/10/2026**. Trạng thái: **đã triển khai stack observability và Langfuse self-host cho local/Compose, gồm trace xuyên API/queue/worker/node/Agent runtime; production hardening chưa hoàn tất**.
+Updated date: **October 11, 2026**. Status: **Implemented stack observability and Langfuse self-host for local/Compose, including trace across API/queue/worker/node/Agent runtime; production hardening is not complete**.
 
-Tài liệu này mô tả cách bổ sung metrics, logs, traces, dashboard và cảnh báo cho AgentFlow. Mục tiêu là trả lời được bốn câu hỏi vận hành:
+This document describes how to add metrics, logs, traces, dashboards, and alerts to AgentFlow. The goal is to answer four operational questions:
 
-1. API, worker, queue và các dependency có đang phục vụ được không?
-2. Một workflow run đang chậm hoặc lỗi tại bước nào?
-3. Lỗi đến từ AgentFlow, container runtime, database, queue hay LLM provider?
-4. Hệ thống có sắp vượt giới hạn tài nguyên, backlog, token hoặc chi phí không?
+1. Are APIs, workers, queues and dependencies available?
+2. At what step is a workflow run slow or error-prone?
+3. Is the error coming from AgentFlow, container runtime, database, queue or LLM provider?
+4. Is the system about to exceed resource, backlog, token, or cost limits?
 
-`runs` và `run_steps` vẫn là nguồn dữ liệu nghiệp vụ có thẩm quyền. Monitoring phục vụ phát hiện và chẩn đoán; không dùng Prometheus, Loki, Tempo hoặc Langfuse để quyết định trạng thái workflow.
+`runs` and `run_steps` remain authoritative sources of business data. Monitoring serves detection and diagnosis; Do not use Prometheus, Loki, Tempo or Langfuse to determine workflow status.
 
-### Phạm vi và kết quả cần đạt
+### Scope and results to be achieved
 
-Phạm vi của kế hoạch gồm hai lớp:
+The scope of the plan includes two layers:
 
-- **Giám sát hệ thống:** System API, PostgreSQL, Redis, Keycloak, workflow worker, Docker host/container và chính pipeline telemetry.
-- **Giám sát workflow:** vòng đời run, dispatch qua outbox/Redis Stream, từng node/attempt, Agent container, lời gọi MCP/LLM, retry, timeout, backlog và chi phí ước tính.
+- **System monitoring:** System API, PostgreSQL, Redis, Keycloak, workflow worker, Docker host/container and pipeline telemetry itself.
+- **Workflow monitoring:** run lifecycle, dispatch via outbox/Redis Stream, each node/attempt, Agent container, MCP/LLM calls, retry, timeout, backlog and estimated costs.
 
-Kết quả cuối cùng phải cho phép đội vận hành phát hiện sự cố từ alert, xác định phạm vi ảnh hưởng trên dashboard, rồi đi từ `run_id` hoặc `trace_id` tới đúng node, log và dependency gây lỗi. Telemetry không được chứa secret/prompt mặc định và sự cố của monitoring không được làm gián đoạn việc thực thi workflow.
+The end result must allow the operations team to detect the problem from the alert, determine the scope of impact on the dashboard, and then go from `run_id` or `trace_id` to the correct node, log, and dependency causing the error. Telemetry must not contain default secrets/prompts and monitoring failures must not interrupt workflow execution.
 
-Ngoài phạm vi của đợt tích hợp đầu tiên: Real User Monitoring cho frontend, profiling liên tục, anomaly detection bằng ML, lưu toàn bộ prompt/completion và thay đổi engine thực thi. Các hạng mục này chỉ được bổ sung sau khi metric/log/trace nền tảng ổn định và có chính sách dữ liệu tương ứng.
+Beyond the scope of the first integration: Real User Monitoring for the frontend, continuous profiling, anomaly detection with ML, saving all prompts/completions and changing the execution engine. These items will only be added after the platform metrics/log/trace are stable and have corresponding data policies.
 
-## 1. Hiện trạng và khoảng trống
+## 1. Current status and gaps
 
-| Thành phần | Đã có | Cần bổ sung |
+| Ingredients | Already | Need to add |
 | --- | --- | --- |
-| System API | `GET /health` kiểm tra liveness; `GET /ready` kiểm tra PostgreSQL | OTLP application metrics, request trace, dependency spans, readiness của dependency bắt buộc |
-| Workflow worker | Log bằng Python `logging`; Redis consumer group có reclaim | Structured log, trace qua từng node, queue/outbox metrics, worker heartbeat |
-| Agent container | Exit code, timeout và giới hạn output do supervisor xử lý | Duration, OOM/exit reason, container start, cleanup và artifact metrics |
-| Keycloak | Đã bật health và metrics trên management port `9000` | Prometheus scrape và dashboard/alert |
-| PostgreSQL, Redis | Có healthcheck trong Compose | Exporter và cảnh báo capacity/latency |
-| Web | Nginx healthcheck | Frontend error/performance telemetry ở giai đoạn sau |
-| LLM | `run_steps` lưu trạng thái/output | Token, cost, latency, retry/rate-limit; Langfuse là tùy chọn |
+| System API | `GET /health` liveness check; `GET /ready` tests PostgreSQL | OTLP application metrics, request trace, dependency spans, readiness of required dependencies |
+| Workflow workers | Log in Python `logging`; Redis consumer group has reclaim | Structured log, trace through each node, queue/outbox metrics, worker heartbeat |
+| Agent containers | Exit code, timeout and output limit are handled by supervisor | Duration, OOM/exit reason, container start, cleanup and artifact metrics |
+| Keycloak | Enabled health and metrics on management port `9000` | Prometheus scrape and dashboard/alert |
+| PostgreSQL, Redis | There is healthcheck in Compose | Exporter and warning capacity/latency |
+| Web | Nginx healthcheck | Frontend error/performance telemetry at a later stage |
+| LLM | `run_steps` save state/output | Token, cost, latency, retry/rate-limit; Langfuse is optional |
 
-Không coi Docker healthcheck là monitoring. Healthcheck chỉ giúp runtime quyết định container có sống/sẵn sàng; metric và alert mới cho biết xu hướng, mức tải và nguyên nhân suy giảm.
+Do not consider Docker healthcheck as monitoring. Healthcheck only helps the runtime decide whether the container is alive/ready; New metrics and alerts show trends, load levels and causes of decline.
 
-## 2. Kiến trúc đề xuất
+## 2. Proposed architecture
 
 ```mermaid
 flowchart LR
@@ -44,9 +44,9 @@ flowchart LR
     WORKER[Workflow worker] -->|OTLP traces + metrics| OTEL
     AGENT[Agent supervisor/runtime] -->|OTLP traces + metrics| OTEL
 
-    API -->|JSON stdout| LOGCOL[Log collector: Grafana Alloy hoặc agent nền tảng]
+    API -->|JSON stdout| LOGCOL[Log collector: Grafana Alloy or platform agent]
     WORKER -->|JSON stdout| LOGCOL
-    AGENT -->|JSON stderr/stdout đã lọc| LOGCOL
+    AGENT -->|JSON filtered stderr/stdout| LOGCOL
 
     OTEL -->|Prometheus endpoint| PROM[Prometheus]
     OTEL -->|OTLP| TEMPO[Tempo]
@@ -61,42 +61,42 @@ flowchart LR
     PROM --> GRAFANA[Grafana]
     TEMPO --> GRAFANA
     LOKI --> GRAFANA
-    PROM --> ALERT[Alertmanager hoặc Grafana Alerting]
+    PROM --> ALERT[Alertmanager or Grafana Alerting]
 
-    OTEL -->|OTLP/HTTP: workflow và LLM observations| LANGFUSE[Langfuse]
+    OTEL -->|OTLP/HTTP: workflow and LLM observations| LANGFUSE[Langfuse]
 ```
 
-OpenTelemetry Collector là ranh giới thu nhận để ứng dụng không phụ thuộc trực tiếp vào một backend. Collector nhận OTLP, batch/lọc telemetry rồi xuất metrics cho Prometheus và traces cho Tempo. OpenTelemetry cung cấp instrumentation và đường truyền telemetry, không phải nơi lưu trữ hay dashboard; xem [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) và [cấu hình OTLP exporter](https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
+OpenTelemetry Collector is an acquisition boundary so that the application does not depend directly on a backend. Collector receives OTLP, batch/filter telemetry and then exports metrics to Prometheus and traces to Tempo. OpenTelemetry provides instrumentation and telemetry transmission, not storage or dashboard; see [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) and [OTLP exporter configuration](https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
 
-### Bộ công cụ mặc định
+### Default toolkit
 
-| Nhu cầu | Công cụ | Ghi chú |
+| Demand | Tools | Notes |
 | --- | --- | --- |
-| Instrumentation và truyền telemetry | OpenTelemetry SDK + Collector | Chuẩn chung cho API, worker và runner |
-| Metrics | Prometheus | Scrape Collector và exporter hạ tầng |
-| Logs | JSON stdout + Grafana Alloy + Loki | Không ghi trực tiếp vào Loki từ business code |
-| Traces | Tempo | Tìm theo `trace_id`, liên kết từ log/dashboard |
-| Dashboard và alert | Grafana; Alertmanager khi cần routing độc lập | Provision cấu hình từ Git, không cấu hình tay ở production |
-| Hạ tầng | Keycloak metrics, postgres/Redis exporter, cAdvisor/node exporter | Node Exporter dùng cho Linux; Windows host dùng Windows Exporter |
-| Synthetic health | Prometheus Blackbox Exporter hoặc probe của nền tảng | Kiểm tra `/health` và `/ready` từ bên ngoài process |
-| Quan sát workflow và LLM | Langfuse | Run/node input-output, generation/token/latency đã redaction và giới hạn kích thước |
+| Instrumentation and transmission telemetry | OpenTelemetry SDK + Collector | Common standards for APIs, workers and runners |
+| Metrics | Prometheus | Scrape Collector and infrastructure exporter |
+| Logs | JSON stdout + Grafana Alloy + Loki | Do not write directly to Loki from business code |
+| Traces | Tempo | Search by `trace_id`, linked from log/dashboard |
+| Dashboard and alert | Grafana; Alertmanager when needing independent routing | Provision configuration from Git, no manual configuration in production |
+| Infrastructure | Keycloak metrics, postgres/Redis exporter, cAdvisor/node exporter | Node Exporter for Linux; Windows hosts use Windows Exporter |
+| Synthetic health | Prometheus Blackbox Exporter or platform probe | Check `/health` and `/ready` from outside process |
+| Observe workflow and LLM | Langfuse | Run/node input-output, generation/token/latency has redaction and size limit |
 
-Có thể thay Prometheus/Loki/Tempo bằng dịch vụ managed hỗ trợ OTLP mà không đổi semantic instrumentation trong ứng dụng. Grafana hỗ trợ provision data source và dashboard bằng file để version-control; xem [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).
+Prometheus/Loki/Tempo can be replaced with a managed service that supports OTLP without changing the semantic instrumentation in the application. Grafana supports provisioning data sources and dashboards with files for version-control; see [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).
 
-## 3. Mô hình tương quan dữ liệu
+## 3. Data correlation model
 
-Mọi service dùng W3C Trace Context. `traceparent` phải được truyền qua HTTP và payload công việc nội bộ; với Redis Stream, lưu `traceparent`/`tracestate` trong message fields hoặc metadata thay vì tự chế định dạng trace ID.
+All services use W3C Trace Context. `traceparent` must be transmitted via HTTP and internal business payload; With Redis Stream, store `traceparent`/`tracestate` in message fields or metadata instead of manually formatting the trace ID.
 
-Các định danh sau được đặt trong **span attribute và structured log**, không đặt làm metric label:
+The following identifiers are placed in the **span attribute and structured log**, not as metric labels:
 
 - `run_id`, `workflow_id`, `workflow_version_id`;
 - `node_id`, `node_execution_id`, `attempt_id`;
 - `job_id`, `runner_id`, `container_id`;
-- `tenant_key`/`project_key` đã giả danh nếu cần điều tra theo phạm vi truy cập.
+- `tenant_key`/`project_key` has impersonated if needed to investigate according to access scope.
 
-Không ghi `owner_subject`, email hoặc định danh người dùng thô vào telemetry. Ánh xạ tenant/project phải ổn định trong phạm vi cần điều tra, không cho phép suy ngược danh tính và phải tuân theo quyền truy cập của backend quan sát.
+Do not record `owner_subject`, email, or raw user identifiers to telemetry. The tenant/project mapping must be stable within the scope of investigation, must not allow identity inversion, and must comply with the access permissions of the observing backend.
 
-Resource attributes ổn định trên mọi signal:
+Resource attributes are stable across all signals:
 
 ```text
 service.name=agentflow-system | agentflow-workflow-worker | agentflow-runner
@@ -105,67 +105,67 @@ deployment.environment=local | staging | production
 service.instance.id=<instance-id>
 ```
 
-Metric labels chỉ dùng tập giá trị nhỏ và hữu hạn, ví dụ `service`, `route`, `method`, `status_code`, `node_type`, `runtime`, `provider`, `status`, `error_code`. Không dùng URL đầy đủ, exception message, prompt, model response, user ID hoặc UUID. Prometheus khuyến nghị kiểm soát cardinality và chuyển chiều dữ liệu tăng không giới hạn sang log/trace thay vì label; xem [Prometheus instrumentation practices](https://prometheus.io/docs/practices/instrumentation/).
+Metric labels only use small and finite sets of values, for example `service`, `route`, `method`, `status_code`, `node_type`, `runtime`, `provider`, `status`, `error_code`. Do not use the full URL, exception message, prompt, model response, user ID or UUID. Prometheus recommends controlling cardinality and converting unlimited incremental data to log/trace instead of labels; see [Prometheus instrumentation practices](https://prometheus.io/docs/practices/instrumentation/).
 
-## 4. Telemetry cần phát
+## 4. Telemetry to emit
 
-Tên metric dưới đây là contract đề xuất. Dùng base unit trong tên (`seconds`, `bytes`) và counter kết thúc bằng `_total`.
+The metric name below is the proposed contract. Use base unit in the name (`seconds`, `bytes`) and counter ending in `_total`.
 
-### API và dependency
+### API and dependencies
 
-| Metric | Kiểu | Labels hữu hạn | Ý nghĩa |
+| Metrics | Type | Limited Labels | Meaning |
 | --- | --- | --- | --- |
-| `agentflow_http_server_requests_total` | Counter | `method`, `route`, `status_code` | Lưu lượng và tỷ lệ lỗi API |
-| `agentflow_http_server_duration_seconds` | Histogram | `method`, `route`, `status_code` | Latency API; `route` là route template |
+| `agentflow_http_server_requests_total` | Counter | `method`, `route`, `status_code` | API throughput and error rate |
+| `agentflow_http_server_duration_seconds` | Histogram | `method`, `route`, `status_code` | Latency API; `route` is the route template |
 | `agentflow_dependency_requests_total` | Counter | `dependency`, `operation`, `status` | PostgreSQL, Redis, provider, MCP |
 | `agentflow_dependency_duration_seconds` | Histogram | `dependency`, `operation`, `status` | Latency dependency |
 | `agentflow_db_pool_connections` | UpDownCounter/Gauge | `state` | Pool used/idle/overflow |
 
-### Workflow, queue và outbox
+### Workflow, queue and outbox
 
-| Metric | Kiểu | Labels hữu hạn | Ý nghĩa |
+| Metrics | Type | Limited Labels | Meaning |
 | --- | --- | --- | --- |
-| `agentflow_runs_started_total` | Counter | `trigger_type` | Run được nhận bền vững |
-| `agentflow_runs_completed_total` | Counter | `status` | Kết quả terminal của run |
-| `agentflow_run_duration_seconds` | Histogram | `status` | Thời gian máy thực thi; tách thời gian chờ duyệt |
-| `agentflow_node_attempts_total` | Counter | `node_type`, `status`, `error_code` | Attempt, retry và lỗi chuẩn hóa |
-| `agentflow_node_duration_seconds` | Histogram | `node_type`, `status` | Thời gian node |
+| `agentflow_runs_started_total` | Counter | `trigger_type` | Run is received sustainably |
+| `agentflow_runs_completed_total` | Counter | `status` | Terminal result of run |
+| `agentflow_run_duration_seconds` | Histogram | `status` | Machine execution time; separate approval waiting time |
+| `agentflow_node_attempts_total` | Counter | `node_type`, `status`, `error_code` | Attempt, retry and normalized error |
+| `agentflow_node_duration_seconds` | Histogram | `node_type`, `status` | Node time |
 | `agentflow_queue_messages` | Gauge | `state` | Ready/pending/reclaimable messages |
-| `agentflow_queue_oldest_age_seconds` | Gauge | Không | Tuổi message cũ nhất chưa xử lý |
-| `agentflow_outbox_pending` | Gauge | Không | Số dispatch chưa publish |
-| `agentflow_outbox_oldest_age_seconds` | Gauge | Không | Tuổi outbox cũ nhất chưa dispatch |
-| `agentflow_worker_heartbeat_timestamp_seconds` | Gauge | `worker_pool` | Phát hiện worker pool mất heartbeat |
+| `agentflow_queue_oldest_age_seconds` | Gauge | No | Age of oldest unprocessed message |
+| `agentflow_outbox_pending` | Gauge | No | Unpublished dispatch number |
+| `agentflow_outbox_oldest_age_seconds` | Gauge | No | Oldest outbox age not yet dispatched |
+| `agentflow_worker_heartbeat_timestamp_seconds` | Gauge | `worker_pool` | Detect worker pool losing heartbeat |
 
-Nếu cần biết backlog theo tenant lớn, dùng top-N report từ PostgreSQL hoặc log phân tích; không thêm `tenant_id` vào label Prometheus.
+If you need to know the backlog by large tenant, use top-N reports from PostgreSQL or analytical logs; Do not add `tenant_id` to the Prometheus label.
 
-### Runner, agent và LLM
+### Runner, agent and LLM
 
-| Metric | Kiểu | Labels hữu hạn | Ý nghĩa |
+| Metrics | Type | Limited Labels | Meaning |
 | --- | --- | --- | --- |
 | `agentflow_agent_jobs` | Gauge | `state`, `runtime` | Queued/running/cleanup pending |
-| `agentflow_agent_job_duration_seconds` | Histogram | `runtime`, `status`, `error_code` | Thời gian attempt agent |
-| `agentflow_agent_container_start_seconds` | Histogram | `runtime`, `status` | Thời gian tạo/start container |
+| `agentflow_agent_job_duration_seconds` | Histogram | `runtime`, `status`, `error_code` | Attempt agent time |
+| `agentflow_agent_container_start_seconds` | Histogram | `runtime`, `status` | Container creation/start time |
 | `agentflow_agent_container_exits_total` | Counter | `runtime`, `reason` | Exit, timeout, OOM, cancelled |
-| `agentflow_agent_cleanup_total` | Counter | `status` | Cleanup và orphan reconciliation |
-| `agentflow_llm_requests_total` | Counter | `provider`, `model_family`, `status` | Request, lỗi và rate-limit |
+| `agentflow_agent_cleanup_total` | Counter | `status` | Cleanup and orphan reconciliation |
+| `agentflow_llm_requests_total` | Counter | `provider`, `model_family`, `status` | Request, error and rate-limit |
 | `agentflow_llm_duration_seconds` | Histogram | `provider`, `model_family`, `status` | Provider latency |
-| `agentflow_llm_tokens_total` | Counter | `provider`, `model_family`, `token_type` | Input/output/cache tokens nếu provider trả usage |
-| `agentflow_llm_cost_estimate_total` | Counter | `provider`, `currency` | Ước tính theo pricing version đã lưu |
+| `agentflow_llm_tokens_total` | Counter | `provider`, `model_family`, `token_type` | Input/output/cache tokens if the provider returns usage |
+| `agentflow_llm_cost_estimate_total` | Counter | `provider`, `currency` | Estimated according to saved pricing version |
 
-Không đưa tên model tự do vào label. Ánh xạ model đã cho phép sang `model_family` hữu hạn hoặc để model đầy đủ trong span/log.
+Do not include a free model name on the label. Map the allowed model to finite `model_family` or leave the full model in span/log.
 
-### Span tối thiểu
+### Minimum spans
 
-- HTTP server span cho mỗi API request; bỏ `/health`, `/ready` khỏi sampling chi tiết nếu gây nhiễu.
-- `workflow.dispatch`, `workflow.run`, `workflow.node` và `workflow.node.attempt`.
+- HTTP server span for each API request; Remove `/health`, `/ready` from detailed sampling if causing noise.
+- `workflow.dispatch`, `workflow.run`, `workflow.node` and `workflow.node.attempt`.
 - `redis.xadd`, `redis.xreadgroup`, `redis.xack`, `redis.xautoclaim`.
-- PostgreSQL query spans đã sanitize; không thu statement chứa secret/payload.
+- PostgreSQL query spans have been sanitized; Do not collect statements containing secrets/payloads.
 - `agent.container.create`, `agent.container.wait`, `agent.result.validate`, `agent.cleanup`.
-- `llm.chat` và `mcp.tool.call`, chỉ ghi metadata an toàn như provider, model family, tool name, token count và status.
+- `llm.chat` and `mcp.tool.call`, only record secure metadata such as provider, model family, tool name, token count and status.
 
-## 5. Structured log và bảo vệ dữ liệu
+## 5. Structured log and data protection
 
-Ứng dụng ghi một JSON object trên mỗi dòng ra stdout/stderr. Schema nền:
+The application writes one JSON object per line to stdout/stderr. Background Schema:
 
 ```json
 {
@@ -184,24 +184,24 @@ Không đưa tên model tự do vào label. Ánh xạ model đã cho phép sang 
 }
 ```
 
-Quy tắc bắt buộc:
+Required rules:
 
-- dùng `event` ổn định để truy vấn; `message` chỉ phục vụ người đọc;
-- exception gồm `error.type`, `error.code` chuẩn hóa và stack trace; không dùng nguyên exception message làm label;
-- mặc định không log access token, API key, cookie, Authorization header, provider request/response thô, prompt, tool arguments/output hoặc nội dung artifact;
-- redaction theo allowlist tại source trước khi telemetry rời process; Collector là lớp phòng vệ thứ hai, không phải lớp duy nhất;
-- giới hạn kích thước log từ agent và đánh dấu `truncated=true` khi cắt;
-- Loki labels chỉ gồm `service_name`, `environment`, `level`; giữ run/node/trace ID trong structured metadata để tránh cardinality cao. Loki hỗ trợ nhận log OTLP qua endpoint native; xem [Loki OTLP ingestion](https://grafana.com/docs/loki/latest/send-data/otel/).
+- use stable `event` for querying; `message` serves readers only;
+- exception includes `error.type`, `error.code` normalization and stack trace; Do not use the entire exception message as a label;
+- default does not log access tokens, API keys, cookies, Authorization headers, raw provider request/response, prompts, tool arguments/output or artifact content;
+- redaction according to allowlist at source before telemetry leaves the process; Collector is a second layer of defense, not the only one;
+- limit log size from agent and mark `truncated=true` when cutting;
+- Loki labels only include `service_name`, `environment`, `level`; keep run/node/trace ID in structured metadata to avoid high cardinality. Loki supports receiving OTLP logs via native endpoint; see [Loki OTLP ingestion](https://grafana.com/docs/loki/latest/send-data/otel/).
 
-Retention khởi đầu cho môi trường nội bộ có thể là metrics 30 ngày, logs 14 ngày và traces 7 ngày. Đây là giá trị vận hành cần được chốt theo dung lượng, yêu cầu audit và chính sách dữ liệu; lifecycle của business event/artifact là policy riêng.
+The initial retention for the internal environment can be metrics of 30 days, logs of 14 days and traces of 7 days. This is an operational value that needs to be determined according to capacity, audit requirements and data policy; The lifecycle of a business event/artifact is a separate policy.
 
-## 6. Cách triển khai trong repository
+## 6. How to deploy in repository
 
-Triển khai theo lát cắt; mỗi giai đoạn phải dùng được độc lập và có tiêu chí nghiệm thu.
+Slice deployment; Each stage must be used independently and have acceptance criteria.
 
-### Giai đoạn 1 — Dựng monitoring stack local
+### Phase 1 — Build local monitoring stack
 
-Thêm cấu trúc dự kiến:
+Add expected structure:
 
 ```text
 docker/
@@ -220,9 +220,9 @@ docker/
       dashboards/workflow-runtime.json
 ```
 
-Giữ stack trong file Compose override để `docker/compose.yaml` cốt lõi vẫn nhẹ. Các service nên cùng network `backend`; chỉ Grafana (`127.0.0.1:3001`) và Prometheus UI khi cần debug (`127.0.0.1:9090`) được bind ra localhost. Không public cổng OTLP, Loki, Tempo, exporter hoặc management port trong production.
+Keep the stack in the Compose override file so that the core `docker/compose.yaml` remains lightweight. Services should be on the same network `backend`; Only Grafana (`127.0.0.1:3001`) and Prometheus UI when needed for debugging (`127.0.0.1:9090`) are bound to localhost. Do not publish OTLP, Loki, Tempo, exporter or management ports in production.
 
-Collector tối thiểu cho traces và application metrics:
+Minimum collector for traces and application metrics:
 
 ```yaml
 receivers:
@@ -259,7 +259,7 @@ service:
       exporters: [otlp/tempo]
 ```
 
-Prometheus scrape tối thiểu:
+Minimum Prometheus scrape:
 
 ```yaml
 global:
@@ -279,9 +279,9 @@ scrape_configs:
       - targets: [keycloak:9000]
 ```
 
-Keycloak hiện đã bật `KC_METRICS_ENABLED=true`; endpoint `/metrics` dùng OpenMetrics trên management interface. Xem [Keycloak metrics](https://www.keycloak.org/observability/configuration-metrics). Thêm PostgreSQL/Redis exporter sau khi đặt credential bằng Compose secret hoặc secret manager, không nhúng password vào file scrape config.
+Keycloak now has `KC_METRICS_ENABLED=true` enabled; Endpoint `/metrics` uses OpenMetrics on the management interface. See [Keycloak metrics](https://www.keycloak.org/observability/configuration-metrics). Add PostgreSQL/Redis exporter after setting credential using Compose secret or secret manager, do not embed password in scrape config file.
 
-Lệnh dự kiến sau khi các file trên được triển khai:
+Expected command after the above files are deployed:
 
 ```powershell
 docker compose -f docker/compose.yaml -f docker/compose.observability.yaml config
@@ -289,18 +289,18 @@ docker compose -f docker/compose.yaml -f docker/compose.observability.yaml up -d
 docker compose -f docker/compose.yaml -f docker/compose.observability.yaml ps
 ```
 
-Tiêu chí nghiệm thu: Grafana tự có ba data source Prometheus/Loki/Tempo; Prometheus target Collector và Keycloak đều `UP`; restart stack không làm mất provisioning.
+Acceptance criteria: Grafana itself has three data sources Prometheus/Loki/Tempo; Prometheus target Collector and Keycloak are both `UP`; restarting the stack does not cause provisioning to be lost.
 
-### Giai đoạn 2 — Instrument System API và workflow worker
+### Phase 2 — Instrument System API and workflow worker
 
-1. Thêm và khóa phiên bản các package Python: OpenTelemetry SDK, OTLP exporter và instrumentation cho FastAPI, ASGI, HTTPX, SQLAlchemy, Redis và logging. Python OpenTelemetry hỗ trợ instrumentation library cho framework/dependency; xem [OpenTelemetry Python libraries](https://opentelemetry.io/docs/languages/python/libraries/).
-2. Tạo `src/system/core/telemetry.py` với một hàm khởi tạo idempotent. Hàm cấu hình resource, tracer provider, meter provider, OTLP exporter, sampling và shutdown flush.
-3. Gọi khởi tạo trước khi tạo FastAPI app và trước vòng lặp trong `runtime.worker`. Không khởi tạo lại provider sau fork/process start.
-4. Instrument FastAPI/HTTPX/SQLAlchemy/Redis tự động; tạo manual spans và domain metrics tại ranh giới dispatch, run, node, agent container và provider.
-5. Chuyển cấu hình `logging.basicConfig` rải rác sang một module logging chung, inject `trace_id`/`span_id` và xuất JSON.
-6. Đăng ký shutdown hook để flush telemetry có giới hạn thời gian; lỗi exporter không được làm hỏng workflow.
+1. Add and version lock Python packages: OpenTelemetry SDK, OTLP exporter and instrumentation for FastAPI, ASGI, HTTPX, SQLAlchemy, Redis and logging. Python OpenTelemetry supports instrumentation library for framework/dependency; see [OpenTelemetry Python libraries](https://opentelemetry.io/docs/languages/python/libraries/).
+2. Create `src/system/core/telemetry.py` with an idempotent constructor. Function to configure resource, tracer provider, meter provider, OTLP exporter, sampling and shutdown flush.
+3. Call initialization before creating the FastAPI app and before the loop in `runtime.worker`. Do not reinitialize the provider after fork/process start.
+4. Instrument FastAPI/HTTPX/SQLAlchemy/Redis automatically; Create manual spans and domain metrics at dispatch, run, node, agent container and provider boundaries.
+5. Convert the scattered `logging.basicConfig` configuration to a common logging module, inject `trace_id`/`span_id` and export JSON.
+6. Register shutdown hook to flush telemetry with time limit; Exporter errors should not break the workflow.
 
-Biến môi trường chung:
+General environment variables:
 
 ```dotenv
 OTEL_SDK_DISABLED=false
@@ -314,197 +314,197 @@ LOG_FORMAT=json
 LOG_LEVEL=INFO
 ```
 
-Đặt `OTEL_SERVICE_NAME` riêng cho `system` và `workflow-worker`; không nhét service name vào `OTEL_RESOURCE_ATTRIBUTES` dùng chung. Local có thể sample 100%; production bắt đầu thấp hơn và luôn giữ error/slow trace bằng tail sampling tại Collector nếu có đủ capacity. Không bật capture HTTP body, SQL parameters hoặc headers nhạy cảm.
+Set `OTEL_SERVICE_NAME` separately for `system` and `workflow-worker`; Do not stuff the service name into the shared `OTEL_RESOURCE_ATTRIBUTES`. Local can sample 100%; Production starts lower and always keeps the error/slow trace with tail sampling at the Collector if there is enough capacity. Do not enable capturing HTTP body, SQL parameters, or sensitive headers.
 
-Tiêu chí nghiệm thu: gọi API tạo run sinh một distributed trace nối API → outbox/Redis → worker → node; log của cùng run tìm được bằng `trace_id`; Prometheus có request/run/node metrics nhưng không có UUID trong labels.
+Acceptance criteria: API call to create run generates a distributed trace connecting API → outbox/Redis → worker → node; log of the same run found with `trace_id`; Prometheus has request/run/node metrics but no UUID in labels.
 
-### Giai đoạn 3 — Thu log và metric hạ tầng
+### Phase 3 — Collect logs and infrastructure metrics
 
-1. Cấu hình Alloy đọc Docker container stdout/stderr, parse JSON, thêm `service_name` và gửi OTLP/HTTP tới Loki. Trong Kubernetes, thay bằng DaemonSet/agent của nền tảng.
-2. Scrape PostgreSQL exporter và Redis exporter bằng account chỉ đọc/ít quyền nhất.
-3. Dùng Blackbox Exporter hoặc synthetic probe của nền tảng gọi `/health` và `/ready` từ ngoài process; health `200` bên trong container không chứng minh đường mạng từ load balancer còn hoạt động.
-4. Trên Linux runner, dùng node exporter cho host và cAdvisor hoặc runtime metrics cho container. Docker Desktop trên Windows chạy container trong Linux VM nên metric host Windows cần Windows Exporter riêng nếu thực sự cần quan sát máy chủ.
-5. Scrape self-metrics của Collector, Prometheus, Loki và Tempo để phát hiện pipeline telemetry bị drop/backpressure.
+1. Configure Alloy to read Docker container stdout/stderr, parse JSON, add `service_name` and send OTLP/HTTP to Loki. In Kubernetes, replace it with the platform's DaemonSet/agent.
+2. Scrape PostgreSQL exporter and Redis exporter with read-only/least-privileged account.
+3. Use Blackbox Exporter or the platform's synthetic probe to call `/health` and `/ready` from outside the process; health `200` inside the container does not prove that the network connection from the load balancer is still active.
+4. On Linux runner, use node exporter for host and cAdvisor or runtime metrics for container. Docker Desktop on Windows runs containers in a Linux VM, so the Windows host metric needs its own Windows Exporter if it really needs to observe the host.
+5. Scrape self-metrics of Collector, Prometheus, Loki and Tempo to detect pipeline telemetry drop/backpressure.
 
-Tiêu chí nghiệm thu: có thể đi từ một panel lỗi → exemplar/trace → log theo `trace_id`; có dashboard CPU/RAM/disk, DB connections, Redis memory/pending entries và container OOM.
+Acceptance criteria: can go from an error panel → exemplar/trace → log according to `trace_id`; There is a CPU/RAM/disk dashboard, DB connections, Redis memory/pending entries and an OOM container.
 
-### Giai đoạn 4 — Dashboard, SLO và cảnh báo
+### Phase 4 — Dashboard, SLOs and alerts
 
-Provision ít nhất ba dashboard:
+Provision at least three dashboards:
 
 - **System overview:** request rate/error/latency, dependency health, DB pool, Redis, worker heartbeat.
-- **Workflow runtime:** started/completed/failed, duration, queue age, outbox lag, node retry/error theo type.
-- **Agent runtime & LLM:** queued/running, container start/OOM/timeout/cleanup, provider latency/429, token và cost estimate.
+- **Workflow runtime:** started/completed/failed, duration, queue age, outbox lag, and node retries/errors by type.
+- **Agent runtime & LLM:** queued/running, container start/OOM/timeout/cleanup, provider latency/429, token and cost estimate.
 
-Mục tiêu PoC ban đầu, chưa phải SLA production:
+Initial PoC goals, not yet production SLA:
 
-| SLI | Mục tiêu |
+| SLI | Goal |
 | --- | --- |
-| API durable start availability | 99,5% trong cửa sổ 30 ngày, loại maintenance đã công bố |
-| Start API latency | p95 dưới 500 ms cho payload nhỏ |
-| Queue wait | p95 dưới 5 giây ở tải nghiệm thu |
-| Tiến độ tới UI | p95 dưới 2 giây, không gồm thời gian provider |
-| Phát hiện worker mất heartbeat | dưới 60 giây |
-| Cleanup container terminal | p99 dưới 60 giây |
+| API durable start availability | 99.5% within 30 day window, declared maintenance type |
+| Start API latency | p95 under 500 ms for small payloads |
+| Queue wait | p95 under 5 seconds at acceptance load |
+| Progress towards UI | p95 under 2 seconds, excluding provider time |
+| Detect worker losing heartbeat | under 60 seconds |
+| Cleanup container terminal | p99 under 60 seconds |
 
-Alert khởi đầu:
+Initial alert:
 
-| Alert | Điều kiện gợi ý | Mức |
+| Alert | Suggested conditions | Level |
 | --- | --- | --- |
-| `AgentFlowSystemDown` | `probe_success{job="agentflow-system-health"} == 0` trong 2 phút | page |
-| `AgentFlowApiHighErrorRate` | 5xx > 5% và đủ lưu lượng trong 10 phút | page |
-| `AgentFlowQueueStalled` | queue oldest age > 5 phút và tăng | page |
-| `AgentFlowOutboxStalled` | outbox oldest age > 1 phút trong 5 phút | ticket/page theo tải |
-| `AgentFlowWorkerMissing` | heartbeat age > 60 giây khi có backlog | page |
-| `AgentFlowAgentFailureSpike` | timeout/OOM/runtime error tăng bất thường | ticket |
-| `AgentFlowProviderRateLimited` | tỷ lệ 429 vượt ngưỡng theo provider | ticket |
-| `TelemetryPipelineDropping` | Collector/Loki/Prometheus báo dropped/refused data | ticket |
+| `AgentFlowSystemDown` | `probe_success{job="agentflow-system-health"} == 0` in 2 minutes | page |
+| `AgentFlowApiHighErrorRate` | 5xx > 5% and enough flow for 10 minutes | page |
+| `AgentFlowQueueStalled` | queue oldest age > 5 minutes and increasing | page |
+| `AgentFlowOutboxStalled` | outbox oldest age > 1 minute in 5 minutes | ticket/page by load |
+| `AgentFlowWorkerMissing` | heartbeat age > 60 seconds with backlog | page |
+| `AgentFlowAgentFailureSpike` | timeout/OOM/runtime error increased abnormally | tickets |
+| `AgentFlowProviderRateLimited` | 429 rate exceeds the threshold by provider | tickets |
+| `TelemetryPipelineDropping` | Collector/Loki/Prometheus reports dropped/refused data | tickets |
 
-Dùng `for` để tránh alert chập chờn và ghi annotation có dashboard/runbook URL. Prometheus alerting rules hỗ trợ điều kiện giữ trong một khoảng trước khi firing; xem [Prometheus alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/). Không gửi `run_id` vào notification tổng quát; người trực truy từ trace/log theo thời gian và service.
+Use `for` to avoid flickering alerts and annotate with dashboard/runbook URL. Prometheus alerting rules support a hold condition before firing; see [Prometheus alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/). Do not send `run_id` in general notifications; Operator accesses trace/log by time and service.
 
-### Giai đoạn 5 — Langfuse self-host (đã triển khai cho local)
+### Phase 5 — Langfuse self-host (deployed to local)
 
-`docker/compose.langfuse.yaml` bổ sung Langfuse web/worker, PostgreSQL riêng,
-ClickHouse, Redis và MinIO. Đây vẫn là override tùy chọn để Compose lõi không phải
-chịu chi phí tài nguyên khi không cần quan sát workflow/LLM.
+`docker/compose.langfuse.yaml` adds Langfuse web/worker, native PostgreSQL,
+ClickHouse, Redis and MinIO. This is still an optional override to non-core Compose
+incur resource costs when there is no need to observe workflow/LLM.
 
-Ánh xạ đang dùng:
+Mappings in use:
 
-- request tạo run và `workflow.run` là chain/root observation, tương quan bằng
-  `run_id`, `workflow_id` và `workflow_version_id`;
-- mỗi node là observation; Agent node dùng type `agent`, node thông thường dùng
-  `span` và cả input/output/status/error đều được đính kèm;
-- lời gọi provider trực tiếp là `generation`, kèm provider/model và token usage;
-- LangChain/LangGraph trong disposable Agent container được OpenInference tự động
-  instrument, đồng thời nhận `traceparent`/`tracestate` từ worker;
-- Collector lọc theo `agentflow.langfuse.export` hoặc
-  `openinference.span.kind`, rồi gửi OTLP/HTTP đến `/api/public/otel`; mọi trace vẫn
-  được gửi sang Tempo;
-- key giống credential được thay bằng `[REDACTED]`, chuỗi và collection bị giới
-  hạn, payload quá `LANGFUSE_MAX_IO_BYTES` chỉ còn kích thước và SHA-256;
-- exporter dùng queue/retry bất đồng bộ; lỗi Langfuse không làm fail node hoặc thay
-  trạng thái `run_steps`.
+- request creates run and `workflow.run` is chain/root observation, equal correlation
+  `run_id`, `workflow_id` and `workflow_version_id`;
+- each node is observation; Agent node uses type `agent`, normal node uses
+  `span` and also input/output/status/error are attached;
+- direct provider call is `generation`, with provider/model and token usage;
+- LangChain/LangGraph in the disposable Agent container is automatically OpenInference
+  instrument, and receives `traceparent`/`tracestate` from worker;
+- Collector filters by `agentflow.langfuse.export` or
+  `openinference.span.kind`, then send OTLP/HTTP to `/api/public/otel`; All traces remain
+  sent to Tempo;
+- credential-like keys are replaced by `[REDACTED]`, strings and collections are limited
+  For example, payloads beyond `LANGFUSE_MAX_IO_BYTES` only have size and SHA-256;
+- exporter uses asynchronous queue/retry; Langfuse error does not cause node failure or replacement
+  state `run_steps`.
 
-Override local/dev đặt `LANGFUSE_TRACES_SAMPLER_ARG=1.0` để lưu mọi workflow run.
-Nếu giảm giá trị này thì sampling được quyết định tại root API và toàn bộ cây span
-của run đó cùng được giữ hoặc bỏ; không nên kỳ vọng Langfuse vẫn có đủ mọi run.
+Override local/dev set `LANGFUSE_TRACES_SAMPLER_ARG=1.0` to save all workflow runs.
+If this value is reduced, sampling is determined at the API root and the entire span tree
+of that run can be kept or abandoned; Langfuse should not be expected to still have all the tremors.
 
-Khởi động và kiểm tra theo phần “Bật Langfuse local” trong `docker/README.md`.
-`LANGFUSE_ENABLED=false` tắt xuất workflow observation. Production nên bắt đầu với
-`LANGFUSE_ENABLED=false`, `OPENINFERENCE_HIDE_INPUTS=true` và
-`OPENINFERENCE_HIDE_OUTPUTS=true`, chỉ bật sau khi chốt phân loại dữ liệu, quyền
-truy cập và retention. Xem [Langfuse OpenTelemetry integration](https://langfuse.com/integrations/native/opentelemetry) và [OpenInference data configuration](https://arize-ai.github.io/openinference/spec/configuration.html).
+Boot and test according to the “Enable Langfuse local” section in `docker/README.md`.
+`LANGFUSE_ENABLED=false` turns off the output observation workflow. Production should start with
+`LANGFUSE_ENABLED=false`, `OPENINFERENCE_HIDE_INPUTS=true` and
+`OPENINFERENCE_HIDE_OUTPUTS=true`, only turns on after latching data classification, permissions
+access and retention. See [Langfuse OpenTelemetry integration](https://langfuse.com/integrations/native/opentelemetry) and [OpenInference data configuration](https://arize-ai.github.io/openinference/spec/configuration.html).
 
-## 7. Readiness, liveness và dependency policy
+## 7. Readiness, liveness and dependency policy
 
-- `/health`: chỉ xác nhận process/event loop còn sống; không gọi dependency.
-- `/ready`: xác nhận instance có thể nhận công việc mới. API cần PostgreSQL; nếu việc nhận run bắt buộc queue trực tiếp thì kiểm tra Redis, còn mô hình outbox có thể vẫn ready khi Redis lỗi trong giới hạn backlog đã định.
-- Worker không cần HTTP server chỉ để healthcheck. Ghi heartbeat bền vững hoặc metric timestamp và để orchestrator/runtime giám sát process.
-- Không đưa LLM provider vào readiness chung: provider lỗi phải làm degraded/retry theo provider, không rút toàn bộ API khỏi load balancer.
-- Endpoint metrics/health không chứa secret, nhưng vẫn chỉ mở trong management network. Keycloak cũng tách health trên management port theo [hướng dẫn health check](https://www.keycloak.org/observability/health).
+- `/health`: only confirms process/event loop is alive; don't call dependency.
+- `/ready`: confirms the instance can receive new jobs. API requires PostgreSQL; If receiving runs requires a direct queue, Redis is checked, and the outbox model can still be ready when Redis fails within the specified backlog limits.
+- Workers do not need HTTP server just for healthcheck. Record a persistent heartbeat or timestamp metric and let the orchestrator/runtime monitor the process.
+- Do not include the LLM provider in general readiness: the failed provider must be degraded/retryed according to the provider, do not withdraw the entire API from the load balancer.
+- Endpoint metrics/health does not contain secrets, but is still only open in the management network. Keycloak also isolates health on the management port according to [health check instructions](https://www.keycloak.org/observability/health).
 
-## 8. Kiểm thử và failure drill
+## 8. Testing and failure drill
 
-Checklist cho mỗi lần thay instrumentation hoặc monitoring config:
+Checklist for each change of instrumentation or monitoring config:
 
-1. Validate Compose và Collector/Prometheus configuration trước khi restart.
-2. Tạo một workflow gồm HTTP/transform/agent giả lập thành công; xác nhận đủ trace, metric và JSON log.
-3. Cho node lỗi có chủ đích; xác nhận error code nhất quán và alert/dashboard tăng đúng.
-4. Dừng `workflow-worker`; xác nhận queue age tăng và alert heartbeat/backlog firing rồi tự resolve sau phục hồi.
-5. Dừng Redis; xác nhận outbox giữ command, API hành xử theo policy và không mất run.
-6. Dừng Collector/Loki/Tempo; workflow vẫn chạy, exporter retry có giới hạn và không làm đầy memory/disk.
-7. Tạo log chứa token giả; kiểm tra token không xuất hiện trong Loki, trace, dashboard hoặc alert.
-8. Kiểm tra danh sách series để chắc chắn không có `run_id`, UUID, URL động hoặc error message làm label.
+1. Validate Compose and Collector/Prometheus configuration before restarting.
+2. Create a successful HTTP/transform/simulated agent workflow; Confirm all traces, metrics and JSON logs.
+3. Give the node an error on purpose; Confirm error code is consistent and alert/dashboard raises correctly.
+4. Stop `workflow-worker`; Confirm queue age increases and alert heartbeat/backlog fires then resolve automatically after recovery.
+5. Stop Redis; Confirm the outbox holds the command, the API behaves according to policy and does not lose performance.
+6. Stop Collector/Loki/Tempo; The workflow still runs, the exporter retry is limited and does not fill memory/disk.
+7. Create log containing fake tokens; check the token does not appear in Loki, trace, dashboard or alert.
+8. Check the series list to make sure there are no `run_id`, UUID, dynamic URL or error message labels.
 
-Definition of Done cho tích hợp đầu tiên:
+Definition of Done for first integration:
 
-- dashboard và data source được provision từ repository;
-- một run tra cứu được xuyên API, queue, worker và node bằng trace/log;
+- dashboard and data source are provisioned from repository;
+- a run can look up APIs, queues, workers and nodes using trace/log;
 - metric cover golden signals: traffic, errors, latency, saturation;
-- alert quan trọng có owner, severity, runbook và đã test firing/resolution;
-- telemetry outage không ảnh hưởng correctness của workflow;
-- secret/payload nhạy cảm vượt qua kiểm thử redaction;
-- retention, quyền truy cập và backup được ghi cho từng backend.
+- Important alerts have owner, severity, runbook and tested firing/resolution;
+- telemetry outage does not affect the correctness of the workflow;
+- sensitive secret/payload passes redaction test;
+- retention, access and backups are recorded for each backend.
 
 ## 9. Production hardening
 
-- Khóa phiên bản image và package; chạy migration/upgrade thử trên staging.
-- Dùng TLS và authentication cho OTLP/remote write khi telemetry đi qua network boundary.
-- Tách credential đọc exporter, Grafana admin và alert integration; lưu trong secret manager.
-- Thiết lập memory limiter, batch, queue/retry và disk buffer phù hợp cho Collector/Alloy; theo dõi chính pipeline observability.
-- Dùng object storage cho Loki/Tempo khi retention và HA yêu cầu; local filesystem chỉ phù hợp development/PoC.
-- Đặt quota ingest, giới hạn label/attribute/log size và budget sampling để một workflow lỗi không làm sập monitoring.
-- Phân quyền Grafana theo team/project; UUID khó đoán không phải cơ chế bảo mật. Telemetry đa tenant phải có isolation trước khi cho người dùng cuối truy cập.
-- Giữ một đường giám sát ngoài cụm cho health của monitoring stack trong production; nếu toàn bộ stack cùng hỏng, alert nội bộ sẽ không gửi được.
+- Lock image and package versions; Run migration/upgrade test on staging.
+- Use TLS and authentication for OTLP/remote write when telemetry passes through the network boundary.
+- Separate credential reader exporter, Grafana admin and alert integration; saved in secret manager.
+- Set up appropriate memory limiter, batch, queue/retry and disk buffer for Collector/Alloy; Monitor key pipeline observability.
+- Use object storage for Loki/Tempo when retention and HA require; local filesystem is only suitable for development/PoC.
+- Set ingest quotas, label/attribute/log size limits, and sampling budgets so that a failed workflow doesn't crash monitoring.
+- Grafana decentralization by team/project; UUIDs that are difficult to guess are not a security mechanism. Multi-tenant telemetry must have isolation before end-user access.
+- Keep an out-of-cluster monitoring line for the health of the monitoring stack in production; If the entire stack fails, the internal alert will not be sent.
 
-## 10. Thứ tự thay đổi đề xuất
+## 10. Suggested change order
 
-| Thứ tự | Phạm vi PR | Kết quả có thể kiểm chứng |
+| Order | PR Scope | Verifiable results |
 | --- | --- | --- |
-| 1 | Compose override, Collector, Prometheus, Tempo, Loki, Grafana provisioning | Stack local lên và Keycloak target `UP` |
-| 2 | Telemetry bootstrap + JSON logging cho System API | HTTP traces/metrics/log correlation |
-| 3 | Worker propagation + workflow/node domain metrics | Một run nối được qua queue và worker |
-| 4 | Alloy và infrastructure exporters | Logs/host/DB/Redis dashboard |
-| 5 | Dashboard, alert rules và failure drills | Alert firing/resolution có runbook |
-| 6 | Agent container + LLM usage/cost; Langfuse nếu cần | Runtime/provider visibility và budget tracking |
+| 1 | Compose override, Collector, Prometheus, Tempo, Loki, Grafana provisioning | Stack local and Keycloak target `UP` |
+| 2 | Telemetry bootstrap + JSON logging for the System API | HTTP traces/metrics/log correlation |
+| 3 | Worker propagation + workflow/node domain metrics | A run is connected via queue and worker |
+| 4 | Alloy and infrastructure exporters | Logs/host/DB/Redis dashboard |
+| 5 | Dashboard, alert rules and failure drills | Alert firing/resolution has runbook |
+| 6 | Agent container + LLM usage/cost; Langfuse if needed | Runtime/provider visibility and budget tracking |
 
-Không triển khai tất cả trong một PR. Lát cắt đầu tiên nên chứng minh một request tạo run có metric, trace và log tương quan; sau đó mới tăng số exporter, dashboard và retention.
+Don't deploy all in one PR. The first slice should demonstrate a run request with correlated metrics, traces, and logs; Then increase the number of exporters, dashboard and retention.
 
-## 11. Kế hoạch bàn giao
+## 11. Handover plan
 
-Kế hoạch dưới đây dùng **đợt** thay vì cam kết ngày cố định. Mỗi đợt chỉ bắt đầu khi gate của đợt trước đã đạt; thời lượng thực tế phụ thuộc môi trường CI/CD và nền tảng production.
+The plan below uses **instalments** instead of a fixed date commitment. Each wave only begins when the previous wave's gate has been reached; Actual duration depends on CI/CD environment and production platform.
 
-| Đợt | Phạm vi | Vai trò chính | Phụ thuộc | Gate hoàn thành |
+| Batch | Scope | Main role | Depends | Gate completed |
 | --- | --- | --- | --- | --- |
-| 0 — Baseline | Chốt SLI, taxonomy lỗi, cardinality budget, retention và quyền truy cập | Tech lead + vận hành + security | Owner trực sự cố và kênh nhận alert | Có tài liệu quyết định; đo được baseline tải và dung lượng log hiện tại |
-| 1 — Nền tảng local | Compose override, Collector, Prometheus, Loki, Tempo, Grafana; scrape Keycloak | Platform/DevOps | Đợt 0 | Stack khởi động lặp lại được; config validation qua CI; data source được provision |
-| 2 — System visibility | Bootstrap OpenTelemetry, JSON log, API/dependency spans và metrics | Backend | Collector từ đợt 1 | API → PostgreSQL/Redis có trace; log nối bằng `trace_id`; không lộ secret |
-| 3 — Workflow visibility | Truyền trace context qua Redis, run/node/queue/outbox/worker metrics, Agent/LLM spans | Backend/runtime | Đợt 2 | Một run thành công và một run lỗi truy vết xuyên suốt; UUID không xuất hiện trong metric labels |
-| 4 — Vận hành | Dashboard, recording/alert rules, notification routing, runbook và failure drills | Platform + on-call | Đợt 3 | Alert firing/resolution đã thử; on-call xử lý được kịch bản worker/Redis/provider lỗi |
-| 5 — Production | TLS/auth, HA/storage, quota, sampling, backup, external probe và capacity test | Platform + security | Đợt 4 | Staging soak test đạt; rollback đã thử; production sign-off |
+| 0 — Baseline | Close SLI, error taxonomy, cardinality budget, retention and access | Tech lead + operations + security | Owner on duty and alert channel | Have decision documents; Measure load baseline and current log capacity |
+| 1 — Local platform | Compose override, Collector, Prometheus, Loki, Tempo, Grafana; scrape Keycloak | Platform/DevOps | Phase 0 | Repeatable boot stack; config validation via CI; data source is provisioned |
+| 2 — System visibility | Bootstrap OpenTelemetry, JSON log, API/dependency spans and metrics | Backend | Collector from round 1 | API → PostgreSQL/Redis has trace; log join with `trace_id`; no secrets revealed |
+| 3 — Workflow visibility | Passing trace context via Redis, run/node/queue/outbox/worker metrics, Agent/LLM spans | Backend/runtime | Phase 2 | One successful run and one error run are traced throughout; UUID does not appear in metric labels |
+| 4 — Operation | Dashboard, recording/alert rules, notification routing, runbook and failure drills | Platform + on-call | Phase 3 | Alert firing/resolution attempted; on-call handles the worker/Redis/provider error scenario |
+| 5 — Production | TLS/auth, HA/storage, quota, sampling, backup, external probe and capacity test | Platform + security | Phase 4 | Staging soak test passed; rollback tried; production sign-off |
 
-### Trách nhiệm
+### Responsibility
 
-| Nhóm | Trách nhiệm |
+| Group | Responsibility |
 | --- | --- |
-| Backend | Instrument API, database/Redis client, outbox và chuẩn hóa error code |
-| Workflow/runtime | Instrument run/node/attempt, Agent container, MCP/LLM và trace propagation |
-| Platform/DevOps | Vận hành Collector/backends/exporter, storage, dashboard, alert routing và backup |
-| Security/data owner | Duyệt redaction, retention, quyền truy cập, tenant isolation và dữ liệu gửi tới dịch vụ managed |
-| On-call/service owner | Sở hữu SLO, ngưỡng cảnh báo, runbook và post-incident review |
+| Backend | Instrument API, database/Redis client, outbox and error code standardization |
+| Workflow/runtime | Instrument run/node/attempt, Agent container, MCP/LLM and trace propagation |
+| Platform/DevOps | Operate Collector/backends/exporter, storage, dashboard, alert routing and backup |
+| Security/data owner | Browse redaction, retention, access, tenant isolation, and data sent to managed services |
+| On-call/service owner | Get SLOs, warning thresholds, runbooks and post-incident reviews |
 
-Mỗi alert phải có đúng một owner chính. Không bật alert production nếu chưa có người nhận, runbook, dashboard liên quan và tiêu chí tự resolve.
+Each alert must have exactly one main owner. Do not turn on alert production if there is no recipient, runbook, related dashboard, and self-resolving criteria.
 
-### Rollout và rollback
+### Rollout and rollback
 
-1. Bật telemetry ở local, sau đó staging với sampling thấp; so sánh overhead CPU, RAM, latency và số series trước/sau.
-2. Đưa dashboard lên trước, chạy alert ở chế độ ghi nhận hoặc kênh thử nghiệm để hiệu chỉnh ngưỡng.
-3. Canary một instance System API và một worker trước khi bật toàn bộ; theo dõi exporter queue, dropped spans/logs và event-loop latency.
-4. Rollback ứng dụng bằng `OTEL_SDK_DISABLED=true` và `LOG_FORMAT=text`; workflow phải tiếp tục chạy khi Collector/backend không khả dụng.
-5. Rollback stack bằng cách bỏ `docker/compose.observability.yaml`; không xóa volume telemetry trong cùng thao tác để còn dữ liệu điều tra.
+1. Turn on telemetry locally, then staging with low sampling; Compare CPU overhead, RAM, latency and series number before/after.
+2. Bring the dashboard to the front, run the alert in recording mode or test channel to adjust the threshold.
+3. Canary a System API instance and a worker before fully enabling it; Monitor exporter queue, dropped spans/logs and event-loop latency.
+4. Rollback the application using `OTEL_SDK_DISABLED=true` and `LOG_FORMAT=text`; The workflow must continue to run when the Collector/backend is unavailable.
+5. Rollback stack by removing `docker/compose.observability.yaml`; Do not delete the telemetry volume in the same operation so that investigation data remains.
 
-## 12. Runbook tối thiểu
+## 12. Minimum runbook
 
-| Tín hiệu | Kiểm tra đầu tiên | Hành động an toàn ban đầu | Escalate khi |
+| Signals | First Check | Initial safety action | Escalate when |
 | --- | --- | --- | --- |
-| API down hoặc 5xx cao | `/health`, `/ready`, DB pool, PostgreSQL và deploy gần nhất | Dừng rollout; khôi phục instance khỏe; không restart database mù quáng | Không có instance ready hoặc lỗi dữ liệu/migration |
-| Outbox tăng | PostgreSQL, lỗi dispatcher và kết nối Redis | Giữ API theo dependency policy; phục hồi Redis/dispatcher; quan sát drain rate | Tuổi outbox vượt SLO hoặc backlog tiếp tục tăng sau phục hồi |
-| Queue bị kẹt | Worker heartbeat, Redis pending/reclaim, run đang `running` | Khởi động worker thay thế; để cơ chế reclaim/idempotency xử lý | Run có side effect không rõ trạng thái hoặc lặp lỗi cùng node |
-| Workflow lỗi tăng | `node_type`, `error_code`, trace và provider/MCP latency | Khoanh vùng node/provider; tắt trigger hoặc giới hạn concurrency nếu cần | Lỗi lan nhiều workflow/tenant hoặc có nguy cơ side effect lặp |
-| Agent timeout/OOM | Container exit reason, memory, output size và cleanup | Giảm concurrency; giữ artifact/log đã redaction để điều tra | Có container orphan, rò tài nguyên hoặc cleanup không hoàn tất |
-| Provider 429/lỗi | Tỷ lệ theo provider/model family, retry và `Retry-After` | Giảm concurrency; áp dụng backoff; chuyển provider chỉ theo policy đã duyệt | Budget lỗi cạn, nhiều provider cùng lỗi hoặc chi phí tăng bất thường |
-| Telemetry bị drop | Collector queue/refused metrics, disk và backend ingest | Giảm sampling/log volume; tăng buffer có giới hạn | Monitoring mất hoàn toàn hoặc gây ảnh hưởng workload |
+| API down or 5xx high | `/health`, `/ready`, DB pool, PostgreSQL and nearest deploy | Stop rollout; restore healthy instance; Do not restart the database blindly | No instance ready or data/migration errors |
+| Outbox increased | PostgreSQL, dispatcher error and Redis connection | Keep API according to dependency policy; Redis/dispatcher recovery; observe drain rate | Outbox age exceeds SLO or backlog continues to increase after recovery |
+| Queue stuck | Worker heartbeat, Redis pending/reclaim, run is `running` | Start the replacement worker; for the reclaim/idempotency mechanism to process | Run has side effects with unknown status or repeated errors with node |
+| Workflow error increased | `node_type`, `error_code`, trace and provider/MCP latency | Zone node/provider; Turn off trigger or limit concurrency if needed | The error spreads across multiple workflows/tenants or there is a risk of side effects being duplicated |
+| Agent timeout/OOM | Container exit reason, memory, output size and cleanup | Reduce concurrency; keep redaction artifact/log for investigation | There are orphan containers, resource leaks or incomplete cleanup |
+| Provider 429/error | Rate by provider/model family, retry and `Retry-After` | Reduce concurrency; apply backoff; Switch provider only according to approved policy | Budget error is exhausted, many providers have the same error or costs increase abnormally |
+| Telemetry dropped | Collector queue/refused metrics, disk and backend ingest | Reduce sampling/log volume; limited buffer increase | Monitoring is completely lost or affects the workload |
 
-Sau sự cố, đối chiếu trạng thái cuối với `runs`/`run_steps`, không suy ra kết quả nghiệp vụ chỉ từ log hoặc trace. Mọi thao tác redrive/retry phải tuân theo idempotency và reconciliation của workflow.
+After the incident, compare the final status with `runs`/`run_steps`, do not infer business results from log or trace alone. All redrive/retry operations must comply with the idempotency and reconciliation of the workflow.
 
-## 13. Các quyết định cần chốt trước production
+## 13. Decisions need to be finalized before production
 
-- dùng Grafana Alerting hay Alertmanager làm nơi routing chính;
-- self-host hay managed cho metrics/logs/traces, kèm vị trí lưu dữ liệu;
-- retention và quota theo môi trường, ước tính ingest/ngày và ngân sách;
-- sampling theo lưu lượng, cách giữ error/slow trace và cardinality budget;
-- kênh cảnh báo, lịch on-call, severity và thời gian phản hồi;
-- tenant isolation, quyền tra cứu prompt/content và quy trình cấp quyền tạm thời;
-- có triển khai Langfuse hay không; nếu có, trường dữ liệu nào được phép gửi.
+- Use Grafana Alerting or Alertmanager as the main routing place;
+- self-host or managed for metrics/logs/traces, with data storage location;
+- retention and quota by environment, estimated ingest/day and budget;
+- Sampling according to traffic, how to keep error/slow trace and cardinality budget;
+- alert channel, on-call schedule, severity and response time;
+- tenant isolation, prompt/content lookup permissions and temporary permissions process;
+- whether to implement Langfuse or not; If so, which data fields are allowed to be sent?
 
-Các quyết định này phải được ghi thành cấu hình hoặc ADR trong repository. Không để giá trị production chỉ tồn tại dưới dạng chỉnh tay trong UI Grafana.
+These decisions must be recorded as configuration or an ADR in the repository. Do not let production values exist only as manual adjustments in the Grafana UI.

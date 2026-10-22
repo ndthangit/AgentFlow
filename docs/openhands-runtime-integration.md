@@ -1,46 +1,59 @@
-# Tích hợp OpenHands vào AgentFlow
+# Integrating OpenHands with AgentFlow
 
-Ngày kiểm chứng: **19/10/2026**. Runtime triển khai dùng `openhands-sdk==1.53.0`.
+Verified: **October 19, 2026**. The implemented runtime uses `openhands-sdk==1.53.0`.
 
-## Bề mặt tích hợp
+## Integration surface
 
-AgentFlow dùng OpenHands Software Agent SDK trực tiếp trong image `agentflow-agent-openhands`, không chạy OpenHands CLI headless hoặc GUI server. SDK cung cấp `Agent`, `Conversation`, MCP và structured response qua `FinishTool`; đây là bề mặt phù hợp với contract one-shot JSON stdin/stdout của AgentFlow.
+AgentFlow uses the OpenHands Software Agent SDK directly in the
+`agentflow-agent-openhands` image; it does not run the headless OpenHands CLI or GUI
+server. The SDK provides `Agent`, `Conversation`, MCP, and structured responses
+through `FinishTool`, which fits AgentFlow's one-shot JSON stdin/stdout contract.
 
-Nguồn chính thức:
+Official sources:
 
 - [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk)
 - [Structured Output](https://github.com/OpenHands/docs/blob/main/sdk/guides/structured-output.mdx)
 - [MCP guide](https://github.com/OpenHands/docs/blob/main/sdk/guides/mcp.mdx)
 - [OpenHands CLI command reference](https://github.com/OpenHands/docs/blob/main/openhands/usage/cli/command-reference.mdx)
 
-Không dùng CLI headless vì đó là bề mặt dành cho automation tổng quát và tự chạy theo approval policy của CLI. Adapter SDK cho phép AgentFlow chỉ cấp capability cần thiết cho đúng node.
+The headless CLI is not used because it targets general automation and follows its
+own approval policy. The SDK adapter lets AgentFlow expose only the capabilities
+required by the current node.
 
-## Contract và capability
+## Contract and capabilities
 
-Runtime đọc `task`, `context`, `skills`, `output_schema` từ stdin. Worker inject tạm thời `AGENT_PROVIDER`, `AGENT_MODEL`, `AGENT_PROVIDER_BASE_URL`, `AGENT_PROVIDER_API_KEY` và `AGENT_MCP_SERVERS`; runtime không đọc credential tĩnh trong `.env`.
+The runtime reads `task`, `context`, `skills`, and `output_schema` from stdin. The
+worker temporarily injects `AGENT_PROVIDER`, `AGENT_MODEL`,
+`AGENT_PROVIDER_BASE_URL`, `AGENT_PROVIDER_API_KEY`, and `AGENT_MCP_SERVERS`; the
+runtime reads no static credential from `.env`.
 
-Agent chỉ có:
+The Agent has only:
 
-- `FinishTool`, với schema `{ "result": <output_schema> }` để tránh xung đột các tên reserved của OpenHands;
-- remote MCP Streamable HTTP đã được người dùng chọn cho node.
+- `FinishTool`, with `{ "result": <output_schema> }` to avoid OpenHands reserved-name conflicts.
+- Remote Streamable HTTP MCP servers selected for the node.
 
-Không cấp TerminalTool, FileEditorTool, browser hoặc workspace source. Kết quả lấy từ lần gọi `finish`, bỏ lớp `result`, sau đó được validate lại bằng JSON Schema trước khi trả `RunResult`.
+No `TerminalTool`, `FileEditorTool`, browser, or source workspace is exposed. The
+result is taken from the `finish` call, unwrapped from `result`, and revalidated with
+JSON Schema before returning `RunResult`.
 
-## Giới hạn thực thi
+## Execution limits
 
-- `AGENT_RUNTIME_MAX_STEPS` mặc định 8, chỉ chấp nhận 1–32.
-- Deadline nội bộ kết thúc trước `AGENT_RUNTIME_TIMEOUT_SECONDS` 20 giây để runtime còn thời gian cleanup và trả lỗi công khai.
-- Mỗi provider request timeout tối đa 60 giây và chỉ retry một lần.
-- Conversation, temporary workspace và credential bị hủy cùng disposable container.
-- Lát cắt hiện tại chỉ ánh xạ OpenRouter; model được chuyển thành định danh LiteLLM `openrouter/<model-id>` và phải hỗ trợ tool calling.
+- `AGENT_RUNTIME_MAX_STEPS` defaults to 8 and accepts only 1–32.
+- The internal deadline ends 20 seconds before `AGENT_RUNTIME_TIMEOUT_SECONDS`, leaving time for cleanup and a public error.
+- Each provider request has a maximum 60-second timeout and one retry.
+- Conversations, temporary workspaces, and credentials are destroyed with the disposable container.
+- The current slice maps only OpenRouter; models become LiteLLM identifiers in the form `openrouter/<model-id>` and must support tool calling.
 
-## Build và vận hành
+## Build and operations
 
-Compose build/pull service `agent-runtime-openhands-image`, đăng ký runtime id `openhands` trong `AGENT_RUNTIME_IMAGES`, rồi workflow worker resolve image từ allow-list. UI hiển thị OpenHands trong datalist runtime của Agent node.
+Compose builds or pulls `agent-runtime-openhands-image`, registers the `openhands`
+runtime ID in `AGENT_RUNTIME_IMAGES`, and the workflow worker resolves the image
+from that allow-list. The UI shows OpenHands in the Agent node runtime list.
 
 ```powershell
 docker compose --env-file docker/.env -f docker/compose.yaml build agent-runtime-openhands-image
 docker compose --env-file docker/.env -f docker/compose.yaml up -d --no-deps --force-recreate workflow-worker
 ```
 
-Không restart worker khi còn run `pending` hoặc `running`; image mới chỉ có hiệu lực sau khi worker được recreate an toàn.
+Do not restart a worker while runs are `pending` or `running`; the new image takes
+effect only after the worker is safely recreated.

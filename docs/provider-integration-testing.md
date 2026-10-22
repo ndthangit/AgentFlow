@@ -1,49 +1,49 @@
-# Tích hợp OpenAI, Anthropic và NVIDIA không cần API key thật khi test
+# Testing OpenAI, Anthropic, and NVIDIA integrations without real API keys
 
-> Trạng thái: đã triển khai adapter, runtime contract, Models UI, provider mock và
-> automated test. Smoke test bằng key thật vẫn là tùy chọn.
+> Status: deployed adapter, runtime contract, Models UI, provider mock and
+> automated testing. Smoke testing with a real key is still optional.
 
-## Mục tiêu
+## Target
 
-Mở rộng AgentFlow từ provider `openrouter` hiện tại sang `openai`, `anthropic` và
-`nvidia`, đồng thời cho phép phát triển và chạy CI mà:
+Extend AgentFlow from current `openrouter` provider to `openai`, `anthropic` and
+`nvidia`, and allows developing and running CI that:
 
-- không cần API key thật;
-- không gửi request ra Internet;
-- vẫn kiểm tra được header xác thực, đường dẫn, request/response và lỗi provider;
-- không làm yếu cơ chế bảo vệ secret trong production.
+- no need for real API key;
+- Do not send requests to the Internet;
+- still checks authentication headers, paths, request/response and provider errors;
+- Do not weaken the secret protection mechanism in production.
 
-Chỉ thay key thật bằng chuỗi như `test-key` là **chưa đủ**. Backend hiện gọi API
-provider khi tải catalog, kích hoạt provider và test model. Nếu base URL vẫn là URL
-thật thì request vẫn đi ra Internet và nhận `401`. Giải pháp cần thay cả credential
-lẫn endpoint bằng test double.
+Just replacing the real key with a string like `test-key` is **not enough**. The backend now calls the API
+provider when loading the catalog, activating the provider and testing the model. If base URL is still URL
+Actually, the request still goes out to the Internet and receives `401`. The solution requires replacing the credential
+both endpoints with test double.
 
-## Trạng thái triển khai
+## Deployment status
 
-- Control plane, API và Models UI chấp nhận `openrouter`, `openai`, `anthropic`,
-  `nvidia`, `openai-compatible` và `anthropic-compatible`.
-- OpenAI và NVIDIA dùng `OpenAICompatibleAdapter`; Anthropic dùng
-  `AnthropicAdapter`; OpenRouter giữ adapter và attribution headers hiện có.
-- API key được mã hóa bằng Fernet, response chỉ trả `has_api_key`.
-- Worker inject contract trung lập `AGENT_PROVIDER_*`; runtime `default` hỗ trợ cả
-  bốn provider. OpenRouter vẫn nhận alias cũ để tương thích image trước đây.
-- `docker/compose.provider-mock.yaml` chuyển ba provider mới tới service local bằng
-  endpoint override chỉ được phép ngoài production.
-- Unit test dùng `httpx.MockTransport`; integration test nạp chính ứng dụng mock qua
-  ASGI transport nên không cần Docker, Internet hoặc key thật.
-- Cột `kind` là `varchar` và `settings` là JSONB, vì vậy thay đổi không cần database
+- Control plane, API and Models UI accept `openrouter`, `openai`, `anthropic`,
+  `nvidia`, `openai-compatible` and `anthropic-compatible`.
+- OpenAI and NVIDIA use `OpenAICompatibleAdapter`; Anthropic uses
+  `AnthropicAdapter`; OpenRouter keeps the existing adapter and attribution headers.
+- API key is encrypted with Fernet, response only returns `has_api_key`.
+- Worker inject neutral contract `AGENT_PROVIDER_*`; runtime `default` supports both
+  four providers. OpenRouter still accepts the old alias for previous image compatibility.
+- `docker/compose.provider-mock.yaml` transfers the three new providers to the local service with
+  Endpoint override is only allowed outside of production.
+- Unit test uses `httpx.MockTransport`; integration test loads the mock application itself through
+  ASGI transport so no need for Docker, Internet or real key.
+- Column `kind` is `varchar` and `settings` is JSONB, so changes do not require a database
   migration.
 
-## Kiến trúc đề xuất
+## Proposed architecture
 
 ```text
 Models UI / API
       |
-      | lưu key thật hoặc key giả dưới dạng ciphertext
+      | Save real or fake key as ciphertext
       v
 Provider registry -----> endpoint resolver
-      |                     | production: URL cố định của provider
-      |                     | test: URL nội bộ của provider-mock
+      |                     | production: Fixed URL of the provider
+      |                     | test: internal URL of provider-mock
       v                     v
 OpenAI adapter      Anthropic adapter      NVIDIA adapter
       \                    |                    /
@@ -56,18 +56,18 @@ OpenAI adapter      Anthropic adapter      NVIDIA adapter
  unit test: httpx.MockTransport    integration: provider-mock
 ```
 
-Nên có ba lớp kiểm thử riêng:
+There should be three separate layers of testing:
 
-1. **Unit test mặc định:** `httpx.MockTransport`, không mở socket và chạy nhanh.
-2. **Integration test local/CI:** container `provider-mock`, chỉ chạy trong Docker
-   network của AgentFlow.
-3. **Smoke test với API thật:** tùy chọn, chạy thủ công hoặc scheduled CI khi có
-   secret thật; không nằm trong test suite bắt buộc của pull request.
+1. **Default unit test:** `httpx.MockTransport`, does not open socket and runs quickly.
+2. **Integration test local/CI:** container `provider-mock`, only runs in Docker
+   AgentFlow's network.
+3. **Smoke test with real API:** optional, run manually or schedule CI when available
+   real secret; Not included in the pull request's required test suite.
 
-## Registry và contract chung
+## Registry and general contract
 
-Thay các nhánh `if kind == ...` rải rác bằng một registry tập trung. Registry chỉ
-chứa metadata, tuyệt đối không chứa API key.
+Replace scattered `if kind == ...` branches with one centralized registry. Registry only
+contains metadata, absolutely does not contain API keys.
 
 ```python
 @dataclass(frozen=True)
@@ -80,45 +80,45 @@ class ProviderSpec:
     runtime_provider: str
 ```
 
-Ma trận MVP:
+MVP Matrix:
 
-| `kind` | Base URL production | Xác thực | Catalog | Completion | Adapter |
+| `kind` | Base URL production | Authentication | Catalog | Completion | Adapters |
 | --- | --- | --- | --- | --- | --- |
 | `openai` | `https://api.openai.com/v1` | `Authorization: Bearer ...` | `GET /models` | `POST /chat/completions` | OpenAI-compatible |
-| `anthropic` | `https://api.anthropic.com` | `x-api-key` và `anthropic-version` | `GET /v1/models` | `POST /v1/messages` | Anthropic riêng |
+| `anthropic` | `https://api.anthropic.com` | `x-api-key` and `anthropic-version` | `GET /v1/models` | `POST /v1/messages` | Private Anthropic |
 | `nvidia` | `https://integrate.api.nvidia.com/v1` | `Authorization: Bearer ...` | `GET /models` | `POST /chat/completions` | OpenAI-compatible |
-| `openrouter` | URL hiện tại | Bearer và attribution headers | endpoint hiện tại | `POST /chat/completions` | Giữ tương thích |
+| `openrouter` | Current URL | Bearer and attribution headers | current endpoint | `POST /chat/completions` | Stay Compatible |
 
-OpenAI và NVIDIA có thể dùng chung lớp nền `OpenAICompatibleAdapter`. Anthropic cần
-adapter riêng vì Messages API dùng envelope khác, nội dung trả về là content blocks,
-và system prompt nằm ở field riêng thay vì một message có role `system`.
+OpenAI and NVIDIA can share the same `OpenAICompatibleAdapter` substrate. Anthropic needs
+separate adapter because the Messages API uses a different envelope, the returned content is content blocks,
+and the system prompt is in a separate field instead of a message with role `system`.
 
-Contract bên trong vẫn nên trả `ProviderModel` và `ChatCompletionResult` để phần
-workflow không phụ thuộc provider. Adapter chịu trách nhiệm:
+The inner contract should still pay `ProviderModel` and `ChatCompletionResult` to share
+workflow is provider independent. Adapter is responsible for:
 
-- chuyển request chung sang wire format của provider;
-- chuẩn hóa model catalog và usage;
-- ánh xạ `401/403`, `429`, `5xx` sang các exception hiện có;
-- không đưa response body, header hoặc API key vào exception public/log.
+- convert general request to provider's wire format;
+- standardize model catalog and usage;
+- map `401/403`, `429`, `5xx` to existing exceptions;
+- Do not include response body, header or API key in exception public/log.
 
-Ở MVP có thể tiếp tục dùng Chat Completions cho OpenAI để khớp contract hiện tại.
-Responses API nên là một capability/adapter riêng ở giai đoạn sau thay vì trộn hai
-wire format vào cùng một phương thức `complete()`.
+In MVP, you can continue to use Chat Completions for OpenAI to match the current contract.
+Responses API should be a separate capability/adapter at a later stage instead of mixing the two
+wire format into the same `complete()` method.
 
-## Quản lý key và endpoint
+## Manage keys and endpoints
 
 ### API key
 
-Giữ nguyên mô hình hiện tại:
+Maintain the current model:
 
-- người dùng nhập key qua Models UI/API;
-- backend mã hóa trước khi lưu;
-- chỉ worker giải mã ngay trước khi gọi provider hoặc tạo disposable container;
-- không đặt key provider trong `docker/.env`, Compose image, workflow JSON, argv,
-  telemetry hoặc log;
-- UI/API không bao giờ đọc lại plaintext.
+- user enters key via Models UI/API;
+- backend encryption before saving;
+- only worker decodes immediately before calling provider or creating disposable container;
+- do not set key provider in `docker/.env`, Compose image, workflow JSON, argv,
+  telemetry or log;
+- UI/API never reads back plaintext.
 
-Trong test dùng các giá trị cố ý không giống credential production:
+In tests, use values that are intentionally different from production credentials:
 
 ```text
 test-openai-key
@@ -126,15 +126,15 @@ test-anthropic-key
 test-nvidia-key
 ```
 
-Không dùng key đã bị revoke hoặc key có prefix thật làm fixture. Secret scanner có
-thể chặn nhầm và người đọc khó phân biệt fixture với secret bị lộ.
+Do not use revoke keys or keys with real prefixes as fixtures. Secret scanner has
+can be mistakenly blocked and it will be difficult for the reader to distinguish the fixture from the leaked secret.
 
-### Base URL test cho provider tích hợp sẵn
+### Base test URL for built-in provider
 
-Các provider tích hợp sẵn không nhận `base_url` từ người dùng. System API và worker
-dùng URL cố định, còn test double được cấu hình bằng biến môi trường tin cậy.
+Built-in providers do not receive `base_url` from users. System API and workers
+uses a fixed URL, while test double is configured using a trusted environment variable.
 
-Resolver chỉ cho override từ môi trường tin cậy:
+Resolver for override only from trusted environment:
 
 ```text
 ALLOW_PROVIDER_ENDPOINT_OVERRIDES=true
@@ -143,28 +143,28 @@ ANTHROPIC_BASE_URL_OVERRIDE=http://provider-mock:8089/anthropic
 NVIDIA_BASE_URL_OVERRIDE=http://provider-mock:8089/nvidia/v1
 ```
 
-Quy tắc bắt buộc:
+Required rules:
 
-- mặc định `ALLOW_PROVIDER_ENDPOINT_OVERRIDES=false`;
-- `compose.prod.yaml` phải từ chối khởi động nếu flag này bật;
-- khi flag tắt, bỏ qua toàn bộ biến `*_BASE_URL_OVERRIDE`;
-- production URL nằm trong registry, không lấy từ request của người dùng;
-- system và workflow-worker phải dùng cùng một resolver;
-- worker truyền URL đã resolve vào container qua `AGENT_PROVIDER_BASE_URL`.
+- default `ALLOW_PROVIDER_ENDPOINT_OVERRIDES=false`;
+- `compose.prod.yaml` must refuse to boot if this flag is enabled;
+- when flag is off, ignore all `*_BASE_URL_OVERRIDE` variables;
+- production URL is in the registry, not taken from the user's request;
+- system and workflow-worker must use the same resolver;
+- worker transmits resolved URL to container via `AGENT_PROVIDER_BASE_URL`.
 
-Hai loại theo giao thức là ngoại lệ có chủ đích: người dùng nhập `base_url` để kết
-nối hãng nhỏ. Chúng chỉ nhận HTTPS public theo mặc định, chặn host/IP nội bộ và kiểm
-tra kết quả DNS trước khi gọi. Local integration test có thể bật rõ ràng
-`ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS=true`; production luôn từ chối flag này.
+The two types according to the protocol are intentional exceptions: the user enters `base_url` to conclude
+connect small firms. They only accept public HTTPS by default, block internal hosts/IPs, and check
+Check DNS results before calling. Local integration testing can be explicitly enabled
+`ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS=true`; production always rejects this flag.
 
-## Fake provider dùng cho integration test
+## Fake provider used for integration testing
 
-Service `src/provider-mock` được bật bằng Compose override
-`docker/compose.provider-mock.yaml`. Service tham gia cả network `backend` và
-`runtime` để System API lẫn disposable Agent container đều gọi được bằng hostname
+Service `src/provider-mock` is enabled with Compose override
+`docker/compose.provider-mock.yaml`. Service participates in both the `backend` and
+`runtime` so that System API and disposable Agent containers can both be called by hostname
 `provider-mock`.
 
-Fake server triển khai đúng tập contract AgentFlow sử dụng:
+The fake server implements the correct set of AgentFlow contracts using:
 
 ```text
 GET  /openai/v1/models
@@ -177,7 +177,7 @@ GET  /nvidia/v1/models
 POST /nvidia/v1/chat/completions
 ```
 
-Response phải deterministic. Ví dụ OpenAI/NVIDIA:
+Response must be deterministic. OpenAI/NVIDIA example:
 
 ```json
 {
@@ -194,7 +194,7 @@ Response phải deterministic. Ví dụ OpenAI/NVIDIA:
 }
 ```
 
-Ví dụ Anthropic:
+Anthropic example:
 
 ```json
 {
@@ -208,28 +208,28 @@ Ví dụ Anthropic:
 }
 ```
 
-Fake server nên kiểm tra đúng header bằng các key giả cố định:
+The fake server should check the correct header with fixed fake keys:
 
 - OpenAI/NVIDIA: `Authorization: Bearer test-...-key`;
-- Anthropic: `x-api-key: test-anthropic-key` và có `anthropic-version`;
-- sai hoặc thiếu header trả `401` với envelope giống provider tương ứng.
+- Anthropic: `x-api-key: test-anthropic-key` and has `anthropic-version`;
+- wrong or missing return header `401` with the same envelope as the corresponding provider.
 
-Nên hỗ trợ các model/fixture đặc biệt để ép lỗi mà không cần thay code mock:
+Should support special models/fixtures to suppress errors without changing mock code:
 
-| Model fixture | Kết quả |
+| Model fixture | Results |
 | --- | --- |
-| `test-chat-model` | `200`, response hợp lệ |
+| `test-chat-model` | `200`, valid response |
 | `test-rate-limit` | `429` |
 | `test-unavailable` | `503` |
 | `test-invalid-envelope` | `200`, body sai schema |
-| `test-slow` | delay lớn hơn timeout test |
+| `test-slow` | delay is larger than timeout test |
 
-Không publish port fake provider ra `0.0.0.0`. Nếu cần debug từ host, chỉ bind
-`127.0.0.1` và đặt port trong Compose override, không đặt ở Compose production.
+Do not publish fake port provider to `0.0.0.0`. If you need to debug from the host, just bind
+`127.0.0.1` and set the port in Compose override, not in Compose production.
 
-## Unit test không cần Docker và không có network
+## Unit testing does not require Docker and does not have a network
 
-Tiếp tục pattern đang có trong `test_llm_providers.py`:
+Continuing the existing pattern in `test_llm_providers.py`:
 
 ```python
 async def handler(request: httpx.Request) -> httpx.Response:
@@ -252,80 +252,80 @@ adapter = create_provider_adapter(
 )
 ```
 
-Mỗi adapter cần test tối thiểu:
+Each adapter needs minimum testing:
 
-- đúng method, URL, auth header và content type;
-- không đưa key vào body, exception hoặc object view;
+- correct method, URL, auth header and content type;
+- do not include keys in body, exception or object view;
 - normalize model list;
-- serialize system/user/assistant/tool messages đúng wire format;
-- normalize completion và usage;
-- ánh xạ `401/403`, `429`, `5xx`, timeout và JSON lỗi;
-- retry chỉ với lỗi transient, không retry auth hoặc validation;
-- đóng HTTP client do adapter tự tạo nhưng không đóng client được inject.
+- serialize system/user/assistant/tool messages in the correct wire format;
+- normalize completion and usage;
+- mapping `401/403`, `429`, `5xx`, timeout and JSON errors;
+- retry only for transient errors, not auth or validation retry;
+- closes the HTTP client created by the adapter but does not close the injected client.
 
-Các unit test bắt buộc inject `MockTransport`. Không patch DNS và không gọi URL
-provider thật. Có thể thêm network guard cho test suite để fail ngay khi code tạo
-kết nối ngoài mà không qua transport được inject.
+Unit tests must inject `MockTransport`. Do not patch DNS and do not call URLs
+real provider. You can add network guard to the test suite to fail as soon as the code is created
+External connections that do not go through transport are injected.
 
-## Các thành phần đã triển khai
+## Deployed components
 
 ### Backend
 
 `src/system/providers/adapters.py`
 
-- có `OpenAICompatibleAdapter` và `AnthropicAdapter`;
-- có provider registry/endpoint resolver;
-- `LlmProviderCreate.kind` nhận `openai`, `anthropic`, `nvidia` và `openrouter`;
-- settings model dùng chung cho model selection;
-- factory nhận resolved base URL hoặc HTTP client đã có base URL.
+- has `OpenAICompatibleAdapter` and `AnthropicAdapter`;
+- has provider registry/endpoint resolver;
+- `LlmProviderCreate.kind` receives `openai`, `anthropic`, `nvidia` and `openrouter`;
+- shared model settings for model selection;
+- factory receives resolved base URL or HTTP client already has base URL.
 
 `src/system/api/providers.py`
 
-- giữ API CRUD hiện tại;
-- dùng adapter tương ứng khi list/test model;
-- dùng message lỗi trung lập;
-- không verify bằng một endpoint `/key` chung: OpenRouter dùng `/key`, các
-  provider còn lại có thể verify qua model catalog.
+- keep current CRUD API;
+- use the corresponding adapter when listing/testing models;
+- use neutral error messages;
+- do not verify with a common `/key` endpoint: OpenRouter uses `/key`,
+  The remaining provider can verify via model catalog.
 
 `src/system/runtime/agent_executor.py`
 
-- đã bỏ guard chỉ chấp nhận OpenRouter;
-- map mọi provider sang contract runtime trung lập:
+- removed guard to only accept OpenRouter;
+- map all providers to a neutral runtime contract:
   `AGENT_PROVIDER`, `AGENT_MODEL`, `AGENT_PROVIDER_BASE_URL`,
   `AGENT_PROVIDER_API_KEY`;
-- chỉ thêm alias cũ của OpenRouter trong giai đoạn chuyển tiếp.
+- only add the old OpenRouter alias during the transition period.
 
 `src/agents/default/src/agent/graph.py`
 
-- ưu tiên contract `AGENT_PROVIDER_*`;
-- `openai` và `nvidia` dùng `ChatOpenAI` với base URL được inject;
-- `anthropic` dùng `ChatAnthropic` với base URL và key được inject, không phụ thuộc
-  key tồn tại sẵn trong Compose.
+- Priority contract `AGENT_PROVIDER_*`;
+- `openai` and `nvidia` use `ChatOpenAI` with base URL injected;
+- `anthropic` uses `ChatAnthropic` with base URL and key injected, no dependencies
+  key exists in Compose.
 
 ### Web
 
 `src/web/src/shared/types.ts`
 
-- mở union `kind`;
-- dùng settings chung cho model selection và settings riêng nếu provider cần.
+- open union `kind`;
+- Use general settings for model selection and separate settings if needed by provider.
 
 `src/web/src/features/models/ModelsPage.tsx`
 
-- có ba lựa chọn provider mới;
-- lấy label/logo/mô tả từ metadata thay vì hard-code OpenRouter trong card;
-- vẫn yêu cầu key không rỗng kể cả local test, vì fake server dùng key giả để kiểm
-  tra luồng secret end-to-end.
+- there are three new provider options;
+- get label/logo/description from metadata instead of OpenRouter hard-code in card;
+- still requires a non-empty key even for local testing, because the fake server uses a fake key to test
+  Look up the end-to-end secret flow.
 
-### Docker và test
+### Docker and testing
 
-- có `src/provider-mock` và `docker/compose.provider-mock.yaml`;
-- unit test adapter nằm trong `src/system/tests/test_llm_providers.py`;
-- integration test không network nằm trong
+- has `src/provider-mock` and `docker/compose.provider-mock.yaml`;
+- unit test adapter is located in `src/system/tests/test_llm_providers.py`;
+- integration test without network inside
   `src/system/tests/test_provider_mock_integration.py`.
 
-## Luồng chạy local
+## Local execution flow
 
-Để chạy stack local với fake provider:
+To run stack locally with fake provider:
 
 ```powershell
 cd docker
@@ -334,61 +334,61 @@ docker compose --env-file .env `
   -f compose.provider-mock.yaml up --build
 ```
 
-Trong Models UI:
+In the Models UI:
 
-1. chọn OpenAI, Anthropic hoặc NVIDIA;
-2. nhập một trong các key giả đã quy ước;
-3. mở model catalog và chọn model `test-chat-model` hoặc model test tương ứng;
-4. bấm test model.
+1. choose OpenAI, Anthropic or NVIDIA;
+2. Enter one of the conventional fake keys;
+3. Open the model catalog and select the corresponding model `test-chat-model` or test model;
+4. Click test model.
 
-Toàn bộ request của luồng quản lý provider phải kết thúc tại `provider-mock`. Có thể
-xác minh bằng cách tắt egress của test job; suite vẫn phải pass. Mock hiện tập trung
-vào Models API, Chat Completions và Messages API; nó không mô phỏng đầy đủ mọi vòng
-tool-calling của một Agent phức tạp.
+All requests of the provider management thread must end at `provider-mock`. Maybe
+Verify by turning off test job's egress; suite still requires a pass. Mock is now focused
+go to Models API, Chat Completions and Messages API; it does not fully simulate every round
+tool-calling of a complex Agent.
 
-## CI đề xuất
+## CI proposed
 
 Pull request pipeline:
 
 ```text
-unit-provider-adapters     # MockTransport, luôn chạy
+unit-provider-adapters # MockTransport, always running
 provider-mock-integration  # ASGI test + Compose config/image build
-real-provider-smoke        # không chạy trong pull request
+real-provider-smoke # does not run in pull requests
 ```
 
-`real-provider-smoke` chỉ chạy khi người vận hành chủ động cấu hình secret trong CI,
-giới hạn budget và chọn model rẻ. Job này không được là điều kiện bắt buộc để merge.
+`real-provider-smoke` only runs when the operator actively configures the secret in CI,
+Limit your budget and choose a cheap model. This job cannot be a mandatory condition for merging.
 
-Không dùng fallback “nếu thiếu key thật thì skip” cho unit/integration test. Hai lớp
-này phải luôn chạy với key giả; nhờ vậy CI mới phát hiện regression thay vì báo xanh
-do toàn bộ test bị skip.
+Do not use the fallback "if the real key is missing, skip" for unit/integration tests. Two layers
+This must always be run with fake keys; Thanks to that, CI detects regression instead of giving a green report
+because the entire test is skipped.
 
-## Tiêu chí nghiệm thu
+## Acceptance criteria
 
-- Tạo được bốn loại provider: OpenRouter, OpenAI, Anthropic và NVIDIA.
-- API key vẫn write-only, được mã hóa và không xuất hiện trong log/telemetry/argv.
-- Unit test của mọi adapter pass khi máy không có Internet.
-- Integration test pass chỉ với các key `test-*`.
-- Models UI tải được fake catalog, kích hoạt provider và test completion.
-- Agent container nhận đúng generic provider environment cho từng provider.
-- `401`, `429`, `503`, timeout và invalid response được ánh xạ sang lỗi public ổn
-  định, không lộ response body hay key.
-- Production không cho phép endpoint override và không chứa service mock.
-- Không cần migration cho dữ liệu hiện tại và provider OpenRouter cũ vẫn hoạt động.
+- Create four types of providers: OpenRouter, OpenAI, Anthropic and NVIDIA.
+- API key remains write-only, encrypted and does not appear in log/telemetry/argv.
+- Unit test of all adapter passes when the device does not have Internet.
+- Integration test pass with only `test-*` keys.
+- UI models can download fake catalog, activate provider and test completed.
+- Agent container receives the correct generic provider environment for each provider.
+- `401`, `429`, `503`, timeout and invalid response are mapped to public errors properly
+  specified, do not expose the response body or key.
+- Production does not allow endpoint override and does not contain service mocks.
+- No migration required for existing data and the old OpenRouter provider still works.
 
-## Thứ tự đã triển khai
+## Deployed order
 
-1. Tách registry, endpoint resolver và settings chung nhưng giữ OpenRouter chạy.
-2. Thêm OpenAI-compatible adapter; bật `openai` và `nvidia`.
-3. Thêm Anthropic adapter và chuyển đổi Messages API.
-4. Chuyển worker/runtime sang các biến `AGENT_PROVIDER_*` trung lập.
-5. Thêm provider-mock, ASGI integration test và Compose image.
-6. Mở UI cho ba provider mới.
-7. Giữ smoke test bằng key thật là bước tùy chọn sau khi toàn bộ test giả pass.
+1. Separate the registry, endpoint resolver and general settings but keep OpenRouter running.
+2. Add OpenAI-compatible adapter; enable `openai` and `nvidia`.
+3. Add Anthropic adapter and Messages API conversion.
+4. Switch worker/runtime to neutral `AGENT_PROVIDER_*` variables.
+5. Add provider-mock, ASGI integration test and Compose image.
+6. Open UI for three new providers.
+7. Holding a smoke test with the real key is an optional step after all fake tests pass.
 
-## Tài liệu giao thức chính thức
+## Official protocol document
 
-- [OpenAI API authentication và API overview](https://developers.openai.com/api/reference/overview)
-- [Anthropic API overview, authentication, Models và Messages](https://platform.claude.com/docs/en/api/overview)
+- [OpenAI API authentication and API overview](https://developers.openai.com/api/reference/overview)
+- [Anthropic API overview, authentication, Models and Messages](https://platform.claude.com/docs/en/api/overview)
 - [NVIDIA hosted Chat Completions API](https://docs.api.nvidia.com/nim/reference/stepfun-ai-step-5-preview-infer)
-- [NVIDIA NIM OpenAI-compatible API và local endpoint](https://docs.nvidia.com/nim/large-language-models/latest/reference/api-reference.html)
+- [NVIDIA NIM OpenAI-compatible API and local endpoint](https://docs.nvidia.com/nim/large-language-models/latest/reference/api-reference.html)

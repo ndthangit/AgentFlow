@@ -16,6 +16,6 @@ export async function initializeAuth(): Promise<boolean> {
 
 export async function accessToken(): Promise<string> {
   await keycloak.updateToken(30);
-  if (!keycloak.token) throw new Error("Không có access token");
+  if (!keycloak.token) throw new Error("No access token is available");
   return keycloak.token;
 }

@@ -1,33 +1,34 @@
 # OpenCode runtime
 
-Runtime one-shot dùng OpenCode SDK/server cục bộ và tuân theo contract JSON
-stdin/stdout của AgentFlow. Image khóa cùng phiên bản cho `opencode-ai` và
-`@opencode-ai/sdk` để client/server không lệch giao thức.
+This one-shot runtime uses a local OpenCode SDK/server and follows AgentFlow's JSON
+stdin/stdout contract. The image pins matching versions of `opencode-ai` and
+`@opencode-ai/sdk` to prevent client/server protocol drift.
 
-## Giới hạn và bảo mật
+## Constraints and security
 
-- Server chỉ bind `127.0.0.1` bên trong container dùng một lần.
-- Chỉ provider OpenRouter hiện có trong trang **Models** được hỗ trợ. Model, base
-  URL và API key được worker inject bằng `AGENT_PROVIDER_*` cho đúng invocation.
-- Config chỉ tham chiếu key qua `{env:AGENT_PROVIDER_API_KEY}`; secret không nằm
-  trong prompt, argv, config được log hoặc result.
-- Mọi tool tích hợp sẵn bị deny. Chỉ tool thuộc các MCP đã chọn cho node được allow;
-  runtime v1 vẫn không có workspace, session resume hay interactive approval.
-- MCP Streamable HTTP được ánh xạ sang remote MCP của OpenCode. Header bí mật dùng
-  tham chiếu environment, OAuth tự động bị tắt, và run dừng với
-  `MCP_CONNECTION_FAILED` nếu một server đã chọn không kết nối được. SSE chưa được hỗ trợ.
-- Event lỗi/retry của provider được chuyển thành mã lỗi công khai sau tối đa hai lần
-  retry. Adapter cũng tự abort trước deadline của supervisor để OpenCode không biến lỗi
-  429/5xx thành container timeout do retry vô hạn.
-- Structured output do OpenCode tạo được adapter validate lại bằng JSON Schema.
-- Mỗi `session.prompt()` tạo một OpenTelemetry `generation` span con của
-  `agent.container.run`. Span luôn ghi success/error/timeout và runtime force-flush
-  OTLP trước khi container dùng một lần kết thúc.
-- Runtime chỉ phát structured diagnostic không chứa prompt hay credential. Worker
-  ghi lại các event này vào JSON log với `run_id`, `node_id`, model và elapsed time,
-  vì vậy có thể truy vấn theo run trong Loki kể cả khi container đã bị `--rm`.
+- The server binds only to `127.0.0.1` inside the single-use container.
+- Only OpenRouter providers configured on the **Models** page are currently
+  supported. The worker injects the model, base URL, and API key through
+  `AGENT_PROVIDER_*` for the specific invocation.
+- Configuration references the key only through `{env:AGENT_PROVIDER_API_KEY}`;
+  the secret is absent from prompts, argv, logged configuration, and results.
+- All built-in tools are denied. Only tools from MCP servers selected for the node
+  are allowed; runtime v1 has no workspace, session resume, or interactive approval.
+- Streamable HTTP MCP servers map to OpenCode remote MCP. Secret headers use
+  environment references, automatic OAuth is disabled, and the run stops with
+  `MCP_CONNECTION_FAILED` if a selected server cannot connect. SSE is unsupported.
+- Provider error/retry events become public error codes after no more than two
+  retries. The adapter aborts before the supervisor deadline so OpenCode cannot turn
+  429/5xx responses into a container timeout through unbounded retries.
+- The adapter revalidates OpenCode structured output with JSON Schema.
+- Each `session.prompt()` creates an OpenTelemetry `generation` span under
+  `agent.container.run`. The span always records success/error/timeout, and the
+  runtime force-flushes OTLP before the single-use container exits.
+- The runtime emits only structured diagnostics without prompts or credentials.
+  The worker records these events as JSON logs with `run_id`, `node_id`, model, and
+  elapsed time, so runs remain searchable in Loki after the container is removed.
 
-## Build và kiểm tra
+## Build and test
 
 ```bash
 cd src/agents/opencode && npm test
@@ -35,5 +36,5 @@ docker build -t agentflow-agent-opencode:0.1.0 src/agents/opencode
 docker run --rm --entrypoint opencode agentflow-agent-opencode:0.1.0 --version
 ```
 
-Khi chạy qua AgentFlow, chọn runtime `opencode` trong Agent node và chọn một model
-OpenRouter có khả năng tool/structured output phù hợp.
+When running through AgentFlow, select the `opencode` runtime in the Agent node and
+choose an OpenRouter model with suitable tool and structured-output support.

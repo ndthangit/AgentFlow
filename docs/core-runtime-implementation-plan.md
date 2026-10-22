@@ -1,171 +1,171 @@
-# Kế hoạch bổ sung lõi workflow và Agent Runtime
+# Plan to add workflow core and Agent Runtime
 
-Ngày lập: **03/10/2026**. Trạng thái: **đang triển khai**.
+Date of creation: **October 3, 2026**. Status: **under implementation**.
 
-Tài liệu này chuyển các khoảng trống của PoC hiện tại thành thứ tự công việc có thể triển khai và nghiệm thu. Nó không thay thế các tài liệu thiết kế chi tiết:
+This document converts the current PoC gaps into a work order that can be implemented and accepted. It does not replace detailed design documents:
 
-- [Đặc tả workflow](workflow-spec.md)
-- [Lưu trữ và thực thi workflow](workflow-execution.md)
-- [Agent runtime dùng một lần](ephemeral-agent-runtime.md)
-- [Thiết kế event-driven](event-driven.md)
+- [Workflow specification](workflow-spec.md)
+- [Workflow storage and execution](workflow-execution.md)
+- [Disposable Agent runtime](ephemeral-agent-runtime.md)
+- [event-driven design](event-driven.md)
 
-## 1. Mục tiêu
+## 1. Goal
 
-Sau khi hoàn thành các mốc bắt buộc, AgentFlow phải bảo đảm:
+After completing the required milestones, AgentFlow must ensure:
 
-1. Một run đã được nhận bền vững không bị mất khi API, worker hoặc runner restart.
-2. Redis redelivery không âm thầm chạy lại cùng một agent attempt hoặc side effect.
-3. Mỗi Agent node chọn một runtime có contract, capability và phiên bản rõ ràng.
-4. Run có thể bị hủy; deadline và retry không bị reset khi worker restart.
-5. Workspace, result và artifact cần thiết vẫn tồn tại sau khi container bị xóa.
-6. Workflow không hợp lệ bị từ chối khi publish, thay vì chỉ lỗi lúc worker chạy.
-7. UI có thể theo dõi tiến độ và phục hồi sau khi mất kết nối.
+1. A persistently received run is not lost when the API, worker or runner restarts.
+2. Redis redelivery does not silently rerun the same agent attempt or side effect.
+3. Each Agent node chooses a runtime with clear contract, capability and version.
+4. Run can be canceled; Deadlines and retries are not reset when the worker restarts.
+5. Workspace, result and necessary artifacts persist after the container is deleted.
+6. Invalid Workflow is rejected when published, instead of just an error when the worker runs.
+7. UI can monitor progress and recover from lost connection.
 
-## 2. Phạm vi và mức ưu tiên
+## 2. Scope and priority
 
-### P0 — điều kiện để chạy agent an toàn
+### P0 — conditions for running the agent safely
 
-- Node attempt bền vững, operation key và state machine.
-- Lease, heartbeat, fencing và recovery theo step.
-- Runtime adapter/registry và capability validation.
-- Deadline, cancellation và retry policy.
-- Result manifest, workspace snapshot và artifact store tối thiểu.
+- Persistent node attempt, operation key and state machine.
+- Lease, heartbeat, fencing and recovery step by step.
+- Runtime adapter/registry and capability validation.
+- Deadline, cancellation and retry policy.
+- Minimal Result manifest, workspace snapshot and artifact store.
 
-### P1 — workflow sử dụng được trong thực tế
+### P1 — workflow that can be used in practice
 
-- Node registry dùng chung cho validator, engine và UI.
-- HTTP/Webhook, Approval và connector đầu tiên.
-- Run events, SSE reconnect và log/artifact API.
-- JSON Schema validator đầy đủ.
+- Node registry is shared by validator, engine and UI.
+- HTTP/Webhook, Approval and the first connector.
+- Run events, SSE reconnect and log/artifact API.
+- Full JSON Schema validator.
 
-### P2 — vận hành production
+### P2 — production operations
 
-- Quota và backpressure theo owner/provider/runtime.
-- Usage/cost, OpenTelemetry, metric và alert.
-- Runner tách khỏi Docker socket của workflow worker.
-- Project RBAC, retention, backup/restore và audit mở rộng.
+- Quota and backpressure by owner/provider/runtime.
+- Usage/cost, OpenTelemetry, metrics and alerts.
+- The Runner separates from the Docker socket of the worker workflow.
+- Project RBAC, retention, backup/restore and extended audit.
 
-Không triển khai Map, loop, subflow, marketplace hoặc collaborative editing trước khi P0 hoàn tất.
+Do not deploy Map, loop, subflow, marketplace or collaborative editing before P0 is complete.
 
-## 3. Các bất biến bắt buộc
+## 3. Required invariants
 
-Các thay đổi phía dưới phải giữ những bất biến sau:
+Changes below must keep the following invariants:
 
-- `workflow_versions.graph` là snapshot bất biến của cấu hình thực thi.
-- Mỗi logical node execution có một `operation_key` ổn định qua redelivery.
-- Retry chủ động tạo `attempt` mới; redelivery cùng attempt không tạo job/container mới.
-- Chỉ lease owner có đúng `lease_generation` mới được commit heartbeat hoặc kết quả.
-- Kết quả và artifact manifest được commit trước khi container/workspace tạm bị xóa.
-- Run terminal không được quay lại `running` vì event đến muộn.
-- Cancel intent được commit trước khi gửi tín hiệu dừng cho runner.
-- Side effect bên ngoài không được retry nếu trạng thái kết quả còn mơ hồ.
-- Secret không xuất hiện trong graph snapshot, command payload, event, argv hoặc log mặc định.
+- `workflow_versions.graph` is an immutable snapshot of the execution configuration.
+- Each logical node execution has a stable `operation_key` via redelivery.
+- Retry actively creates new `attempt`; redelivery with attempt does not create a new job/container.
+- Only the lease owner with exactly `lease_generation` can commit the heartbeat or results.
+- Results and artifact manifest are committed before the temporary container/workspace is deleted.
+- Run terminal cannot return to `running` because the event is late.
+- Cancel intent is committed before sending the stop signal to the runner.
+- External side effects cannot be retried if the result state is ambiguous.
+- Secret does not appear in the default graph snapshot, command payload, event, argv or log.
 
-## 4. Thứ tự triển khai
+## 4. Deployment order
 
 ```mermaid
 flowchart LR
-    A[WP-0 Registry và validation] --> B[WP-1 Durable execution]
-    B --> C[WP-2 Lease và recovery]
+    A[WP-0 Registry and validation] --> B[WP-1 Durable execution]
+    B --> C[WP-2 Lease and recovery]
     B --> D[WP-3 Runtime adapter]
-    C --> E[WP-4 Agent job và artifact]
+    C --> E[WP-4 Agent job and artifact]
     D --> E
     E --> F[WP-5 Cancel timeout retry]
-    B --> G[WP-6 Event và SSE]
+    B --> G[WP-6 Event and SSE]
     F --> H[WP-7 Trigger approval connector]
     G --> H
     H --> I[WP-8 Production hardening]
 ```
 
-WP-0 nên làm trước vì hiện validator có thể chấp nhận node mà engine không hỗ trợ. WP-1 đến WP-5 là đường găng trước khi thêm runtime Codex/OpenCode hoặc connector có side effect.
+WP-0 should do it first because currently the validator can accept nodes that the engine does not support. WP-1 to WP-5 is the critical path before adding a Codex/OpenCode runtime or connector with side effects.
 
-### Trạng thái thực hiện
+### Execution status
 
-| Work package | Trạng thái | Ghi chú |
+| Work packages | Status | Notes |
 | --- | --- | --- |
-| WP-0 | Hoàn thành lát cắt đầu tiên ngày 03/10/2026 | Registry server-side, API `/v1/node-types`, version pinning khi publish, validation node/version/binding và editor/planner dùng catalog thực thi |
-| WP-1 | Đang triển khai | Đã thêm schema/migration nền cho `node_attempts`, `run_commands`, `run_events`; worker dual-write và recovery thuộc PR tiếp theo |
-| WP-2 đến WP-8 | Chưa bắt đầu | Thực hiện theo dependency ở trên |
+| WP-0 | Completed the first slice on October 3, 2026 | Registry server-side, API `/v1/node-types`, version pinning on publish, validation node/version/binding and editor/planner using execution catalog |
+| WP-1 | Ongoing | Added background schema/migration for `node_attempts`, `run_commands`, `run_events`; worker dual-write and recovery belongs to the next PR |
+| WP-2 to WP-8 | Not started yet | Follow the dependency above |
 
-## 5. Work package chi tiết
+## 5. Work package details
 
-### WP-0 — Node registry và validation thống nhất
+### WP-0 — Unified node registry and validation
 
-**Kết quả cần có**
+**Required results**
 
-- Một registry phía server định nghĩa cho mỗi node:
+- A server-side registry defined for each node:
   - `type`, `typeVersion`;
   - config/input/output JSON Schema;
   - control ports;
   - executor key;
   - side-effect class;
-  - capability và credential requirements.
-- Validator từ chối graph rỗng, node không hỗ trợ, version không hỗ trợ, binding sai và port sai.
-- Agent planner chỉ được đề xuất node có trong catalog thực thi.
-- UI lấy metadata từ API hoặc generated schema thay vì duy trì danh sách độc lập.
+  - capabilities and credential requirements.
+- Validator rejects empty graph, unsupported node, unsupported version, wrong binding and wrong port.
+- Agent planner can only recommend nodes that are in the execution catalog.
+- UI gets metadata from API or generated schema instead of maintaining independent list.
 
-**API đề xuất**
+**Recommended API**
 
 ```text
 GET /v1/node-types
 ```
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Publish graph có `http.request` khi executor chưa đăng ký phải trả `422`.
-- Publish graph rỗng hoặc binding tới output không tồn tại phải trả `422`.
-- Mọi workflow đã publish đều có thể được engine nhận mà không lỗi `unsupported node type`.
-- Contract test so sánh node catalog của API, editor và agent planner.
+- Publish graph with `http.request` when unregistered executor must pay `422`.
+- Publish an empty graph or a binding to an output that does not exist must return `422`.
+- All published workflows can be received by the engine without the `unsupported node type` error.
+- Contract test compares node catalog of API, editor and agent planner.
 
 ### WP-1 — Durable execution ledger
 
-Giữ `run_steps` làm node execution projection trong giai đoạn đầu và thêm các bảng sau.
+Keep `run_steps` as the execution projection node in the first stage and add the following tables.
 
 #### `node_attempts`
 
-| Trường | Yêu cầu |
+| School | Request |
 | --- | --- |
-| `id`, `run_step_id`, `attempt` | Unique theo `(run_step_id, attempt)` |
-| `operation_key` | Unique, ổn định cho một attempt |
+| `id`, `run_step_id`, `attempt` | Unique by `(run_step_id, attempt)` |
+| `operation_key` | Unique, stable for one attempt |
 | `status` | `queued`, `running`, `succeeded`, `failed`, `timed_out`, `cancelled`, `unknown` |
-| `input_hash`, `config_hash` | Kiểm tra provenance |
-| `error_code`, `error` | Lỗi chuẩn hóa, không chứa secret |
-| `started_at`, `completed_at`, `deadline_at` | Deadline tuyệt đối |
-| `result_ref`, `usage` | Reference tới manifest và usage |
+| `input_hash`, `config_hash` | Check provenance |
+| `error_code`, `error` | Normalized error, does not contain secret |
+| `started_at`, `completed_at`, `deadline_at` | Absolute deadline |
+| `result_ref`, `usage` | Reference to manifest and usage |
 
 #### `run_commands`
 
-| Trường | Yêu cầu |
+| School | Request |
 | --- | --- |
 | `id`, `run_id`, `type` | `start`, `cancel`, `approval_decision` |
-| `idempotency_key`, `payload_hash` | Unique theo owner/scope |
+| `idempotency_key`, `payload_hash` | Unique by owner/scope |
 | `status` | `accepted`, `applied`, `rejected` |
 | `created_at`, `applied_at` | Audit command |
 
 #### `run_events`
 
-| Trường | Yêu cầu |
+| School | Request |
 | --- | --- |
-| `id`, `run_id`, `sequence` | Sequence tăng đơn điệu theo run |
-| `type`, `payload` | Lifecycle payload nhỏ, đã che dữ liệu nhạy cảm |
-| `created_at` | Dùng cho retention và SSE replay |
+| `id`, `run_id`, `sequence` | Sequence increases monotonically with run |
+| `type`, `payload` | Lifecycle payload is small, sensitive data is masked |
+| `created_at` | Used for retention and SSE replay |
 
-**Thay đổi worker**
+**Change worker**
 
-- Không dựng lại mọi step ở trạng thái `pending` khi reclaim run.
-- Nạp các step/attempt đã terminal và chỉ schedule step chưa hoàn tất.
-- Commit step transition và `run_event` trong cùng transaction.
-- Dùng compare-and-set để ngăn terminal state bị ghi đè.
+- Do not rebuild all steps in state `pending` when reclaiming run.
+- Load terminal steps/attempts and only schedule steps that have not been completed.
+- Commit step transition and `run_event` in the same transaction.
+- Use compare-and-set to prevent terminal state from being overwritten.
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Crash sau khi một node thành công không làm node đó chạy lại.
-- Hai worker nhận cùng run chỉ có một worker được phép tạo attempt.
-- Event đến muộn không đổi run `succeeded` về `running`.
+- Crash after a node succeeds does not cause that node to run again.
+- If two workers receive the same run, only one worker is allowed to create an attempt.
+- Late event does not change run `succeeded` to `running`.
 
-### WP-2 — Lease, heartbeat, fencing và reconciliation
+### WP-2 — Lease, heartbeat, fencing and reconciliation
 
-Thêm ownership có thời hạn cho workflow execution và agent job:
+Add time-limited ownership to execution workflow and agent job:
 
 ```text
 lease_owner
@@ -174,23 +174,23 @@ lease_generation
 heartbeat_at
 ```
 
-**Quy tắc**
+**Rules**
 
-- Claim tăng `lease_generation` trong transaction.
-- Mọi update sau claim phải có điều kiện `lease_generation = expected`.
-- Worker gia hạn lease trong lúc chạy node dài.
-- Redis `XAUTOCLAIM` chỉ chuyển quyền đọc message; database lease mới quyết định quyền ghi.
-- Reconciler kiểm tra run/job hết lease và chuyển sang `unknown`, resume hoặc retry theo policy.
+- Claim increases to `lease_generation` in transaction.
+- All updates after the claim must have the condition `lease_generation = expected`.
+- Workers renew leases while running long nodes.
+- Redis `XAUTOCLAIM` only transfers permission to read messages; The new database lease decides write permissions.
+- Reconciler checks run/job lease ends and switches to `unknown`, resume or retry according to policy.
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Worker cũ không thể ghi kết quả sau khi mất lease.
-- Agent chạy lâu hơn `WORKFLOW_RECLAIM_IDLE_MS` không tạo execution thứ hai.
-- Kill worker ở trước/sau mỗi commit boundary đều cho kết quả xác định.
+- Old workers cannot record results after losing lease.
+- Agents running longer than `WORKFLOW_RECLAIM_IDLE_MS` do not create a second execution.
+- Killing workers before/after each commit boundary gives definite results.
 
 ### WP-3 — Agent Runtime Adapter contract
 
-Tạo interface độc lập với Docker và provider cụ thể:
+Create interface independent of Docker and specific provider:
 
 ```python
 class AgentRuntimeAdapter(Protocol):
@@ -204,86 +204,86 @@ class AgentRuntimeAdapter(Protocol):
     async def collect(self, handle: AgentJobHandle) -> AgentResultManifest: ...
 ```
 
-`RuntimeCapabilities` tối thiểu gồm:
+Minimum `RuntimeCapabilities` includes:
 
 - `tools`, `mcp`, `shell`, `workspace_write`;
 - `session_resume`, `streaming`, `interactive_approval`;
-- loại input/output và artifact hỗ trợ;
-- network/resource profiles được phép.
+- input/output types and artifact support;
+- network/resource profiles are allowed.
 
-`AgentJobRequest` tối thiểu gồm:
+Minimum `AgentJobRequest` includes:
 
 - `job_id`, `operation_key`, `contract_version`;
-- task/context và output schema;
+- task/context and output schema;
 - runtime type, image digest/version;
 - workspace/artifact references;
-- deadline và resource/network policy;
-- references tới credential đã được authorize.
+- deadline and resource/network policy;
+- references to authorized credentials.
 
-`AgentResultManifest` tối thiểu gồm:
+Minimum `AgentResultManifest` includes:
 
-- `job_id`, `operation_key`, status và error code;
+- `job_id`, `operation_key`, status and error code;
 - structured output reference/checksum;
 - artifact references/checksums;
-- usage, runtime version và timestamps.
+- usage, runtime version and timestamps.
 
-**Adapter đầu tiên**
+**First adapter**
 
-1. Bọc runtime Deep Agents hiện tại thành `deepagents-container-v1`.
-2. Giữ `direct` là LLM node compatibility path, không coi là agent runtime đầy đủ.
-3. Chỉ thêm Codex/OpenCode sau khi contract test của adapter đầu tiên đạt.
+1. Wrap the current Deep Agents runtime into `deepagents-container-v1`.
+2. Keep `direct` as LLM node compatibility path, not considered full agent runtime.
+3. Only add Codex/OpenCode after the first adapter's contract test passes.
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Publish thất bại nếu node yêu cầu capability runtime không có.
-- Workflow version snapshot runtime type, contract version và image digest.
-- Thay tag image mặc định không làm thay runtime của version cũ.
-- Mỗi adapter chạy cùng một bộ contract tests.
+- Publish fails if the node requesting the runtime capability is not available.
+- Workflow version snapshot runtime type, contract version and image digest.
+- Changing the default image tag does not change the runtime of the old version.
+- Each adapter runs the same set of contract tests.
 
-### WP-4 — Agent job, workspace và artifact
+### WP-4 — Agent job, workspace and artifact
 
-Thêm `agent_jobs` và `artifacts`; agent job phải đi qua queue riêng thay vì workflow worker giữ Docker process trong suốt execution.
+Add `agent_jobs` and `artifacts`; The agent job must go through a separate queue instead of the workflow worker holding the Docker process during execution.
 
 #### `agent_jobs`
 
-- FK tới `node_attempts` và unique `operation_key`.
+- FK to `node_attempts` and unique `operation_key`.
 - Runtime type, contract version, image digest.
-- State, runner, lease và container reference nội bộ.
-- Result reference, termination reason và cleanup state.
+- State, runner, lease and internal container reference.
+- Result reference, termination reason and cleanup state.
 
 #### `artifacts`
 
 - Owner/run/step/attempt scope.
 - Object key, content type, size, checksum.
 - Kind: `result`, `log`, `diff`, `workspace_snapshot`, `report`.
-- Retention, created time và immutable/finalized state.
+- Retention, created time and immutable/finalized state.
 
 **MVP storage**
 
-- Định nghĩa `ArtifactStore` interface.
-- Có local-volume implementation cho development.
-- Không ghi đường dẫn host trực tiếp vào public contract.
-- Áp dụng size limit và checksum trước khi finalize.
+- Define `ArtifactStore` interface.
+- There is a local-volume implementation for development.
+- Do not write the host path directly into the public contract.
+- Apply size limit and checksum before finalizing.
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Runner chết sau khi upload result nhưng trước terminal commit có thể reconcile manifest mà không gọi model lại.
-- Container bị xóa nhưng output/diff/log đã finalize vẫn tải được theo ACL.
-- Hai attempt không dùng chung writable workspace.
-- Artifact sai checksum không được dùng làm node output.
+- Runner dies after uploading result but before terminal commit can reconcile manifest without calling model again.
+- The container is deleted but the finalized output/diff/log can still be loaded according to the ACL.
+- Two attempts do not share the same writable workspace.
+- Artifact wrong checksum cannot be used as output node.
 
-### WP-5 — Deadline, cancellation và retry policy
+### WP-5 — Deadline, cancellation and retry policy
 
-**API đề xuất**
+**Recommended API**
 
 ```text
 POST /v1/runs/{runId}/cancel
 GET  /v1/commands/{commandId}
 ```
 
-Request thay đổi trạng thái phải nhận `Idempotency-Key`.
+Status change request must receive `Idempotency-Key`.
 
-**Retry policy tối thiểu**
+**Minimum retry policy**
 
 ```json
 {
@@ -294,24 +294,24 @@ Request thay đổi trạng thái phải nhận `Idempotency-Key`.
 }
 ```
 
-**Quy tắc**
+**Rules**
 
-- Deadline là timestamp tuyệt đối được snapshot khi tạo run/attempt.
-- Retry không reset deadline hoặc budget.
-- Auth, schema, policy và invalid input không retry tự động.
-- Side effect timeout không rõ kết quả chuyển `reconciliation_required`.
-- Cancel ngừng schedule node mới, cancel job đang chạy, chờ cleanup rồi mới terminal.
+- Deadline is the absolute timestamp that is snapshotted when creating a run/attempt.
+- Retry does not reset deadline or budget.
+- Auth, schema, policy and invalid input do not retry automatically.
+- Side effect timeout results in unknown `reconciliation_required` transfer.
+- Cancel stops scheduling the new node, cancels the running job, waits for cleanup and then terminal.
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Gửi cancel hai lần trả cùng command/result.
-- Cancel container đang chạy dừng process tree và cleanup resource.
-- Provider 429 retry đúng số lần và giữ cùng logical execution.
-- Worker restart giữa backoff không làm mất lịch retry.
+- Send cancel twice returning the same command/result.
+- Cancel the running container to stop the process tree and cleanup resources.
+- Provider 429 retries the correct number of times and keeps the same logical execution.
+- Worker restart during backoff does not lose the retry schedule.
 
-### WP-6 — Event stream, log và run viewer
+### WP-6 — Event stream, log and run viewer
 
-**API đề xuất**
+**Recommended API**
 
 ```text
 GET /v1/runs/{runId}/events
@@ -319,50 +319,50 @@ GET /v1/runs/{runId}/stream
 GET /v1/artifacts/{artifactId}/download
 ```
 
-SSE hỗ trợ `Last-Event-ID`; nếu cursor hết retention, server yêu cầu client tải lại snapshot. Không đưa từng token vào database event log; token delta có thể dùng kênh ngắn hạn và bị giới hạn.
+SSE supports `Last-Event-ID`; If the cursor runs out of retention, the server requests the client to redownload the snapshot. Do not include each token in the database event log; Delta tokens can use short-term and limited channels.
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Reload UI hiển thị lại đầy đủ lifecycle từ projection.
-- Mất kết nối SSE rồi reconnect không bỏ sót lifecycle event.
-- User khác không đọc được event/log/artifact dù biết UUID.
+- Reload UI re-displays the full lifecycle from the projection.
+- Losing SSE connection and then reconnecting does not miss the lifecycle event.
+- Other users cannot read event/log/artifact even though they know the UUID.
 
-### WP-7 — Trigger, Approval và connector đầu tiên
+### WP-7 — Trigger, Approval and first connector
 
-Triển khai theo thứ tự:
+Deploy in order:
 
-1. HTTP Request dạng read-only, có timeout và response size limit.
-2. Webhook trigger có signature/timestamp validation và delivery dedup.
-3. Approval node có action hash, reviewer scope và expiry.
-4. Một connector external-write, khuyến nghị GitHub draft pull request.
+1. HTTP Request is read-only, has timeout and response size limit.
+2. Webhook trigger has signature/timestamp validation and delivery dedup.
+3. Approval node has action hash, reviewer scope and expiry.
+4. An external-write connector, recommended GitHub draft pull request.
 
-**API đề xuất**
+**Recommended API**
 
 ```text
 POST /v1/webhooks/{triggerId}
 POST /v1/approvals/{requestId}/decisions
 ```
 
-**Tiêu chí nghiệm thu**
+**Acceptance criteria**
 
-- Cùng webhook delivery ID chỉ tạo một logical run.
-- Hai quyết định approval đồng thời chỉ có một quyết định được áp dụng.
-- Artifact/action hash thay đổi làm approval cũ mất hiệu lực.
-- Connector timeout sau request phải reconcile trước khi retry.
-- Deny hoặc expiry không tạo side effect.
+- With webhook delivery ID, create only one logical run.
+- Two approval decisions at the same time, only one is applied.
+- Artifact/action hash changes make the old approval invalid.
+- Connector timeout after request must be reconciled before retry.
+- Deny or expiry does not create side effects.
 
 ### WP-8 — Production hardening
 
-- Tách Agent Runner Supervisor khỏi workflow worker.
-- Không mount Docker socket vào worker xử lý orchestration.
-- Egress allowlist/proxy; chặn metadata và control-plane network.
-- Secret ngắn hạn hoặc broker/proxy thay vì API key dài hạn trong container.
-- Quota backlog, concurrent jobs, CPU/RAM/PID/disk/output theo owner/runtime/provider.
+- Separate Agent Runner Supervisor from workflow worker.
+- Do not mount Docker socket to the worker handling orchestration.
+- Egress allowlist/proxy; Block metadata and control-plane network.
+- Short-term secret or broker/proxy instead of long-term API key in the container.
+- Quotas for backlog, concurrent jobs, CPU/RAM/PID/disk/output by owner/runtime/provider.
 - OpenTelemetry trace; metric queue age, lease age, attempt, retry, cleanup, token/cost.
-- Backup/restore database và artifact metadata/data.
-- Retention và xóa dữ liệu bao phủ database, artifacts, logs và runtime sessions.
+- Backup/restore database and artifact metadata/data.
+- Retention and deletion of data covering the database, artifacts, logs and runtime sessions.
 
-## 6. Trạng thái run và step đề xuất
+## 6. Recommended run and step status
 
 ### Run
 
@@ -386,18 +386,18 @@ pending -> queued -> running -> succeeded
                      `-------> unknown -> reconciliation_required
 ```
 
-Mỗi transition phải có compare-and-set hợp lệ; không cập nhật bằng chuỗi status tự do.
+Each transition must have a valid compare-and-set; Do not update with free status string.
 
-## 7. Chiến lược migration
+## 7. Migration strategy
 
-1. Thêm bảng/column mới mà chưa đổi đường chạy hiện tại.
-2. Dual-write `run_steps` và `run_events` dưới feature flag.
-3. Chuyển Agent node sang `agent_jobs` với adapter Deep Agents.
-4. Bật lease/fencing và recovery cho một worker canary.
-5. Bật cancel/retry và SSE.
-6. Xóa đường chạy container trực tiếp khỏi workflow worker sau khi fault-injection đạt.
+1. Add a new table/column without changing the current path.
+2. Dual-write `run_steps` and `run_events` under feature flag.
+3. Move the Agent node to `agent_jobs` with the Deep Agents adapter.
+4. Enable lease/fencing and recovery for a canary worker.
+5. Turn on cancel/retry and SSE.
+6. Remove the container run directly from the workflow worker after fault-injection is reached.
 
-Feature flags đề xuất:
+Recommended feature flags:
 
 ```dotenv
 DURABLE_NODE_ATTEMPTS_ENABLED=false
@@ -406,64 +406,64 @@ RUN_EVENTS_ENABLED=false
 SSE_ENABLED=false
 ```
 
-Không giữ hai orchestrator có quyền quyết định downstream node cùng lúc. Feature flag chỉ chọn implementation; mỗi run phải được pin vào một execution mode ngay khi tạo.
+Do not keep two orchestrators with the right to decide downstream nodes at the same time. Feature flag only selects implementation; Each run must be pinned into an execution mode upon creation.
 
-## 8. Kiểm thử bắt buộc
+## 8. Mandatory testing
 
-### Unit và contract
+### Unit and contract
 
 - Node registry/graph/schema validation.
-- Runtime adapter contract cho success, invalid output, timeout và cancel.
-- State transition và retry classification.
-- Operation key và payload hash ổn định.
+- Runtime adapter contract for success, invalid output, timeout and cancel.
+- State transition and retry classification.
+- Operation key and payload hash are stable.
 
 ### Integration
 
-- PostgreSQL thật cho claim/lease/fencing và concurrent approval.
-- Redis thật cho duplicate delivery, pending reclaim và stream restart.
-- Docker thật cho timeout, cancel, OOM, cleanup và orphan reconciliation.
-- Artifact store thật cho finalize/checksum/ACL.
+- Real PostgreSQL for claim/lease/fencing and concurrent approval.
+- Real Redis for duplicate delivery, pending reclaim and stream restart.
+- Real Docker for timeout, cancel, OOM, cleanup and orphan reconciliation.
+- Real Artifact store for finalize/checksum/ACL.
 
 ### Fault injection
 
-Kill process tại các điểm:
+Kill process at these points:
 
-1. Sau DB commit, trước enqueue.
-2. Sau enqueue, trước ACK outbox.
-3. Sau claim, trước start container.
-4. Sau container start, trước lưu container reference.
-5. Sau result upload, trước terminal commit.
-6. Sau terminal commit, trước queue ACK và cleanup.
+1. After DB commit, before enqueue.
+2. After enqueue, before ACK outbox.
+3. After claim, before start container.
+4. After starting the container, first save the container reference.
+5. After result upload, before terminal commit.
+6. After terminal commit, before queue ACK and cleanup.
 
-Không đóng P0 nếu chưa chứng minh các điểm trên không làm mất run hoặc nhân đôi side effect.
+Do not close P0 if you have not proven that the above points do not eliminate tremor or double the side effect.
 
-## 9. Definition of Done cho lõi MVP
+## 9. Definition of Done for MVP core
 
-Lõi MVP hoàn thành khi tất cả điều kiện sau đúng:
+The MVP core is complete when all of the following conditions are true:
 
-- Redelivery cùng operation key không tạo attempt/container thứ hai.
-- Worker hoặc runner restart có thể resume/reconcile từ dữ liệu bền vững.
-- Cancel và deadline hoạt động qua restart.
-- Runtime được pin bằng type, contract version và image digest.
-- Agent result, log và artifact tồn tại độc lập với container.
-- Validator từ chối mọi node/config/binding mà engine không hỗ trợ.
-- UI reconnect được và đọc lịch sử run theo ACL.
-- Có integration test và fault-injection cho đường thực thi chính.
-- Coding agent không có credential external-write trực tiếp; side effect đi qua connector được kiểm soát.
+- Redelivery with the same operation key does not create a second attempt/container.
+- Worker or runner restart can resume/reconcile from persistent data.
+- Cancel and deadline work via restart.
+- Runtime is pinned by type, contract version and image digest.
+- Agent results, logs and artifacts exist independently of the container.
+- Validator rejects any node/config/binding that the engine does not support.
+- UI can reconnect and read run history according to ACL.
+- There is integration testing and fault-injection for the main execution path.
+- Coding agent does not have direct external-write credentials; side effects passing through the controlled connector.
 
-## 10. Backlog khởi đầu đề xuất
+## 10. Proposed starting backlog
 
-Các pull request đầu tiên nên nhỏ và theo thứ tự:
+The first pull requests should be small and in order:
 
-1. **PR-1 — đã triển khai trong working tree:** node registry server-side; từ chối graph rỗng và unsupported node.
-2. **PR-2 — đã triển khai trong working tree:** migration `node_attempts`, `run_commands`, `run_events` và state enums.
-3. **PR-3:** operation key, transactional transitions và event projection.
-4. **PR-4:** lease generation, heartbeat và worker recovery từ step đã lưu.
-5. **PR-5:** runtime adapter contract và adapter `deepagents-container-v1`.
-6. **PR-6:** `agent_jobs`, queue riêng và runner supervisor local.
-7. **PR-7:** artifact store local, result manifest và reconciliation.
+1. **PR-1 — deployed in working tree:** node registry server-side; Reject empty graphs and unsupported nodes.
+2. **PR-2 — deployed in working tree:** migration `node_attempts`, `run_commands`, `run_events` and state enums.
+3. **PR-3:** operation key, transactional transitions and event projection.
+4. **PR-4:** lease generation, heartbeat and worker recovery from saved step.
+5. **PR-5:** runtime adapter contract and adapter `deepagents-container-v1`.
+6. **PR-6:** `agent_jobs`, private queue and local supervisor runner.
+7. **PR-7:** artifact store local, result manifest and reconciliation.
 8. **PR-8:** cancel/deadline/retry policy.
-9. **PR-9:** SSE/event replay và cập nhật run viewer.
-10. **PR-10:** webhook, approval và connector đầu tiên.
+9. **PR-9:** SSE/event replay and update run viewer.
+10. **PR-10:** first webhook, approval and connector.
 
-Mỗi PR phải kèm migration rollback phù hợp, test failure path và cập nhật tài liệu contract liên quan.
+Each PR must include appropriate migration rollback, test failure path, and updated relevant contract documents.

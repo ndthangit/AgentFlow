@@ -9,7 +9,7 @@ groups:
           service: agentflow-system
         annotations:
           summary: AgentFlow System API health probe is failing
-          runbook: docs/observability.md#12-runbook-tối-thiểu
+          runbook: docs/observability.md#12-minimum-runbook
 
       - alert: AgentFlowWorkerMissing
         expr: time() - max(agentflow_worker_heartbeat_timestamp_seconds) > 60
@@ -19,7 +19,7 @@ groups:
           service: agentflow-workflow-worker
         annotations:
           summary: No AgentFlow workflow worker heartbeat in the last minute
-          runbook: docs/observability.md#12-runbook-tối-thiểu
+          runbook: docs/observability.md#12-minimum-runbook
 
       - alert: AgentFlowOutboxDispatchFailing
         expr: increase(agentflow_outbox_dispatches_total{status="failed"}[5m]) > 0
@@ -29,7 +29,7 @@ groups:
           service: agentflow-system
         annotations:
           summary: AgentFlow outbox dispatches are failing
-          runbook: docs/observability.md#12-runbook-tối-thiểu
+          runbook: docs/observability.md#12-minimum-runbook
 
       - alert: TelemetryPipelineDropping
         expr: rate(otelcol_exporter_send_failed_spans_total[5m]) > 0 or rate(otelcol_exporter_send_failed_metric_points_total[5m]) > 0

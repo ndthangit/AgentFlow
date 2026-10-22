@@ -17,12 +17,12 @@ class FilesystemMcpTests(unittest.TestCase):
 
     def test_write_read_and_list(self):
         self.assertEqual(
-            write_file("notes/demo.txt", "xin chào"),
-            {"path": "notes/demo.txt", "bytes": 9},
+            write_file("notes/demo.txt", "hello"),
+            {"path": "notes/demo.txt", "bytes": 5},
         )
         self.assertEqual(
             read_file("notes/demo.txt"),
-            {"path": "notes/demo.txt", "content": "xin chào"},
+            {"path": "notes/demo.txt", "content": "hello"},
         )
         self.assertEqual(
             list_files(),

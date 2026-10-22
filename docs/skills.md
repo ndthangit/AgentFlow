@@ -1,29 +1,40 @@
-# Quản lý skill cho agent
+# Managing Agent skills
 
-System quản lý một catalog skill dùng chung. Mọi skill đang enabled tự động xuất hiện trong bộ chọn của từng Agent node; người dùng không cần gắn hoặc tích chọn skill ở cấp workflow. Agent integration không tự đọc toàn bộ folder và chỉ nhận các skill có ID được chọn trong `config.skillIds` của node.
+The System manages a shared skill catalog. Every enabled skill automatically appears
+in each Agent node's picker; users do not attach skills at the workflow level. The
+Agent integration does not read entire folders and receives only skills whose IDs
+are selected in the node's `config.skillIds`.
 
-## Nguồn skill
+## Skill sources
 
-| Nguồn | Nơi định nghĩa | Quyền sửa |
+| Source | Definition | Edit permissions |
 | --- | --- | --- |
-| Built-in | `src/system/skills/<slug>/SKILL.md` và `metadata.json` | Sửa qua repository, deploy lại System |
-| User | PostgreSQL `system.skills` | Chỉ chủ sở hữu JWT `sub` được cập nhật |
+| Built-in | `src/system/skills/<slug>/SKILL.md` and `metadata.json` | Edit in the repository and redeploy the System |
+| User | PostgreSQL `system.skills` | Only the owning JWT `sub` may update it |
 
-Khi System khởi động, các built-in skill được đọc từ filesystem và upsert vào PostgreSQL. Nếu nội dung `SKILL.md` thay đổi, System tăng version và cập nhật SHA-256. Built-in skill không sửa được qua API.
+At startup, the System reads built-in skills from the filesystem and upserts them
+into PostgreSQL. If `SKILL.md` changes, the System increments the version and
+updates the SHA-256 hash. Built-in skills cannot be edited through the API.
 
 ## API
 
-| Endpoint | Chức năng |
+| Endpoint | Function |
 | --- | --- |
-| `GET /v1/skills` | Liệt kê built-in skill và skill của người đang đăng nhập |
-| `POST /v1/skills` | Tạo user skill |
-| `GET /v1/skills/{id}` | Đọc nội dung một skill có quyền truy cập |
-| `PUT /v1/skills/{id}` | Cập nhật user skill bằng `expected_version` |
-Các endpoint workflow-skill cũ vẫn được giữ để tương thích với client cũ nhưng giao diện và quá trình publish không còn dùng selection cấp workflow. System kiểm tra từng `config.skillIds` khi validate/publish và chỉ chấp nhận skill đang enabled, là built-in hoặc thuộc chính người dùng.
+| `GET /v1/skills` | List built-in skills and the signed-in user's skills |
+| `POST /v1/skills` | Create a user skill |
+| `GET /v1/skills/{id}` | Read an accessible skill |
+| `PUT /v1/skills/{id}` | Update a user skill with `expected_version` |
 
-## Snapshot lúc publish
+Legacy workflow-skill endpoints remain for old-client compatibility, but the UI and
+publish process no longer use workflow-level selection. During validation and
+publishing, the System verifies every `config.skillIds` value and accepts only
+enabled built-in skills or skills owned by the current user.
 
-Khi publish workflow version, System thu thập các ID được chọn trong mọi Agent node, loại trùng theo thứ tự xuất hiện và chép các trường sau vào `workflow_versions.graph.skills`:
+## Publish-time snapshots
+
+When publishing a workflow version, the System collects the IDs selected by all
+Agent nodes, removes duplicates in encounter order, and copies these fields to
+`workflow_versions.graph.skills`:
 
 ```json
 {
@@ -32,15 +43,17 @@ Khi publish workflow version, System thu thập các ID được chọn trong m�
   "name": "Workflow Designer",
   "version": 1,
   "content_hash": "sha256",
-  "instructions": "Nội dung SKILL.md tại thời điểm publish"
+  "instructions": "SKILL.md content at publish time"
 }
 ```
 
-Worker lấy skill từ snapshot của workflow version và chỉ truyền đúng danh sách `skillIds` của Agent đang chạy. Việc sửa hay tắt skill sau đó không làm thay đổi version/run cũ.
+The worker reads skills from the workflow-version snapshot and passes only the
+running Agent's `skillIds`. Editing or disabling a skill later does not change older
+versions or runs.
 
-## Thêm built-in skill
+## Adding a built-in skill
 
-Tạo hai file:
+Create two files:
 
 ```text
 src/system/skills/my-skill/
@@ -53,8 +66,10 @@ src/system/skills/my-skill/
 ```json
 {
   "name": "My Skill",
-  "description": "Mô tả ngắn để người dùng quyết định có chọn skill hay không."
+  "description": "A short description that helps users decide whether to select the skill."
 }
 ```
 
-Tên folder là slug và phải dùng chữ thường, số, dấu gạch ngang. `SKILL.md` chứa chỉ dẫn đầy đủ sẽ được đưa cho agent. Không đặt API key, password hoặc credential trong skill.
+The folder name is the slug and may contain lowercase letters, digits, and hyphens.
+`SKILL.md` contains the full instructions given to the agent. Never put API keys,
+passwords, or credentials in a skill.

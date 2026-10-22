@@ -1,91 +1,90 @@
-# Bản đồ codebase AgentFlow
+# AgentFlow codebase map
 
-Tài liệu này chỉ ra luồng chạy hiện tại và nơi sở hữu từng trách nhiệm. Các thiết kế
-mục tiêu chưa triển khai được mô tả riêng trong các tài liệu kiến trúc khác.
+This document describes the current execution flow and the ownership of each
+responsibility. Unimplemented target designs are documented separately in the other
+architecture documents.
 
-## Luồng chạy từ UI đến worker
+## Execution flow from UI to worker
 
 ```text
 React UI
-  -> Keycloak (đăng nhập, lấy access token)
-  -> FastAPI router (xác thực và giới hạn dữ liệu theo owner)
+  -> Keycloak (sign in and obtain an access token)
+  -> FastAPI router (authenticate and scope data to the owner)
   -> workflow draft -> validate -> immutable workflow version
-  -> run + pending steps + dispatch outbox trong một transaction
-  -> orchestrator chuyển outbox vào Redis Stream
-  -> workflow worker claim message và run
-  -> engine resolve DAG, input binding và branch
-  -> builtin / Python giới hạn / LLM adapter / Agent container
-  -> worker lưu step + run projection rồi ACK message
-  -> UI poll run và step để hiển thị kết quả
+  -> run + pending steps + dispatch outbox in one transaction
+  -> orchestrator moves outbox entries to a Redis Stream
+  -> workflow worker claims the message and run
+  -> engine resolves the DAG, input bindings, and branches
+  -> built-in / restricted Python / LLM adapter / Agent container
+  -> worker saves step and run projections, then ACKs the message
+  -> UI polls the run and steps to display results
 ```
 
-Các ranh giới quan trọng:
+Important boundaries:
 
-- UI chỉ sửa draft; run luôn dùng snapshot `workflow_versions.graph` đã publish.
-- API không thực thi graph trong request tạo run.
-- PostgreSQL giữ trạng thái nghiệp vụ; Redis giữ trạng thái delivery.
-- Agent node chọn runtime từ catalog allow-list. Graph không được truyền image tùy ý.
-- Secret provider và MCP được giải mã sát thời điểm gọi, không lưu vào graph hay argv.
+- The UI edits only drafts; runs always use a published `workflow_versions.graph` snapshot.
+- The API does not execute the graph in the create-run request.
+- PostgreSQL stores business state; Redis stores delivery state.
+- Agent nodes select runtimes from an allow-listed catalog. Graphs cannot provide arbitrary images.
+- Provider and MCP secrets are decrypted immediately before use and are never stored in graphs or argv.
 
-## Sở hữu mã nguồn
+## Source ownership
 
 ### `src/system`
 
-| Thư mục | Trách nhiệm |
+| Directory | Responsibility |
 | --- | --- |
-| `api/` | HTTP router theo resource; authorization và mapping request/response |
-| `core/` | Kết nối database và xác minh token OIDC |
-| `domain/` | SQLAlchemy model, Pydantic schema, node registry và validation graph |
-| `providers/` | Adapter LLM và mã hóa secret provider |
-| `services/` | Logic ứng dụng dùng lại, hiện gồm skill và MCP server |
-| `runtime/` | Outbox dispatcher, Redis queue, worker, DAG engine và executor |
-| `migrations/` | Lịch sử schema Alembic; không chứa logic runtime |
-| `tests/` | Test contract và hành vi theo cùng ranh giới phía trên |
+| `api/` | Resource-oriented HTTP routers, authorization, and request/response mapping |
+| `core/` | Database connections and OIDC token verification |
+| `domain/` | SQLAlchemy models, Pydantic schemas, node registry, and graph validation |
+| `providers/` | LLM adapters and provider-secret encryption |
+| `services/` | Reusable application logic, currently skills and MCP servers |
+| `runtime/` | Outbox dispatcher, Redis queue, worker, DAG engine, and executors |
+| `migrations/` | Alembic schema history; no runtime logic |
+| `tests/` | Contract and behavior tests that follow the same boundaries |
 
-Điểm vào process:
+Process entry points:
 
-- `main.py`: FastAPI application và lifecycle của orchestrator.
-- `runtime/worker.py`: process consumer Redis độc lập.
-- `runtime/engine.py`: điều phối node theo dependency và giới hạn song song.
-- `runtime/agent_executor.py`: chọn đường gọi Agent container hoặc LLM trực tiếp.
+- `main.py`: FastAPI application and orchestrator lifecycle.
+- `runtime/worker.py`: independent Redis consumer process.
+- `runtime/engine.py`: schedules nodes by dependency and concurrency limits.
+- `runtime/agent_executor.py`: selects the Agent container or direct LLM path.
 
 ### `src/web`
 
-| Thư mục | Trách nhiệm |
+| Directory | Responsibility |
 | --- | --- |
-| `src/app/` | App shell, điều hướng và phối hợp state cấp trang |
-| `src/features/mcp/` | Màn hình MCP server |
-| `src/features/models/` | Màn hình provider/model |
-| `src/features/workflows/` | Template, nhãn tóm tắt và workflow editor |
-| `src/features/workflows/editor/graph.ts` | Hàm thuần parse, layout, cycle, schema và tạo node |
-| `src/features/workflows/editor/` components | Canvas node và schema builder |
-| `src/shared/` | API client, Keycloak và TypeScript contracts dùng chung |
+| `src/app/` | App shell, navigation, and page-level state coordination |
+| `src/features/mcp/` | MCP server screens |
+| `src/features/models/` | Provider/model screens |
+| `src/features/workflows/` | Templates, summary labels, and workflow editor |
+| `src/features/workflows/editor/graph.ts` | Pure parsing, layout, cycle, schema, and node-creation functions |
+| `src/features/workflows/editor/` components | Node canvas and schema builder |
+| `src/shared/` | Shared API client, Keycloak integration, and TypeScript contracts |
 | `src/styles/` | CSS entry point |
 
-### Agent runtime và MCP
+### Agent runtimes and MCP
 
-- `src/agents/manage.py` quản lý manifest/build runtime; mỗi runtime độc lập nằm trong
+- `src/agents/manage.py` manages runtime manifests/builds; each independent runtime lives under
   `src/agents/<runtime-id>`.
-- `src/agents/default/src/agent` triển khai contract JSON qua stdin/stdout bằng Deep
-  Agents/LangGraph.
-- `src/mcp-filesystem` là MCP server demo với root filesystem bị giới hạn.
-- `src/provider-mock` là test double local cho OpenAI, Anthropic và NVIDIA; chỉ được
-  bật qua `docker/compose.provider-mock.yaml` trong local/CI.
+- `src/agents/default/src/agent` implements the JSON stdin/stdout contract with Deep Agents/LangGraph.
+- `src/mcp-filesystem` is a demo MCP server with a restricted filesystem root.
+- `src/provider-mock` is a local test double for OpenAI, Anthropic, and NVIDIA; it is enabled only through `docker/compose.provider-mock.yaml` in local/CI environments.
 
-## Chọn nơi sửa theo loại thay đổi
+## Where to start for each change type
 
-| Thay đổi | Nơi bắt đầu |
+| Change | Starting point |
 | --- | --- |
-| Thêm endpoint/resource | `src/system/api`, sau đó schema/service/domain tương ứng |
-| Thêm loại node | `domain/node_registry.py`, `domain/validation.py`, `runtime/engine.py`, UI editor |
-| Đổi semantics branch/input | `runtime/engine.py` và test execution/workflow |
-| Thêm provider LLM | `providers/adapters.py`, API provider và shared web contracts |
-| Đổi cách chạy Agent | `runtime/agent_runtime_manager.py`, `agent_container.py`, runtime manifest |
-| Thêm workflow mẫu | `src/web/src/features/workflows/templates.ts` |
-| Đổi thao tác graph/canvas | `editor/graph.ts` hoặc component cụ thể, không đặt vào app shell |
-| Đổi database | model + migration Alembic mới; không sửa migration đã phát hành |
+| Add an endpoint/resource | `src/system/api`, then the corresponding schema/service/domain |
+| Add a node type | `domain/node_registry.py`, `domain/validation.py`, `runtime/engine.py`, and the UI editor |
+| Change branch/input semantics | `runtime/engine.py` and execution/workflow tests |
+| Add an LLM provider | `providers/adapters.py`, provider API, and shared web contracts |
+| Change Agent execution | `runtime/agent_runtime_manager.py`, `agent_container.py`, and runtime manifest |
+| Add a sample workflow | `src/web/src/features/workflows/templates.ts` |
+| Change graph/canvas operations | `editor/graph.ts` or the specific component, not the app shell |
+| Change the database | model plus a new Alembic migration; do not edit released migrations |
 
-## Kiểm tra trước khi bàn giao
+## Checks before handoff
 
 ```powershell
 $env:UV_CACHE_DIR = "$PWD/.uv-cache"

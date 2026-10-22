@@ -1,24 +1,24 @@
-# Lưu trữ và xử lý một workflow
+# Workflow persistence and execution
 
-Tài liệu này mô tả đường đi của dữ liệu từ lúc người dùng tạo draft đến lúc một workflow run kết thúc. Phần **hiện có** phản ánh code trong `src/system`; phần **runtime mục tiêu** mô tả những khả năng bền vững còn cần bổ sung.
+This document describes the path of data from the time a user creates a draft to the time a workflow run ends. The **existing** section reflects the code in `src/system`; The **target runtime** section describes persistent capabilities that need to be added.
 
-## 1. Ranh giới service và nơi lưu dữ liệu
+## 1. Service boundaries and data storage
 
-Môi trường phát triển dùng một PostgreSQL database `agentflow`, nhưng mỗi service sở hữu schema riêng:
+The development environment uses a PostgreSQL database `agentflow`, but each service has its own schema:
 
-| Thành phần | Nơi lưu | Trách nhiệm |
+| Ingredients | Where to save | Responsibility |
 | --- | --- | --- |
-| FastAPI `system` / orchestrator | schema `system` + Redis Stream | API workflow, transactional outbox và dispatch `run_id` vào queue |
-| Workflow worker | Không sở hữu database riêng | Claim job, chạy graph và cập nhật run/step projection |
-| Redis | volume `agentflow_redis` | Queue at-least-once, consumer group và pending-entry list |
-| Keycloak | schema `keycloak` | Realm, user, client, role, session đăng nhập |
-| Agent integration | Không có database riêng | Nhận yêu cầu thực thi agent và trả kết quả có schema |
-| Durable execution ledger | Đang triển khai | Đã có migration/model nền cho node attempt, run command và run event; worker chưa dual-write/recover từ ledger |
-| Artifact storage | Chưa triển khai | Log lớn, file, diff, checkpoint và result manifest |
+| FastAPI `system` / orchestrator | schema `system` + Redis Stream | API workflow, transactional outbox and dispatch `run_id` to queue |
+| Workflow workers | Do not own your own database | Claim job, run graph and update run/step projection |
+| Redis | volume `agentflow_redis` | Queue at-least-once, consumer group and pending-entry list |
+| Keycloak | schema `keycloak` | Realm, user, client, role, session login |
+| Agent integration | No separate database | Receives request to execute agent and returns result with schema |
+| Durable execution ledger | Ongoing | There is already a migration/background model for node attempt, run command and run event; worker has not yet dual-write/recover from ledger |
+| Artifact storage | Not yet deployed | Large log, file, diff, checkpoint and result manifest |
 
-Hai schema dùng chung PostgreSQL server/database để vận hành development đơn giản. Không tạo foreign key giữa `system` và `keycloak`; System chỉ tin danh tính `sub` sau khi xác minh JWT. Việc dùng chung database không cho phép System đọc hoặc sửa bảng nội bộ của Keycloak.
+The two schemas share the same PostgreSQL server/database for simple development operations. Do not create a foreign key between `system` and `keycloak`; The system only believes the identity `sub` after verifying the JWT. Sharing a database does not allow the System to read or edit Keycloak's internal tables.
 
-`db-init` trong `docker/compose.yaml` tạo idempotent schema `system` và `keycloak`. Sau đó Keycloak quản lý bảng của schema `keycloak`, còn Alembic của System quản lý bảng và `alembic_version` trong schema `system`.
+`db-init` in `docker/compose.yaml` creates idempotent schema `system` and `keycloak`. Keycloak then manages the table in the `keycloak` schema, while System's Alembic manages the table and `alembic_version` in the `system` schema.
 
 ```mermaid
 flowchart LR
@@ -35,56 +35,56 @@ flowchart LR
     WORKER -->|LLM adapter| LLM[Configured provider]
 ```
 
-## 2. Các bảng hiện có
+## 2. Existing tables
 
 ### `system.workflows`
 
-Đây là bản chỉnh sửa hiện tại của workflow.
+This is the current edit of the workflow.
 
-| Cột | Ý nghĩa |
+| Column | Meaning |
 | --- | --- |
-| `id` | UUID ổn định của workflow |
-| `owner_subject` | Claim `sub` lấy từ access token Keycloak; dùng để giới hạn truy vấn theo người dùng |
-| `name` | Tên workflow |
-| `draft` | JSONB chứa node, edge và cấu hình đang chỉnh sửa |
-| `revision` | Số revision dùng cho optimistic locking |
-| `created_at`, `updated_at` | Thời điểm tạo và cập nhật projection |
+| `id` | Stable workflow UUID |
+| `owner_subject` | Claim `sub` taken from Keycloak access token; used to limit queries by users |
+| `name` | Workflow name |
+| `draft` | JSONB containing node, edge and configuration being edited |
+| `revision` | The revision number used for optimistic locking |
+| `created_at`, `updated_at` | When to create and update projection |
 
-Khi lưu draft, client gửi `expected_revision`. Câu lệnh `UPDATE` chỉ thành công nếu revision trong database vẫn bằng giá trị client đã đọc. Hai editor cùng sửa một revision sẽ không âm thầm ghi đè nhau; request đến sau nhận HTTP `409` và phải tải draft mới.
+When saving the draft, the client sends `expected_revision`. The `UPDATE` statement is only successful if the revision in the database is still equal to the value the client read. Two editors editing the same revision will not silently overwrite each other; The request that comes later receives HTTP `409` and must download a new draft.
 
 ### `system.workflow_versions`
 
-Mỗi hàng là một snapshot đã publish và không được sửa tại chỗ.
+Each row is a published snapshot and cannot be edited in place.
 
-| Cột | Ý nghĩa |
+| Column | Meaning |
 | --- | --- |
-| `workflow_id`, `version` | Khóa duy nhất của số phiên bản trong một workflow |
-| `graph` | Snapshot JSONB dùng cho thực thi |
-| `content_hash` | SHA-256 của JSON canonical để nhận diện chính xác nội dung |
-| `created_at` | Thời điểm publish |
+| `workflow_id`, `version` | Unique key of version number in a workflow |
+| `graph` | Snapshot JSONB used for execution |
+| `content_hash` | SHA-256 of JSON canonical to accurately identify content |
+| `created_at` | Publishing time |
 
-Run luôn tham chiếu `workflow_version_id`, không tham chiếu draft. Vì vậy việc sửa canvas sau khi start không thay đổi graph của run đang chạy.
+Run always references `workflow_version_id`, not draft. So editing the canvas after starting does not change the graph of the running run.
 
 ### `system.runs`
 
-Đây là projection trạng thái cấp run dành cho API/UI.
+This is a run level state projection for API/UI.
 
-| Cột | Ý nghĩa |
+| Column | Meaning |
 | --- | --- |
-| `workflow_version_id` | Snapshot workflow được chọn để chạy |
-| `owner_subject` | Chủ thể Keycloak tạo run |
-| `status` | `pending`, `running`, `succeeded` hoặc `failed` |
-| `input` | JSONB input của lần chạy |
-| `output` | JSONB kết quả của node cuối; để trống khi run thất bại |
-| `created_at`, `updated_at` | Thời gian tạo và cập nhật trạng thái |
+| `workflow_version_id` | Snapshot workflow is selected to run |
+| `owner_subject` | Keycloak subject creates run |
+| `status` | `pending`, `running`, `succeeded` or `failed` |
+| `input` | JSONB input of run |
+| `output` | JSONB result of last node; leave blank when run fails |
+| `created_at`, `updated_at` | Status creation and update time |
 
-`runs` là projection để API/UI truy vấn. Redis giữ delivery state; `run_dispatches` bảo đảm yêu cầu dispatch được ghi atomically cùng run.
+`runs` is the projection for API/UI to query. Redis keeps delivery state; `run_dispatches` ensures dispatch requests are logged atomically with run.
 
 ### `system.run_dispatches`
 
-Mỗi run có một outbox row duy nhất. API tạo `runs`, các `run_steps` pending và `run_dispatches` trong cùng transaction. Orchestrator chỉ đánh dấu `dispatched_at` sau khi `XADD` thành công; nếu Redis tạm ngừng, row giữ nguyên để vòng sau thử lại.
+Each run has a unique outbox row. API creates `runs`, pending `run_steps` and `run_dispatches` in the same transaction. Orchestrator only marks `dispatched_at` after `XADD` succeeds; If Redis pauses, the row remains intact to try again next round.
 
-## 3. Luồng hiện đã chạy được
+## 3. Current execution flow
 
 ```mermaid
 sequenceDiagram
@@ -96,120 +96,120 @@ sequenceDiagram
     participant W as Workflow worker
     participant D as Docker/agent container
 
-    C->>K: Đăng nhập
+    C->>K: Log in
     K-->>C: Access token
     C->>A: POST /v1/workflows
-    A->>A: Xác minh JWT, lấy claim sub
+    A->>A: Verify JWT, get claim sub
     A->>P: INSERT workflows (draft, revision=1)
     C->>A: PUT /v1/workflows/{id}/draft
     A->>P: UPDATE ... WHERE revision=expected_revision
     C->>A: POST /validate
-    A->>A: Kiểm tra node ID, edge và cycle
+    A->>A: Check node ID, edge and cycle
     C->>A: POST /versions
     A->>P: INSERT immutable graph + SHA-256
-    C->>A: POST /runs với version_id + input
-    A->>P: INSERT run + steps + outbox (một transaction)
+    C->>A: POST /runs with version_id + input
+    A->>P: INSERT run + steps + outbox (one transaction)
     A-->>C: HTTP 202 + run pending
-    A->>P: Background loop claim outbox chưa dispatch
+    A->>P: Background loop claim outbox has not been dispatched yet
     A->>R: XADD run_id
     A->>P: Set dispatched_at
     W->>R: XREADGROUP / claim job
     W->>P: pending -> running
-    W->>W: Chạy DAG, LLM Call và Python giới hạn
-    W->>D: Tạo container từ runtime đã chọn cho mỗi Agent node
-    D-->>W: RunResult JSON rồi container bị xóa
-    W->>P: Ghi output, step và trạng thái terminal
+    W->>W: Run DAG, LLM Call and limited Python
+    W->>D: Create containers from the selected runtime for each Agent node
+    D-->>W: RunResult JSON then the container is deleted
+    W->>P: Record output, steps and terminal status
     W->>R: XACK
 ```
 
-Các bước cụ thể:
+Specific steps:
 
-1. `POST /v1/workflows` tạo draft thuộc `sub` của token. Client không được tự truyền `owner_subject`.
-2. `PUT /v1/workflows/{id}/draft` tăng revision trong cùng câu lệnh cập nhật có điều kiện.
-3. `POST /v1/workflows/{id}/validate` hiện kiểm tra cấu trúc `nodes`/`edges`, ID rỗng hoặc trùng, edge tham chiếu node không tồn tại và cycle.
-4. `POST /v1/workflows/{id}/versions` chỉ publish graph hợp lệ, đánh số version tiếp theo và lưu hash.
-5. `POST /v1/workflows/{id}/runs` xác minh version rồi tạo run, step và outbox atomically. API trả HTTP `202` ngay với trạng thái `pending`; nó không gọi LLM hoặc chạy Python.
-6. Orchestrator loop chạy trong chính lifecycle FastAPI gửi outbox vào Redis Stream. Worker trong consumer group claim job bằng phép cập nhật `pending -> running`, tải immutable graph rồi thực thi `input.schema`, `math.add`, `llm.call`, `agent`, `code.python` và `output.schema` theo dependency. `llm.call` gửi đúng một Chat Completions request bằng provider/model của chủ run và không nạp skill. Agent node resolve runtime id (`default`/`agent`, `codex`, `opencode` hoặc `openhands`) từ allow-list `AGENT_RUNTIME_IMAGES`, truyền task/context/skill qua stdin, inject tạm thời provider/model/API key lấy từ lựa chọn của node (hoặc provider mặc định đã đăng ký), nhận `RunResult` qua stdout rồi cleanup. Workflow worker không dùng cấu hình model hoặc credential từ `.env`.
-7. `GET /v1/runs/{run_id}` và `/steps` trả projection đang được worker cập nhật. UI poll mỗi giây khi run là `pending/running`. Nếu một bước lỗi, bước đó là `failed`, các bước sau là `skipped`, và run kết thúc `failed`.
-8. Worker chỉ `XACK` sau khi kết quả được commit. Message chưa ack quá thời gian cấu hình được worker khỏe mạnh nhận lại bằng `XAUTOCLAIM`.
-9. `GET /v1/workflows/{id}/runs` trả tối đa 100 lần chạy gần nhất của workflow, mới nhất trước và chỉ trong phạm vi người dùng hiện tại.
+1. `POST /v1/workflows` creates a draft of the token `sub`. The client cannot transmit `owner_subject` itself.
+2. `PUT /v1/workflows/{id}/draft` increases revision within the same conditional update statement.
+3.
+4. `POST /v1/workflows/{id}/versions` only publishes the valid graph, numbers the next version and saves the hash.
+5. `POST /v1/workflows/{id}/runs` verifies the version then creates run, step and outbox atomically. The API returns HTTP `202` immediately with status `pending`; it doesn't call LLM or run Python.
+6. Orchestrator loop runs in the FastAPI lifecycle itself sending outboxes to Redis Stream. Workers in the consumer group claim the job by updating `pending -> running`, loading the immutable graph and then executing `input.schema`, `math.add`, `llm.call`, `agent`, `code.python` and `output.schema` according to the dependency. `llm.call` sends exactly one Chat Completions request using the host's provider/model and does not load the skill. Agent node resolve runtime id (`default`/`agent`, `codex`, `opencode` or `openhands`) from allow-list Workflow worker does not use model or credential configuration from `.env`.
+7. `GET /v1/runs/{run_id}` and `/steps` return the projection being updated by the worker. UI poll every second when running is `pending/running`. If a step fails, that step is `failed`, the following steps are `skipped`, and run ends `failed`.
+8. Worker points to `XACK` after the result is committed. Messages that have not been acked for more than the configured time are received by a healthy worker using `XAUTOCLAIM`.
+9. `GET /v1/workflows/{id}/runs` pays up to 100 most recent runs of the workflow, newest first and only within the current user range.
 
-`code.python` hiện dùng evaluator AST cho một tập Python giới hạn phục vụ biến đổi JSON (`main(inputs)`, biến cục bộ, dict/list, `len`, `split`, `join`). Nó không dùng `exec`, không cho phép import, vòng lặp hoặc truy cập tùy ý vào filesystem/network. Một runner cô lập đầy đủ vẫn thuộc runtime mục tiêu.
+`code.python` currently uses the AST evaluator for a limited Python set serving JSON transformations (`main(inputs)`, local variables, dict/list, `len`, `split`, `join`). It does not use `exec`, does not allow imports, loops or arbitrary access to the filesystem/network. A fully isolated runner still belongs to the target runtime.
 
-Prompt của `llm.call` và instructions của `agent` hỗ trợ template theo input đã được resolve của chính node. Dùng `{{input.field}}` cho một trường, `{{input.nested.field}}` cho đường dẫn lồng nhau hoặc `{{input}}` cho toàn bộ JSON. Khi node chỉ có một parent và không khai báo `inputs`, output của parent tự động trở thành input của node; tham chiếu không tồn tại làm step thất bại với lỗi rõ ràng.
+`llm.call`'s prompt and `agent`'s instructions support templates according to the node's own resolved input. Use `{{input.field}}` for a single field, `{{input.nested.field}}` for nested paths, or `{{input}}` for the entire JSON. When a node has only one parent and does not declare `inputs`, the parent's output automatically becomes the node's input; A reference that does not exist causes step to fail with an obvious error.
 
-## 4. Runtime bền vững mục tiêu
+## 4. Runtime sustainability goals
 
-Worker hiện đã xử lý theo snapshot và Redis consumer group. Các trạng thái/khả năng nâng cao còn lại:
+Workers are now processed according to snapshots and Redis consumer groups. Remaining advanced statuses/abilities:
 
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING: API commit run
-    PENDING --> QUEUED: command/outbox được ghi
-    QUEUED --> RUNNING: worker nhận lease
-    RUNNING --> WAITING_APPROVAL: gặp approval node
-    WAITING_APPROVAL --> RUNNING: nhận decision hợp lệ
-    RUNNING --> SUCCEEDED: mọi nhánh hoạt động hoàn tất
-    RUNNING --> FAILED: node lỗi không được xử lý
-    RUNNING --> TIMED_OUT: vượt deadline
-    PENDING --> CANCELLED: hủy trước khi chạy
-    RUNNING --> CANCELLED: worker xác nhận đã dừng
+    PENDING --> QUEUED: command/outbox logged
+    QUEUED --> RUNNING: worker receives lease
+    RUNNING --> WAITING_APPROVAL: meet approval node
+    WAITING_APPROVAL --> RUNNING: receive a valid decision
+    RUNNING --> SUCCEEDED: all branch operations are complete
+    RUNNING --> FAILED: node error cannot be processed
+    RUNNING --> TIMED_OUT: deadline exceeded
+    PENDING --> CANCELLED: cancel before running
+    RUNNING --> CANCELLED: worker confirms stop
 ```
 
-Một chu kỳ xử lý đề xuất:
+A suggested processing cycle:
 
-1. API tạo `run`, `StartRun command` và outbox event trong **một transaction**. Chỉ trả `202` sau commit.
-2. Dispatcher claim outbox bằng lease và gửi run tới workflow worker. Gửi lại phải dùng cùng operation key.
-3. Worker tải `workflow_versions.graph`, xác minh `content_hash`, tạo trạng thái execution từ snapshot và input.
-4. Graph interpreter tìm tất cả node đủ dependency rồi chạy đồng thời tới giới hạn `settings.maxParallelNodes` (mặc định 4, tối đa 32).
-5. Executor resolve input mapping từ `$input` và output node trước; secret chỉ được resolve ngay trước lúc gọi connector/agent.
-6. Node thuần như transform/if chạy trong worker. Node agent tạo một agent job bền vững; runner supervisor tạo một container dùng một lần cho mỗi attempt theo [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md). HTTP request, test, approval và connector dùng adapter riêng.
-7. Kết quả được kiểm tra output schema trước khi node chuyển `SUCCEEDED`. Output lớn được lưu thành artifact và database chỉ giữ reference/checksum.
-8. Node `if` chỉ kích hoạt edge `true` hoặc `false`; node `parallel` kích hoạt mọi edge `parallel`. Worker lan truyền `SKIPPED` cho nhánh không được chọn để join không bị treo.
-9. Mỗi lần đổi trạng thái ghi projection và domain event/outbox trong cùng transaction. UI đọc projection và có thể nhận event qua SSE.
-10. Khi mọi nhánh kết thúc, worker ghi trạng thái terminal và output tổng hợp của run.
+1. API creates `run`, `StartRun command` and outbox event in **one transaction**. Only pay `202` after commit.
+2. Dispatcher claims outbox with lease and sends run to workflow worker. Resend must use the same operation key.
+3. Worker loads `workflow_versions.graph`, verifies `content_hash`, creates execution status from snapshot and input.
+4. Graph interpreter finds all nodes with sufficient dependencies and then runs them simultaneously up to the `settings.maxParallelNodes` limit (default 4, maximum 32).
+5. Executor resolves input mapping from `$input` and output node first; secret is only resolved right before calling connector/agent.
+6. Pure Node like transform/if runs in worker. Node agent creates a persistent agent job; runner supervisor creates a disposable container for each attempt according to [ephemeral agent runtime design](ephemeral-agent-runtime.md). HTTP requests, tests, approvals and connectors use separate adapters.
+7. The output schema is checked before the node switches to `SUCCEEDED`. Large output is saved as an artifact and the database only keeps reference/checksum.
+8. Node `if` only activates edge `true` or `false`; node `parallel` activates every edge `parallel`. The worker propagates `SKIPPED` to the unselected branch so that the join does not crash.
+9. Each state change records projection and domain event/outbox in the same transaction. The UI reads the projection and can receive events via SSE.
+10. When every branch finishes, the worker records the terminal state and the run's summary output.
 
-## 5. Dữ liệu cần bổ sung cho worker
+## 5. Additional worker data
 
-`run_steps` hiện đã lưu projection nhẹ để UI xem trạng thái và input/output từng node. Các bảng dưới đây vẫn cần bổ sung khi triển khai worker bền vững:
+`run_steps` now saves a light projection for the UI to see the status and input/output of each node. The following tables still need to be added when deploying persistent workers:
 
-| Bảng | Nội dung chính |
+| Table | Main content |
 | --- | --- |
-| `node_attempts` | Số attempt, lease generation, thời gian và lỗi chuẩn hóa |
-| `commands` | Start/cancel/approval command cùng idempotency key và payload hash |
-| `run_dispatches` | Đã triển khai: outbox dispatch run vào Redis Stream |
-| `run_events` | Event audit có sequence để SSE replay |
-| `agent_sessions` | Provider, session ID, runner/job reference và workspace snapshot |
-| `approval_requests` | Action hash, reviewer scope, deadline và decision |
-| `artifacts` | Object key, content type, size, checksum và retention |
+| `node_attempts` | Number of attempts, lease generation, time and normalized error |
+| `commands` | Start/cancel/approval command with idempotency key and payload hash |
+| `run_dispatches` | Implemented: outbox dispatch run into Redis Stream |
+| `run_events` | Event audit has a sequence for SSE replay |
+| `agent_sessions` | Provider, session ID, runner/job reference and workspace snapshot |
+| `approval_requests` | Action hash, reviewer scope, deadline and decision |
+| `artifacts` | Object key, content type, size, checksum and retention |
 
-Các bảng trên vẫn thuộc schema `system` trong môi trường hiện tại. Nếu sau này một service trở thành chủ sở hữu dữ liệu độc lập, có thể chuyển schema/database bằng migration mà không để agent integration truy cập trực tiếp bảng System.
+The above tables still belong to the `system` schema in the current environment. If a service later becomes an independent data owner, it is possible to transfer the schema/database using migration without letting the integration agent directly access the System table.
 
-### Langfuse và lịch sử nghiệp vụ
+### Langfuse and business history
 
-`run_steps` là nguồn dữ liệu chính cho màn hình lịch sử vì nó cùng quyền sở hữu và vòng đời với workflow run. Langfuse là lớp observability tùy chọn: một AgentFlow run ánh xạ thành trace, mỗi node/LLM call thành observation. Không dùng Langfuse thay cho `run_steps`, và không tự đưa secret hoặc payload nhạy cảm vào trace. Local self-host được triển khai bằng override `docker/compose.langfuse.yaml`; xem cách vận hành và policy input/output trong [tài liệu observability](observability.md). Tham khảo [Langfuse data model](https://langfuse.com/docs/observability/data-model) và [self-hosting sizing](https://langfuse.com/self-hosting/configuration/scaling).
+`run_steps` is the primary data source for the history screen because it has the same ownership and lifecycle as the run workflow. Langfuse is an optional observability layer: an AgentFlow run maps to a trace, each node/LLM call to observation. Do not use Langfuse instead of `run_steps`, and do not include secrets or sensitive payloads in the trace. Local self-host is implemented using the `docker/compose.langfuse.yaml` override; See operation and input/output policy in [observability document](observability.md). Refer to [Langfuse data model](https://langfuse.com/docs/observability/data-model) and [self-hosting sizing](https://langfuse.com/self-hosting/configuration/scaling).
 
-Kiến trúc metrics/logs/traces, quy tắc correlation và các bước triển khai monitoring stack được mô tả tại [tích hợp giám sát và observability](observability.md).
+The metrics/logs/traces architecture, correlation rules, and monitoring stack implementation steps are described at [monitoring and observability integration](observability.md).
 
-## 6. Transaction, retry và khôi phục
+## 6. Transaction, retry and recovery
 
-- Tạo run và tạo command phải atomic; không để có run mà worker không bao giờ biết tới.
-- Delivery được xem là at-least-once. Mọi node có side effect cần `operation_key` ổn định qua retry.
-- Worker chỉ claim một execution bằng lease có hạn. Generation/fencing ngăn worker cũ ghi kết quả sau khi mất lease.
-- Lỗi mạng tạm thời có thể retry với backoff. Lỗi auth, policy hoặc schema không retry tự động.
-- Sau timeout không rõ kết quả của API bên ngoài, node chuyển `RECONCILIATION_REQUIRED` thay vì gọi lại mù quáng.
-- Agent trả text “done” chưa đủ để thành công; System phải nhận response hợp lệ, kiểm tra schema và commit kết quả.
-- Khi process restart, worker dựng lại tiến độ từ run/node projection và durable orchestration history; không dựa vào task chỉ nằm trong memory FastAPI.
+- Create run and command must be atomic; Don't let there be a run that the worker never knows about.
+- Delivery is considered at-least-once. Every node with side effects needs `operation_key` to be stable via retry.
+- Worker only claims one execution with a limited lease. Generation/fencing prevents old workers from recording results after lease loss.
+- Temporary network error can be retried with backoff. Auth, policy or schema errors are not retried automatically.
+- After an unknown timeout of the external API, the node passes `RECONCILIATION_REQUIRED` instead of blindly calling back.
+- Agent returning the text "done" is not enough to be successful; The system must receive a valid response, check the schema, and commit the result.
+- When process restarts, worker rebuilds progress from run/node projection and durable orchestration history; does not rely on tasks that only reside in FastAPI memory.
 
-Thiết kế event/outbox và durable orchestration chi tiết nằm trong [event-driven.md](event-driven.md). Ngữ nghĩa node, branch và join nằm trong [workflow-spec.md](workflow-spec.md). Ranh giới gọi agent nằm trong [agent-integration.md](agent-integration.md).
+Detailed event/outbox and durable orchestration design is in [event-driven.md](event-driven.md). Node, branch and join semantics are in [workflow-spec.md](workflow-spec.md). The agent calling boundary is in [agent-integration.md](agent-integration.md).
 
-## 7. Ví dụ dữ liệu qua từng giai đoạn
+## 7. Example data through each stage
 
-Draft đang sửa:
+Draft under editing:
 
 ```json
 {
-  "name": "Xử lý yêu cầu hỗ trợ",
+  "name": "Handling support requests",
   "draft": {
     "nodes": [
       { "id": "start", "type": "trigger.manual" },
@@ -224,19 +224,19 @@ Draft đang sửa:
 }
 ```
 
-Yêu cầu tạo run từ version đã publish:
+Request to create run from published version:
 
 ```json
 {
   "version_id": "6f902d28-979b-4c5f-b9dc-94bc7f29dc77",
   "input": {
     "ticket_id": "SUP-1024",
-    "message": "Không đăng nhập được"
+    "message": "Unable to log in"
   }
 }
 ```
 
-Projection hiện tại ngay sau khi API commit:
+Current Projection right after API commit:
 
 ```json
 {
@@ -245,7 +245,7 @@ Projection hiện tại ngay sau khi API commit:
   "status": "succeeded",
   "input": {
     "ticket_id": "SUP-1024",
-    "message": "Không đăng nhập được"
+    "message": "Unable to log in"
   },
   "output": {
     "result": "..."
@@ -253,4 +253,4 @@ Projection hiện tại ngay sau khi API commit:
 }
 ```
 
-Hàng run phản ánh trạng thái tổng hợp; `run_steps` cung cấp chi tiết node cho UI. Khi worker được triển khai, attempt/retry và log lớn sẽ nằm trong `node_attempts` cùng artifact storage.
+The run row reflects the synthesis status; `run_steps` provides node details for the UI. When the worker is deployed, the attempt/retry and large log will reside in `node_attempts` with artifact storage.

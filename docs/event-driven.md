@@ -1,28 +1,28 @@
-# Event-driven và thực thi bền vững
+# Event-driven and durable execution
 
-Trạng thái: thiết kế đề xuất, **05/09/2026**. Kiến trúc tổng thể: [architecture.md](architecture.md).
+Status: proposed design, **September 5, 2026**. Overall architecture: [architecture.md](architecture.md).
 
-## 1. Có dùng event-driven được không?
+## 1. Can the system use an event-driven architecture?
 
-**Có, và nên dùng kết hợp một bộ điều phối có trạng thái lưu bền.** Ví dụ webhook tạo run; agent phát tiến độ; người dùng duyệt phát lệnh tiếp tục; workflow hoàn thành phát sự kiện cho hệ thống khác.
+**Yes, and should be used in conjunction with a persistent state dispatcher.** Example webhook that creates run; progress broadcast agent; The approving user issues the continue command; The completed workflow broadcasts events to other systems.
 
-Nếu từng service chỉ nghe sự kiện rồi tự quyết định bước tiếp theo, logic branch/join, timeout và hủy sẽ bị phân tán. Đề xuất của AgentFlow là orchestration cho đường thực thi, publish/subscribe cho quan sát và tích hợp.
+If each service only listens to events and decides its own next step, the branch/join, timeout, and cancellation logic will be scattered. AgentFlow's recommendation is orchestration for the execution path, publish/subscribe for observability and integration.
 
-Ba khái niệm khác nhau:
+Three different concepts:
 
-- **Command:** yêu cầu làm việc, có thể bị từ chối, ví dụ `StartRun`, `CancelRun`, `DecideApproval`.
-- **Event:** thông báo một việc đã được ghi nhận, ví dụ `run.started`, `approval.decided`.
-- **Progress:** thông tin tạm thời như text delta hoặc log; không dùng để xác nhận node thành công.
+- **Command:** work request, can be rejected, for example `StartRun`, `CancelRun`, `DecideApproval`.
+- **Event:** announces that an event has been recorded, for example `run.started`, `approval.decided`.
+- **Progress:** temporary information such as text delta or log; Not used to confirm node success.
 
-Event-driven không bắt buộc có Kafka. MVP dùng PostgreSQL outbox, dispatcher và Temporal task queues; UI nhận sự kiện qua SSE. Khi cần fan-out tới nhiều dịch vụ độc lập, thêm NATS JetStream. JetStream có persistence, replay và giao ít nhất một lần; Core NATS thuần có đặc tính khác. Nguồn: [NATS JetStream](https://docs.nats.io/concepts/jetstream).
+Event-driven does not require Kafka. MVP uses PostgreSQL outbox, dispatcher and Temporal task queues; UI receives events via SSE. When you need fan-out to multiple independent services, add NATS JetStream. JetStream has persistence, replay and delivery at least once; Pure Core NATS has different characteristics. Source: [NATS JetStream](https://docs.nats.io/concepts/jetstream).
 
-Không áp dụng event sourcing cho toàn bộ dữ liệu sản phẩm trong MVP. Temporal history phục vụ recovery engine; run event log phục vụ audit/UI; workflow draft và membership vẫn dùng mô hình relational thông thường.
+Do not apply event sourcing to all product data in MVP. Temporal history serves the recovery engine; run event log for audit/UI; Draft and membership workflows still use the usual relational model.
 
-## 2. Đường đi của một run
+## 2. The path of a run
 
 ```mermaid
 sequenceDiagram
-    participant C as Client hoặc webhook
+    participant C as Client or webhook
     participant A as API
     participant P as PostgreSQL
     participant D as Dispatcher
@@ -33,43 +33,43 @@ sequenceDiagram
     A->>P: Transaction: run + command + outbox
     P-->>A: Commit
     A-->>C: 202 + runId + statusUrl
-    D->>P: Claim outbox bằng lease
-    D->>T: Start workflow với ID ổn định
-    T-->>D: Đã nhận hoặc đã tồn tại
-    D->>P: Đánh dấu lệnh đã gửi
-    T->>W: Activity theo graph
-    W->>R: StartOrAttach với operationKey
-    R-->>W: Progress và result manifest
-    W->>P: Ghi tiến độ và metadata
-    W-->>T: Kết quả Activity
-    T->>P: Qua projection Activity: cập nhật node/run + event
+    D->>P: Claim outbox by lease
+    D->>T: Start workflow with stable ID
+    T-->>D: Received or already exists
+    D->>P: Mark sent command
+    T->>W: Activity from the graph
+    W->>R: StartOrAttach with operationKey
+    R-->>W: Progress and result manifest
+    W->>P: Record progress and metadata
+    W-->>T: Activity results
+    T->>P: Through projection Activity: update node/run + event
 ```
 
-API chỉ trả `202` sau khi transaction đã commit. Nếu Temporal tạm ngừng, run ở trạng thái queued và dispatcher thử lại. Nếu dispatcher chết sau khi Temporal đã nhận nhưng trước khi cập nhật outbox, lần gửi lại dùng cùng workflow ID và chính sách conflict/reuse từ chối tạo execution khác. Đồng thời khóa idempotency ở database phải còn hiệu lực sau khi Temporal history hết retention.
+The API only returns `202` after the transaction has committed. If Temporal is suspended, run is in the queued state and the dispatcher tries again. If the dispatcher dies after Temporal has received but before updating the outbox, the resend uses the same workflow ID and the conflict/reuse policy refuses to create another execution. At the same time, the idempotency lock in the database must remain valid after Temporal history runs out of retention.
 
-Transactional outbox giải quyết khoảng hở giữa commit database và gửi thông điệp. Việc gửi lại vẫn có thể tạo duplicate nên consumer phải idempotent. Nguồn: [AWS — Transactional outbox pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html).
+Transactional outbox resolves the gap between database commit and message delivery. Sending back can still create duplicates so the consumer must be idempotent. Source: [AWS — Transactional outbox pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html).
 
-## 3. Graph interpreter trên Temporal
+## 3. Graph interpreter on Temporal
 
-Một Workflow Execution logic của AgentFlow chạy graph interpreter với **snapshot workflow version bất biến**. Interpreter chịu trách nhiệm chọn node đủ điều kiện, giới hạn parallelism, branch/join, deadline và trạng thái kết thúc.
+An AgentFlow Workflow Execution logic runs the graph interpreter with an immutable **snapshot workflow version**. The Interpreter is responsible for selecting qualified nodes, parallelism limits, branch/join, deadlines, and termination status.
 
-Trong Workflow code chỉ thực hiện logic deterministic và dùng API thời gian/signal của Temporal. Gọi model, filesystem, network, SDK agent, database và publish event đều qua Activities. Kết quả Activity đã ghi trong history được sử dụng khi replay; một Activity chưa ghi nhận kết quả có thể chạy lại. Nguồn: [Temporal TypeScript Workflow basics](https://docs.temporal.io/develop/typescript/workflows/basics).
+In the Workflow code, only deterministic logic is implemented and uses Temporal's time/signal API. Calling model, filesystem, network, SDK agent, database and publish events are all through Activities. Activity results recorded in history are used when replaying; An Activity that has not recorded results can be rerun. Source: [Temporal TypeScript Workflow basics](https://docs.temporal.io/develop/typescript/workflows/basics).
 
-Đề xuất ranh giới Activity:
+Recommended Activity boundaries:
 
-- `loadWorkflowSnapshot`: nạp snapshot/version/hash và trả dữ liệu nhỏ vào history.
-- `executeConnector`: gọi một operation bên ngoài với idempotency key.
-- `superviseAgent`: khởi chạy hoặc gắn lại vào runner job, heartbeat và nhận kết quả.
-- `persistProjection`: ghi trạng thái UI và domain event trong cùng transaction.
-- `createApproval`: lưu yêu cầu duyệt; Workflow chờ decision bằng Signal và timer.
+- `loadWorkflowSnapshot`: load snapshot/version/hash and return small data to history.
+- `executeConnector`: call an external operation with idempotency key.
+- `superviseAgent`: launch or reattach to runner job, heartbeat and get results.
+- `persistProjection`: record UI state and domain event in the same transaction.
+- `createApproval`: save approval request; Workflow waits for decision using Signal and timer.
 
-Không đưa từng token vào Temporal history. Lưu output lớn ở artifact storage; Activity trả object reference, checksum và kết quả nhỏ cần cho branch. Với loop/subflow lớn ở giai đoạn sau, giới hạn số bước và dùng child workflow/Continue-As-New phù hợp; cần chuyển cả state và danh sách command đã xử lý sang execution tiếp theo.
+Do not include each token in the Temporal history. Save large output in artifact storage; The activity returns the object reference, checksum, and small results needed for the branch. For large loops/subflows at later stages, limit the number of steps and use child workflow/Continue-As-New accordingly; need to transfer both state and list of processed commands to the next execution.
 
-Khi deploy interpreter mới, dùng cơ chế versioning/patching tương thích history và chạy replay test. Khóa phiên bản DSL thôi chưa đủ: code interpreter, node implementation và runtime image cũng phải được xác định. Tham khảo nhóm tài liệu [Temporal TypeScript Workflows](https://docs.temporal.io/develop/typescript/workflows).
+When deploying a new interpreter, use a history-compatible versioning/patching mechanism and run replay tests. Locking the DSL version is not enough: the interpreter code, node implementation, and runtime image must also be defined. Refer to the [Temporal TypeScript Workflows](https://docs.temporal.io/develop/typescript/workflows) documentation group.
 
-## 4. Hợp đồng event
+## 4. Event contract
 
-Đây là envelope nội bộ đề xuất, không phải nguyên mẫu API Codex/OpenCode và không tuyên bố tuân thủ CloudEvents.
+This is an internal proposal envelope, not a Codex/OpenCode API prototype, and does not claim to be CloudEvents compliant.
 
 ```json
 {
@@ -95,95 +95,95 @@ Khi deploy interpreter mới, dùng cơ chế versioning/patching tương thích
 }
 ```
 
-`agent.turn.completed` chỉ mô tả trạng thái runtime. Node chỉ thành công sau khi AgentFlow kiểm tra output schema, lưu artifact và Workflow ghi nhận kết quả. Agent tự viết “done” trong text không phải tín hiệu kết thúc hợp lệ.
+`agent.turn.completed` only describes runtime status. The Node only succeeds after AgentFlow checks the output schema, saves the artifact, and Workflow records the results. Agent writing "done" in text is not a valid termination signal.
 
-Quy tắc:
+Rules:
 
-1. Event ID giữ nguyên khi phát lại cùng event; thay đổi ngữ nghĩa không tương thích thì tăng schema version.
-2. Sequence tăng trong từng aggregate, cấp bằng transaction hoặc một writer; không giả định thứ tự toàn cục dựa trên timestamp.
-3. UI dùng cursor server riêng cho stream theo run; không trộn cursor UI với sequence của nhiều node.
-4. Payload dùng reference cho log/diff lớn; không chứa credential, prompt đầy đủ hoặc dữ liệu nhạy cảm mặc định.
-5. Consumer khóa duy nhất `(consumerId, eventId)` trong inbox, commit tác động database cùng inbox rồi mới ACK.
-6. Consumer gặp event cũ không được kéo trạng thái terminal về running. Gap sequence khiến consumer nạp snapshot hoặc chờ bù sự kiện.
+1. Event ID remains the same when replaying the same event; Incompatible semantic changes increase the schema version.
+2. Sequence increases in each aggregate, leveled by a transaction or a writer; does not assume global ordering based on timestamp.
+3. UI uses a separate cursor server for stream by run; Do not mix UI cursors with sequences of multiple nodes.
+4. Payload uses reference for large log/diff; contains no default credentials, full prompts, or sensitive data.
+5. Consumer has unique key `(consumerId, eventId)` in the inbox, commits to the database in the inbox and then ACKs.
+6. Consumers encountering old events cannot pull the terminal status back to running. Gap sequence causes consumers to load snapshots or wait for event compensation.
 
-## 5. Retry và idempotency
+## 5. Retry and idempotency
 
-Thiết kế cho **at-least-once delivery**, không hứa exactly-once đối với thao tác ở hệ thống bên ngoài.
+Design for **at-least-once delivery**, do not promise exactly-once for operations on external systems.
 
 `operationKey = tenantId / logicalRunId / nodeInvocationId / operationName`
 
-Key trên giữ nguyên qua retry kỹ thuật. `attempt` dùng cho log, lease và chi phí; không đưa attempt vào key chống lặp tác động. Khi chủ động chạy lại để tạo một kết quả mới, tạo invocation/run mới và lưu liên hệ với lần trước.
+The above key remains the same through technical retry. `attempt` is used for log, lease and costs; Do not include attempt in the anti-repeat key. When actively running again to create a new result, create a new invocation/run and save the connection to the previous one.
 
-| Thao tác | Cách tránh làm lặp |
+| Operation | How to avoid repetition |
 | --- | --- |
-| Webhook trùng | Unique theo tenant + trigger + upstream delivery ID; payload hash phát hiện tái dùng key với nội dung khác |
-| Scheduler gửi trùng | Key theo trigger + thời điểm lịch dự kiến; lưu timezone và chính sách missed run |
-| Tạo runner job | Unique operation key; retry truy vấn/attach job cũ trước |
-| Ghi artifact | Object key bất biến, checksum, finalize manifest idempotent |
-| Gọi API có idempotency | Truyền cùng key và giữ bản ghi kết quả |
-| Tạo PR/API không có idempotency đủ mạnh | Đối soát theo repo, branch, marker/operation key; timeout không rõ kết quả thì chuyển `RECONCILIATION_REQUIRED` |
-| Nhận decision duyệt | Unique command ID và kiểm tra trạng thái request bằng compare-and-set |
+| Duplicate webhooks | Unique by tenant + trigger + upstream delivery ID; payload hash detects key reuse with different content |
+| Scheduler sends duplicate | Key according to trigger + expected calendar time; save timezone and missed run policy |
+| Create runner job | Unique operation key; retry previous query/attach job |
+| Record artifact | Object key immutable, checksum, finalize manifest idempotent |
+| Call the API with idempotency | Pass along the key and keep a record of the result |
+| Creating PR/API without strong enough idempotency | Check by repo, branch, marker/operation key; timeout if the result is unclear, switch to `RECONCILIATION_REQUIRED` |
+| Receive decision approval | Unique command ID and check request status using compare-and-set |
 
-Outbox/inbox không tự làm cho một cuộc gọi API và database commit trở thành atomic. Sau timeout, tác động bên ngoài có thể đã xảy ra. Với tác động không thể đối soát, dừng để kiểm tra thay vì tự gửi lại.
+Outbox/inbox does not automatically make an API call and database commit atomic. After the timeout, an external impact may have occurred. With uncontrollable impacts, stop to check instead of sending it back yourself.
 
-| Nhóm lỗi | Chính sách đề xuất |
+| Error group | Recommended Policy |
 | --- | --- |
-| Rate limit, lỗi mạng tạm thời | Retry có giới hạn, exponential backoff + jitter; tôn trọng Retry-After |
-| Auth, cấu hình/schema sai, policy deny | Không retry tự động; trả lỗi có thể sửa |
-| Agent output không đúng schema | Tối đa một lượt sửa có budget; sau đó fail node |
-| Test thất bại | Output nghiệp vụ `passed: false`, đi nhánh được thiết kế; không retry vô hạn |
-| Worker chết, mất heartbeat | Reconcile job cũ trước khi tiếp tục hoặc chạy lại |
-| Hết budget/deadline | Hủy và cleanup; không coi là lỗi mạng để retry |
+| Rate limit, temporary network error | Limited retry, exponential backoff + jitter; respect Retry-After |
+| Auth, wrong configuration/schema, policy deny | No automatic retry; return correctable errors |
+| Agent output does not have the correct schema | Maximum one edit per budget; then fail node |
+| Test failed | Business output `passed: false`, designed branch; no infinite retry |
+| Worker dies, loses heartbeat | Reconcile the old job before continuing or rerunning |
+| Out of budget/deadline | Cancel and cleanup; Do not consider it a network error to retry |
 
-Temporal Activity có timeout/retry và nhận cancellation qua heartbeat. Tuy nhiên worker hoặc subprocess vẫn cần chủ động xử lý hủy; timeout phía engine không tự giết process. Nguồn: [Temporal Activity Execution](https://docs.temporal.io/activity-execution).
+Temporal Activity has timeout/retry and receives cancellation via heartbeat. However, the worker or subprocess still needs to proactively handle cancellation; Engine-side timeout does not kill the process itself. Source: [Temporal Activity Execution](https://docs.temporal.io/activity-execution).
 
-## 6. Worker chết và tác vụ vẫn đang chạy
+## 6. Worker dies and task is still running
 
-Đề xuất runner supervisor có job registry, heartbeat, lease và fencing generation:
+Recommended runner supervisor with job registry, heartbeat, lease and fencing generation:
 
-1. Activity lấy lease cho operation key, nhận generation hiện tại.
-2. Runner nhận `StartOrAttach`; không tạo hai job cho cùng operation key.
-3. Activity heartbeat tiến độ và lease; runner giữ result manifest đủ lâu để worker khác lấy lại.
-4. Khi worker chết, worker mới hỏi trạng thái runner. Job đang chạy thì attach; đã xong thì lấy manifest.
-5. Nếu runner mất, phục hồi workspace từ snapshot và xác minh trạng thái session. Chỉ chạy attempt mới khi biết job cũ đã dừng hoặc đã bị fence khỏi mọi đường ghi quan trọng.
-6. Nếu chưa xác định được trạng thái tác động bên ngoài, đánh dấu cần đối soát. Khóa database đơn thuần không ngăn được subprocess cũ tiếp tục gọi API.
+1. Activity gets lease for operation key, receives current generation.
+2. Runner receives `StartOrAttach`; Do not create two jobs for the same operation key.
+3. Activity heartbeat progress and lease; The runner holds the result manifest long enough for another worker to retrieve it.
+4. When the worker dies, the new worker asks for the runner status. If the job is running, attach it; Once done, get the manifest.
+5. If the runner is lost, restore the workspace from the snapshot and verify the session state. Only run a new attempt when you know the old job has stopped or has been fenced off from all important logs.
+6. If the state of external impact has not been determined, mark the need for control. Simply locking the database does not prevent the old subprocess from continuing to call the API.
 
-Fencing chỉ có hiệu lực với tài nguyên kiểm tra token đó. Vì vậy các thao tác xuất bản nên đi qua connector/tool gateway kiểm tra generation và operation key; không trao credential xuất bản trực tiếp cho coding agent.
+Fencing is effective only when the resource validates the token. Publishing operations should therefore go through the connector/tool gateway, which checks the generation and operation key; do not give publishing credentials directly to the coding agent.
 
 ## 7. Human approval
 
-Bước Approval của workflow lưu request rồi chờ **Signal + durable timer**. UI đóng hoặc API restart không làm mất trạng thái chờ. Signal dùng để cập nhật Workflow, Query dùng để đọc; truy cập từ người dùng vẫn đi qua API phân quyền. Nguồn: [Temporal message passing](https://docs.temporal.io/develop/typescript/workflows/message-passing).
+The Approval step of the workflow saves the request and waits for **Signal + durable timer**. Closing the UI or restarting the API does not remove the waiting state. Signal is used to update Workflow, Query is used to read; Access from users still goes through the decentralized API. Source: [Temporal message passing](https://docs.temporal.io/develop/typescript/workflows/message-passing).
 
-API kiểm tra reviewer scope, request expiry, action hash và trạng thái trước khi ghi command/outbox. Chỉ một decision thắng compare-and-set. Workflow kiểm tra lại request ID/hash/deadline và đánh dấu decision applied; nếu hết hạn trong khoảng dispatch, quyết định bị từ chối. API trả “đã nhận” khác với “đã áp dụng”.
+The API checks reviewer scope, request expiry, action hash and status before writing command/outbox. Only one decision wins compare-and-set. Workflow checks the request ID/hash/deadline again and marks decision applied; If the dispatch period expires, the decision is rejected. The API returns “received” differently than “applied”.
 
-Approval gắn với đúng diff/commit/operation và phiên bản policy. Artifact thay đổi thì duyệt lại. Deny hoặc timeout đi nhánh đã định nghĩa; không tự biến timeout thành đồng ý.
+Approval is associated with the correct diff/commit/operation and policy version. If Artifact changes, review again. Deny or timeout to the defined branch; Do not automatically turn timeout into consent.
 
-Phân biệt bước duyệt workflow với permission request xuất hiện giữa turn của agent. Loại thứ hai còn phụ thuộc tiến trình và giao thức runtime, xem [agent-integration.md](agent-integration.md).
+Distinguish the approval workflow step from the permission request that appears in the middle of an agent's turn. The second type also depends on the runtime process and protocol, see [agent-integration.md](agent-integration.md).
 
-## 8. Trạng thái, hủy và bù trừ
+## 8. Status, cancel and offset
 
-Đề xuất node state:
+Recommended node state:
 
 ```text
 PENDING -> READY -> RUNNING -> SUCCEEDED
                      |-----> RETRY_WAIT -> READY
                      |-----> WAITING_APPROVAL -> RUNNING
-                     |-----> RECONCILIATION_REQUIRED -> RUNNING hoặc FAILED
+                     |-----> RECONCILIATION_REQUIRED -> RUNNING or FAILED
                      |-----> FAILED / TIMED_OUT
 PENDING / READY / RUNNING / WAITING_APPROVAL -> CANCEL_REQUESTED -> CANCELLED
-PENDING -> SKIPPED (nhánh không được chọn)
+PENDING -> SKIPPED (branch not selected)
 ```
 
-`WAITING_APPROVAL -> RUNNING` chỉ khi đúng decision được áp dụng; deny/expiry dẫn đến output hoặc lỗi theo cấu hình. Run có trạng thái tổng hợp riêng: `QUEUED`, `RUNNING`, `WAITING_APPROVAL`, `NEEDS_ATTENTION`, `CANCEL_REQUESTED`, `CANCELLED`, `SUCCEEDED`, `FAILED`, `TIMED_OUT`. Run chỉ `WAITING_APPROVAL` khi không còn node hoạt động và có bước đang chờ; một nhánh chờ không che mất nhánh khác đang chạy.
+`WAITING_APPROVAL -> RUNNING` only if the correct decision is applied; deny/expiry results in output or error according to configuration. Run has its own synthesis status: `QUEUED`, `RUNNING`, `WAITING_APPROVAL`, `NEEDS_ATTENTION`, `CANCEL_REQUESTED`, `CANCELLED`, `SUCCEEDED`, `FAILED`, Run only `WAITING_APPROVAL` when there are no active nodes and there are pending steps; A waiting branch does not block another running branch.
 
-Khi cancel: ngừng schedule node mới, gửi cancel tới Activity, adapter abort/interrupt, hết grace period thì supervisor dừng cây process/container. Chỉ báo `CANCELLED` khi xử lý dừng hoàn tất; job chưa xác minh được hiển thị cần kiểm tra. Run đã terminal không đổi trạng thái do event muộn.
+When cancel: stop scheduling new node, send cancel to Activity, adapter abort/interrupt, grace period expires, supervisor stops process/container tree. Indicator `CANCELLED` when stop processing is complete; Unverified job is displayed and needs to be checked. Run the terminal without changing state due to late event.
 
-Hủy không hoàn tác API đã gọi. Với nhiều bước có tác động, khai báo compensation có idempotency riêng, thực hiện ngược thứ tự bước thành công. Tác động không đảo ngược phải được thể hiện trong kết quả; không tuyên bố rollback như một transaction database.
+Cancel does not undo the called API. With multiple impact steps, the compensation declaration has its own idempotency, performed in reverse order of the successful steps. Irreversible effects must be demonstrated in the results; Do not declare rollback as a database transaction.
 
-## 9. Streaming, backpressure và mở rộng broker
+## 9. Streaming, backpressure and broker expansion
 
-SSE đọc event log theo cursor, hỗ trợ kết nối lại bằng Last-Event-ID trong thời gian retention. Nếu cursor hết hạn, UI nhận hướng dẫn tải snapshot mới. Text delta có thể batch và retention ngắn; lifecycle/approval/result phải lưu bền. Chậm hiển thị tiến độ không được đổi kết quả workflow.
+SSE reads event log according to cursor, supports reconnection by Last-Event-ID during retention. If the cursor expires, the UI receives instructions to load a new snapshot. Text delta can be batched and retention is short; lifecycle/approval/result must be persistent. Slow progress display does not change workflow results.
 
-Giới hạn concurrency theo tenant/provider/runner pool; queue job trước khi cấp sandbox; giới hạn log bytes và artifact size. Cần budget chung cho cả retry và các nhánh song song. Khi thêm JetStream, outbox chờ publish ACK, consumer ACK sau commit; lưu lỗi quá số lần retry vào parking table/queue có công cụ redrive. Không giả định broker tự có dead-letter workflow đúng nhu cầu sản phẩm.
+Limit concurrency by tenant/provider/runner pool; queue job before granting sandbox; Limit log bytes and artifact size. Need common budget for both retry and parallel branches. When adding JetStream, outbox waits for publish ACK, consumer ACK after commit; Save errors exceeding the number of retries to the parking table/queue with the redrive tool. Do not assume that the broker has its own dead-letter workflow that meets product needs.
 
-Projection có thể trễ khi database lỗi. Workflow retry Activity ghi projection; watchdog so sánh run đang mở với trạng thái Temporal để sửa bản ghi mắc kẹt, kể cả trường hợp execution bị terminate ngoài ứng dụng. Reconciler chỉ sửa read model, không tự chạy lại node hay side effect.
+Projection can be late when the database fails. Workflow retry Activity records projection; The watchdog compares the open run with the Temporal state to fix stuck records, even if the execution is terminated outside the application. Reconciler only edits the read model, does not automatically rerun the node or side effects.

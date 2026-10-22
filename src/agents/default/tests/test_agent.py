@@ -539,7 +539,7 @@ class CliTests(unittest.TestCase):
 
     def test_json_stdin_stdout_and_exit_codes(self):
         for payload, expected_exit, expected_code in [
-            (json.dumps({"task": "Ví dụ flow"}), 1, "CONFIGURATION_ERROR"),
+            (json.dumps({"task": "Example flow"}), 1, "CONFIGURATION_ERROR"),
             ("{bad", 2, "INVALID_INPUT"),
         ]:
             with self.subTest(payload=payload):

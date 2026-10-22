@@ -1,81 +1,107 @@
-# Quản lý LLM provider
+# Managing LLM providers
 
-Phần quản lý hỗ trợ OpenRouter, OpenAI, Anthropic, NVIDIA và provider bất kỳ theo
-giao thức OpenAI-compatible hoặc Anthropic-compatible. Chiến lược kiểm thử
-hoàn toàn bằng key giả được mô tả tại
-[Tích hợp provider không cần API key thật](provider-integration-testing.md).
+Provider management supports OpenRouter, OpenAI, Anthropic, NVIDIA, and arbitrary
+OpenAI-compatible or Anthropic-compatible providers. The fake-key testing strategy
+is documented in
+[Provider integration without real API keys](provider-integration-testing.md).
 
-AgentFlow lưu cấu hình provider theo từng người dùng trong bảng `system.llm_providers`. Mỗi bản ghi là một cấu hình kết nối độc lập, có tên do người dùng đặt, API key và danh sách model riêng. Vì vậy một người dùng có thể tạo nhiều cấu hình cùng loại nhưng dùng các key khác nhau.
+AgentFlow stores per-user provider configurations in `system.llm_providers`. Each
+record is an independent connection with a user-defined name, API key, and model
+list. A user can therefore create multiple configurations of the same provider type
+with different keys.
 
-## Luồng cấu hình
+## Configuration flow
 
-1. Người dùng thêm provider bằng tên cấu hình, loại provider và API key. Với loại protocol-compatible, người dùng nhập thêm base URL và có thể khai báo model ID thủ công. Tên cấu hình phải là duy nhất trong phạm vi tài khoản hiện tại.
-2. API key được mã hóa và provider luôn được tạo ở trạng thái `Inactive`. Bước này không gọi provider.
-3. Khi người dùng chọn kích hoạt, AgentFlow gọi model catalog bằng key đã lưu và hiển thị kết quả để chọn.
-4. Người dùng phải chọn ít nhất một model và có thể chọn rõ model mặc định. Nếu model mặc định cũ không còn trong lựa chọn, giao diện tự chuyển sang model đầu tiên còn lại.
-5. Backend tải lại catalog để xác thực các model trước khi chuyển provider sang `Active`.
-6. Mỗi model đã chọn được hiển thị trên một dòng và có nút kiểm tra riêng. Phép kiểm tra gửi một chat completion ngắn tới đúng model đó.
+1. The user adds a provider with a configuration name, provider type, and API key. Protocol-compatible providers also require a base URL and may declare model IDs manually. The configuration name must be unique within the current account.
+2. The API key is encrypted and the provider is always created as `Inactive`. This step does not call the provider.
+3. When the user activates it, AgentFlow requests the model catalog with the stored key and presents the results for selection.
+4. The user must select at least one model and may choose a default. If the previous default is no longer selected, the UI uses the first remaining model.
+5. The backend reloads the catalog to verify the models before setting the provider to `Active`.
+6. Each selected model appears on its own row with a test button. A test sends a short chat completion to that exact model.
 
-## Thiết kế adapter
+## Adapter design
 
-`LlmProviderAdapter` là interface ổn định gồm `verify()`, `list_models()` và `complete()`. `OpenRouterAdapter`, `OpenAICompatibleAdapter` và `AnthropicAdapter` triển khai interface này, còn `create_provider_adapter()` là registry/factory. Code orchestration chỉ phụ thuộc interface chung.
+`LlmProviderAdapter` is the stable interface containing `verify()`, `list_models()`,
+and `complete()`. `OpenRouterAdapter`, `OpenAICompatibleAdapter`, and
+`AnthropicAdapter` implement it, while `create_provider_adapter()` is the
+registry/factory. Orchestration code depends only on the shared interface.
 
-OpenRouter dùng `GET /api/v1/models` để lấy catalog và `POST /api/v1/chat/completions` để gọi hoặc kiểm tra model. Adapter gửi API key bằng Bearer token và hỗ trợ các header attribution `HTTP-Referer`, `X-OpenRouter-Title`.
+OpenRouter uses `GET /api/v1/models` for the catalog and
+`POST /api/v1/chat/completions` to invoke or test a model. The adapter sends the API
+key as a bearer token and supports the `HTTP-Referer` and `X-OpenRouter-Title`
+attribution headers.
 
-OpenAI, NVIDIA và `openai-compatible` dùng Bearer token cùng giao thức Chat Completions tương thích OpenAI. Anthropic và `anthropic-compatible` dùng `x-api-key`, `anthropic-version`, Models API và Messages API; adapter chuyển system message sang field `system` và chuẩn hóa content blocks về `ChatCompletionResult`.
+OpenAI, NVIDIA, and `openai-compatible` use bearer tokens and the OpenAI-compatible
+Chat Completions protocol. Anthropic and `anthropic-compatible` use `x-api-key`,
+`anthropic-version`, the Models API, and the Messages API; the adapter moves system
+messages into the `system` field and normalizes content blocks into
+`ChatCompletionResult`.
 
-## Provider theo giao thức
+## Protocol-compatible providers
 
-Dùng `openai-compatible` khi hãng cung cấp API có `POST /chat/completions` và thường có `GET /models`. Base URL nên chứa prefix phiên bản, ví dụ `https://api.vendor.example/v1`. Dùng `anthropic-compatible` khi hãng cung cấp `POST /v1/messages`; base URL là phần đứng trước `/v1`, ví dụ `https://api.vendor.example`.
+Use `openai-compatible` when a vendor provides `POST /chat/completions` and usually
+`GET /models`. The base URL should include the version prefix, for example
+`https://api.vendor.example/v1`. Use `anthropic-compatible` when a vendor provides
+`POST /v1/messages`; the base URL is the part before `/v1`, such as
+`https://api.vendor.example`.
 
-Nếu hãng không triển khai endpoint liệt kê model, nhập model ID thủ công lúc tạo provider. AgentFlow dùng danh sách đó làm catalog cục bộ; nút **Kiểm tra** vẫn gửi completion thật sau khi provider được kích hoạt. Nếu để trống, AgentFlow tải catalog từ API của hãng.
+If the vendor does not implement a model-list endpoint, enter model IDs manually
+when creating the provider. AgentFlow uses that list as a local catalog; the
+**Test** button still sends a real completion after activation. If the list is
+blank, AgentFlow loads the catalog from the vendor API.
 
-Base URL tùy chỉnh được bảo vệ như sau:
+Custom base URLs are protected as follows:
 
-- mặc định chỉ chấp nhận HTTPS, không chứa user/password, query hoặc fragment;
-- từ chối localhost, IP không public và hostname nội bộ thông dụng;
-- trước request thật, backend resolve DNS và từ chối nếu bất kỳ địa chỉ nào không public;
-- HTTP/private network chỉ được phép trong môi trường local khi đặt `ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS=true`; cấu hình này bị từ chối ở production;
-- HTTP client không tự theo redirect, giúp tránh redirect sang tài nguyên nội bộ.
+- HTTPS is required by default, and user/password, query, and fragment components are forbidden.
+- Localhost, non-public IP addresses, and common internal hostnames are rejected.
+- Before a real request, the backend resolves DNS and rejects the request if any address is non-public.
+- HTTP/private networks are allowed only in local environments with `ALLOW_CUSTOM_PROVIDER_PRIVATE_NETWORKS=true`; production rejects this setting.
+- The HTTP client does not follow redirects automatically, preventing redirects to internal resources.
 
-## Dữ liệu được lưu
+## Stored data
 
-Bảng `system.llm_providers` lưu tên cấu hình, loại provider, settings, API key đã mã hóa, trạng thái và `revision` cho optimistic concurrency. Ràng buộc duy nhất áp dụng trên cặp `owner_subject + name`, không áp dụng trên `kind`, nên nhiều cấu hình cùng nhà cung cấp được hỗ trợ. Settings chung gồm:
+The `system.llm_providers` table stores the configuration name, provider type,
+settings, encrypted API key, status, and a `revision` for optimistic concurrency.
+Uniqueness applies to `owner_subject + name`, not `kind`, so multiple configurations
+for the same provider are supported. Common settings include:
 
-- `selected_models`: tối đa 100 model ID người dùng cho phép sử dụng.
-- `custom_models`: catalog model khai báo thủ công cho provider theo giao thức.
-- `base_url`: endpoint đã kiểm tra của provider theo giao thức.
-- `default_model`: model mặc định; backend tự dùng model đầu tiên đã chọn nếu giá trị cũ không còn hợp lệ.
-- `site_url`: URL attribution tùy chọn.
-- `app_title`: tên ứng dụng gửi tới OpenRouter.
+- `selected_models`: up to 100 model IDs allowed by the user.
+- `custom_models`: manually declared catalog for a protocol-compatible provider.
+- `base_url`: validated endpoint for a protocol-compatible provider.
+- `default_model`: default model; the backend uses the first selected model if the old value is invalid.
+- `site_url`: optional attribution URL.
+- `app_title`: application name sent to OpenRouter.
 
-API key là write-only. Response chỉ trả `has_api_key`, không trả plaintext hoặc ciphertext. Khóa Fernet nằm tại `PROVIDER_SECRETS_KEY_FILE`; Docker Compose lưu khóa trong volume `agentflow_system_secrets`. Cần backup volume này cùng database.
+API keys are write-only. Responses return only `has_api_key`, never plaintext or
+ciphertext. The Fernet key lives at `PROVIDER_SECRETS_KEY_FILE`; Docker Compose
+stores it in the `agentflow_system_secrets` volume. Back up this volume together
+with the database.
 
-## API quản lý
+## Management API
 
 - `GET /v1/llm-providers`
-- `POST /v1/llm-providers` với body gồm `name`, `kind`, `api_key`; hai loại protocol-compatible nhận thêm `base_url` và `custom_models`
+- `POST /v1/llm-providers` with `name`, `kind`, and `api_key`; protocol-compatible types also accept `base_url` and `custom_models`
 - `GET /v1/llm-providers/{id}`
-- `DELETE /v1/llm-providers/{id}` để xóa provider thuộc người dùng hiện tại
-- `PUT /v1/llm-providers/{id}` để thay key, chọn model hoặc bật/tắt
-- `GET /v1/llm-providers/{id}/models` để xác thực key và tải catalog, kể cả khi provider Inactive
-- `POST /v1/llm-providers/{id}/models/test` với body `{ "model": "..." }` để kiểm tra một model đã chọn của provider Active
+- `DELETE /v1/llm-providers/{id}` to delete a provider owned by the current user
+- `PUT /v1/llm-providers/{id}` to replace the key, select models, or enable/disable it
+- `GET /v1/llm-providers/{id}/models` to verify the key and load the catalog, even while inactive
+- `POST /v1/llm-providers/{id}/models/test` with `{ "model": "..." }` to test a selected model from an active provider
 
-Ví dụ tạo provider:
+Example provider creation:
 
 ```json
 {
-  "name": "OpenRouter công ty",
+  "name": "Company OpenRouter",
   "kind": "openrouter",
   "api_key": "sk-or-v1-..."
 }
 ```
 
-Ví dụ tạo một provider nhỏ theo giao thức OpenAI:
+Example of a small OpenAI-compatible provider:
 
 ```json
 {
-  "name": "Vendor nội bộ của đội",
+  "name": "Team internal vendor",
   "kind": "openai-compatible",
   "api_key": "vendor-key-...",
   "base_url": "https://api.vendor.example/v1",
@@ -83,4 +109,6 @@ Ví dụ tạo một provider nhỏ theo giao thức OpenAI:
 }
 ```
 
-Các model đã chọn được lưu trong JSONB `settings`, vì vậy thay đổi này không cần migration database mới. Provider cũ phải mở “Quản lý models” và lưu ít nhất một model để sử dụng luồng kiểm tra mới.
+Selected models are stored in JSONB `settings`, so this change requires no new
+database migration. Existing providers must open “Manage models” and save at least
+one model to use the new test flow.

@@ -1,62 +1,62 @@
-# Tích hợp agent vào flow
+# Integrating Agents into workflows
 
-> Phần mapping từ code hiện tại sang image, credential, contract v1/v2 và kế hoạch triển khai Codex/OpenCode được tách tại [Tích hợp Codex và OpenCode vào AgentFlow](codex-opencode-runtime-integration.md).
+> The mapping from current code to image, credential, contract v1/v2 and Codex/OpenCode deployment plan are separated at [Integrate Codex and OpenCode into AgentFlow](codex-opencode-runtime-integration.md).
 
-> Runtime OpenHands Software Agent SDK được mô tả riêng tại [Tích hợp OpenHands](openhands-runtime-integration.md).
+> Runtime OpenHands Software Agent SDK is described separately at [OpenHands Integration](openhands-runtime-integration.md).
 
-## Hướng triển khai hiện tại: Deep Agents trước
+## Current deployment direction: Deep Agents first
 
-> **Cập nhật kiến trúc:** đường production mục tiêu không dùng một agent HTTP service lâu dài. Mỗi attempt của agent node sẽ chạy trong một container dùng một lần; xem [thiết kế ephemeral agent runtime](ephemeral-agent-runtime.md). HTTP/CLI ở tài liệu này vẫn là bề mặt thử nghiệm contract và adapter.
+> **Architectural update:** The target production pipeline does not use a persistent HTTP service agent. Each agent node attempt will run in a disposable container; see [ephemeral agent runtime design](ephemeral-agent-runtime.md). HTTP/CLI in this document is still the contract and adapter testing surface.
 
-Theo phạm vi mới, dùng [agent Python mặc định trong `src/agents/default`](../src/agents/default/README.md) làm runtime đầu tiên. Agent dùng `create_deep_agent` trên LangGraph, tool danh mục node và output có schema để đề xuất một kế hoạch workflow nhỏ. Có CLI JSON stdin/stdout, `POST /v1/runs` đồng bộ và client Node.js minh họa. Runtime khác được thêm theo [quy ước thư mục và contract container](../src/agents/README.md).
+Under the new scope, use [default Python agent in `src/agents/default`](../src/agents/default/README.md) as the first runtime. Agent uses `create_deep_agent` on LangGraph, a node catalog and output tool with schema to suggest a small workflow plan. There are CLI JSON stdin/stdout, synchronous `POST /v1/runs` and a demonstration Node.js client. Other runtimes are added according to [directory convention and contract container](../src/agents/README.md).
 
-Đường thử nghiệm: **task/context → Deep Agents → LLM thật → WorkflowPlan JSON → output của agent node**. Runtime gọi OpenAI-compatible Chat Completions API hoặc Anthropic theo provider/model đã cấu hình; không có nhánh fake model. Kết quả là đề xuất, chưa tự chuyển thành DSL hoặc thực thi hành động.
+Test path: **task/context → Deep Agents → Real LLM → WorkflowPlan JSON → agent node output**. Runtime calls OpenAI-compatible Chat Completions API or Anthropic according to configured provider/model; There are no fake model branches. The result is a recommendation, which has not yet translated itself into a DSL or action implementation.
 
-Contract v1 one-shot đã có adapter Codex CLI và OpenCode SDK/server. Mẫu vẫn chưa triển khai contract `startOrAttach`, workspace, streaming bền vững, approval hay recovery ở các phần dưới; các nội dung đó là thiết kế mở rộng v2.
+Contract v1 one-shot already has Codex CLI adapter and OpenCode SDK/server. The model has not yet implemented contract `startOrAttach`, workspace, persistent streaming, approval or recovery in the sections below; The content is extension design v2.
 
-Ngày kiểm chứng tài liệu nhà cung cấp: **12/10/2026**. Contract v1 đã chạy bằng adapter; các interface session/workspace v2 dưới đây vẫn là thiết kế đề xuất.
+Vendor document verification date: **October 12, 2026**. Contract v1 is already running using the adapter; The session/workspace v2 interfaces below are still the proposed design.
 
-## 1. Chọn bề mặt tích hợp
+## 1. Selecting the integration surface
 
-| Runtime | Cách tích hợp đã được tài liệu chính thức mô tả | Đề xuất cho AgentFlow |
+| Runtime | The way to integrate has been described by the official documentation | Recommended for AgentFlow |
 | --- | --- | --- |
-| Codex SDK | TypeScript/Python SDK, tạo/tiếp tục/resume thread | Lựa chọn typed thay cho CLI khi adapter cần điều khiển thread |
-| Codex App Server | JSON-RPC hai chiều, thread/turn, streamed events và approvals | Giai đoạn cần UI tương tác giữa turn; ưu tiên stdio nội bộ runner |
-| Codex CLI | `codex exec --json`; `--output-schema` cho kết quả có cấu trúc | Contract v1 one-shot hiện tại |
-| OpenCode server | `opencode serve`, HTTP/OpenAPI | Runtime chạy trong sandbox, không public endpoint trực tiếp |
-| OpenCode SDK | `@opencode-ai/sdk`, quản lý session, gửi prompt, abort và stream sự kiện SSE | MVP qua SDK kết nối server trong runner |
+| Codex SDK | TypeScript/Python SDK, create/resume/resume thread | Choose typed instead of CLI when the adapter needs thread control |
+| Codex App Server | Bidirectional JSON-RPC, thread/turn, streamed events and approvals | The stage needs interactive UI between turn; Prioritize internal stdio runner |
+| Codex CLI | `codex exec --json`; `--output-schema` gives structured results | Current Contract v1 one-shot |
+| OpenCode server | `opencode serve`, HTTP/OpenAPI | Runtime runs in a sandbox, not a direct public endpoint |
+| OpenCode SDK | `@opencode-ai/sdk`, manages sessions, sends prompts, aborts and streams SSE events | MVP via SDK connects server in runner |
 
-Nguồn cho Codex SDK: [Codex SDK](https://developers.openai.com/codex/sdk/). `codex mcp-server` đã bị loại bỏ; không chọn nó làm nền tích hợp mới.
+Source for Codex SDK: [Codex SDK](https://developers.openai.com/codex/sdk/). `codex mcp-server` has been removed; do not select it as the new integration platform.
 
-Worker truyền các MCP được chọn qua `AGENT_MCP_SERVERS` cho đúng một container. Runtime mặc định nạp tool bằng `langchain-mcp-adapters`, hỗ trợ Streamable HTTP và SSE, đồng thời prefix tên tool theo slug server để tránh trùng tên. Runtime Codex ánh xạ cùng contract sang `mcp_servers.<slug>`; OpenCode ánh xạ sang remote `mcp` và chỉ allow tool của server đã chọn. Cả hai hỗ trợ Streamable HTTP và tham chiếu header qua environment để không đặt secret trong argv/config. Header xác thực được mã hóa trong database và không nằm trong graph/version hay payload stdin. Cấu hình được đối chiếu theo [Codex MCP](https://developers.openai.com/codex/mcp/) và [OpenCode MCP](https://opencode.ai/docs/mcp-servers/) chính thức.
+The worker transmits the selected MCPs via `AGENT_MCP_SERVERS` to exactly one container. The default runtime loads the tool with `langchain-mcp-adapters`, supports Streamable HTTP and SSE, and prefixes the tool name according to the server slug to avoid duplicate names. Runtime Codex maps the same contract to `mcp_servers.<slug>`; OpenCode maps to remote `mcp` and only allows tools of the selected server. Both support Streamable HTTP and reference headers via environment so no secret is set in argv/config. The authentication header is encoded in the database and is not in the graph/version or stdin payload. The configuration is compared against the official [Codex MCP](https://developers.openai.com/codex/mcp/) and [OpenCode MCP](https://opencode.ai/docs/mcp-servers/).
 
-App Server dùng JSON-RPC với định dạng wire có khác biệt: bỏ trường `jsonrpc`; stdio dùng JSONL. Transport WebSocket hiện được ghi experimental/unsupported. AgentFlow nên bọc stdio bằng gateway của mình khi cần truy cập từ xa. Nguồn: [Codex App Server](https://learn.chatgpt.com/docs/app-server).
+App Server uses JSON-RPC with a different wire format: remove the `jsonrpc` field; stdio uses JSONL. Transport WebSocket is currently labeled experimental/unsupported. AgentFlow should wrap stdio with its gateway when remote access is needed. Source: [Codex App Server](https://learn.chatgpt.com/docs/app-server).
 
-CLI cung cấp event JSONL và output schema; cần parse event, kiểm tra trạng thái kết thúc và validate output. Nguồn: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
+CLI provides JSONL event and output schema; need to parse event, check end status and validate output. Source: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-OpenCode SDK là client JS/TS cho server, có `session.create`, `session.prompt`, `session.abort`, `event.subscribe`; server công bố API qua HTTP/OpenAPI. Nguồn: [OpenCode SDK](https://opencode.ai/docs/sdk/), [OpenCode Server](https://opencode.ai/docs/server/).
+OpenCode SDK is a JS/TS client for the server, with `session.create`, `session.prompt`, `session.abort`, `event.subscribe`; The server publishes the API via HTTP/OpenAPI. Source: [OpenCode SDK](https://opencode.ai/docs/sdk/), [OpenCode Server](https://opencode.ai/docs/server/).
 
-Không gắn tên một model cố định vào engine. Model/provider là cấu hình theo project; việc runtime hỗ trợ provider nào phải xác minh ở phiên bản đã khóa. Session Codex và session OpenCode là hai định dạng riêng, không chuyển đổi qua lại bằng cách thay tên provider.
+Do not attach a fixed model name to the engine. Model/provider is project-based configuration; Which providers the runtime supports must be verified in the locked version. Session Codex and session OpenCode are two separate formats, not converted back and forth by changing the provider name.
 
-## 2. Những điều cần kiểm chứng trong PoC
+## 2. What to verify in the PoC
 
-Các trang tài liệu trực tuyến có thể thay đổi; ngay trong OpenCode SDK đã có chỗ ví dụ structured output dùng `format`, trong bảng phương thức lại nhắc `outputFormat`. Vì vậy PoC phải kiểm tra type/OpenAPI của package được cài trước khi chốt mapping. Không xem các đoạn bên dưới là ví dụ SDK có thể copy chạy ngay.
+Online documentation pages are subject to change; Even in the OpenCode SDK, there is an example where the structured output uses `format`, but in the method table it mentions `outputFormat`. Therefore, the PoC must check the type/OpenAPI of the installed package before finalizing the mapping. Do not consider the paragraphs below as examples of SDKs that can be copied and run immediately.
 
-Mỗi release của AgentFlow cần lưu bảng tương thích:
+Each release of AgentFlow needs to maintain a compatibility table:
 
-| Thông tin | Giá trị cần thu thập khi PoC |
+| Information | Values to collect during the PoC |
 | --- | --- |
-| CLI/server/SDK version | Phiên bản thực tế; chưa xác định trong tài liệu này |
-| Container image digest | Image bất biến để tái tạo runner |
-| Protocol schema hash | Schema generated hoặc OpenAPI tương ứng runtime |
-| Auth mode | Credential của project dùng được trong headless runner |
+| CLI/server/SDK version | Actual version; undefined in this document |
+| Container image digest | Immutable image to reproduce runner |
+| Protocol hash schema | Schema generated or corresponding OpenAPI runtime |
+| Auth mode | The project's credentials can be used in headless runner |
 | Capabilities | Streaming, structured output, resume, cancel, interactive approval |
-| Recovery behavior | Hành vi khi API mất kết nối, worker chết, server chết và mất volume |
-| Usage coverage | Token/cost nào được provider trả; phần nào chỉ là ước tính |
+| Recovery behavior | Behavior when API connection is lost, worker dies, server dies and volume is lost |
+| Usage coverage | Which token/cost is paid by the provider; somewhat just an estimate |
 
 ## 3. Adapter contract
 
-Hợp đồng TypeScript minh họa do AgentFlow định nghĩa; không phải SDK của nhà cung cấp:
+Illustrative TypeScript contract defined by AgentFlow; not vendor SDK:
 
 ```ts
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -111,90 +111,90 @@ interface AgentAdapter {
 }
 ```
 
-`startOrAttach`, cursor replay, lease và result store do **AgentFlow supervisor** bảo đảm; không mặc định runtime SDK đã cung cấp các tính chất đó. CredentialRef chỉ resolve ở biên tin cậy; không đưa secret vào Workflow history hay graph JSON.
+`startOrAttach`, cursor replay, lease and result store secured by **AgentFlow supervisor**; The runtime SDK does not provide those properties by default. CredentialRef only resolves at the trusted edge; Do not include secrets in Workflow history or JSON graphs.
 
-`resumeSession` là khả năng tiếp tục hội thoại đã lưu. Reattach job đang chạy là khả năng của supervisor và transport. Nếu không hỗ trợ tính năng node yêu cầu, từ chối ngay lúc publish hoặc preflight thay vì giả lập thành công.
+`resumeSession` is the ability to resume saved conversations. Reattach job running is a supervisor and transport capability. If the requested node feature is not supported, reject it at publish or preflight instead of successfully emulating it.
 
-## 4. Vòng đời node agent
+## 4. Node agent life cycle
 
-1. Chốt workflow/node version, model, policy, input hash, repo commit và budget.
-2. Supervisor tạo workspace cô lập và runner job theo operation key.
-3. Adapter mở runtime, tạo hoặc tìm session đã ghi; lưu mapping trước khi gửi turn khi giao thức cho phép.
-4. Bắt đầu turn, chuyển event nhà cung cấp thành event chuẩn; che secret trước khi lưu log.
-5. Khi turn kết thúc, validate JSON Schema, thu diff, log, usage và output manifest.
-6. Runner lưu manifest trước khi báo xong, để retry có thể lấy lại kết quả.
-7. Activity trả output nhỏ và artifact reference; workflow quyết định node tiếp theo.
-8. Cleanup workspace/process theo retention và kết quả run; cleanup phải idempotent.
+1. Finalize workflow/node version, model, policy, input hash, repo commit and budget.
+2. Supervisor creates isolated workspace and runner job according to operation key.
+3. Adapter opens runtime, creates or finds recorded session; Save the mapping before sending the turn when the protocol allows it.
+4. Start the turn, converting the supplier event into a standard event; hide secret before saving log.
+5. When the turn ends, validate the JSON Schema, collect diff, log, usage and output manifest.
+6. Runner saves the manifest before reporting, so that retry can retrieve the results.
+7. Activity returns small output and artifact reference; workflow decides the next node.
+8. Cleanup workspace/process according to retention and run results; cleanup must be idempotent.
 
-Khoảng hở tạo session/gửi turn rồi mất ACK có thể gây session mồ côi hoặc turn trùng. Adapter phải inspect/reconcile; chỉ có key nội bộ chưa đủ để bảo đảm provider không nhận hai prompt. Nếu không tìm được trạng thái đã xác nhận, báo `unknown` và chuyển quy trình đối soát.
+The gap of creating a session/sending a turn and then losing the ACK can cause orphaned sessions or duplicate turns. Adapter must inspect/reconcile; Just having an internal key is not enough to ensure that the provider does not receive two prompts. If the confirmed status cannot be found, report `unknown` and move the reconciliation process.
 
-## 5. Mapping riêng cho từng runtime
+## 5. Runtime-specific mappings
 
 ### Codex
 
-Với contract v1 hiện tại, bắt đầu bằng `codex exec` trong image adapter vì bề mặt này khớp job one-shot và hỗ trợ output schema. Khởi process bằng executable + argv với `shell: false`, truyền prompt như dữ liệu/stdin, parse JSONL từng dòng, đọc final output riêng và tách stderr. SDK là lựa chọn typed khi cần điều khiển thread; dùng thread ID cụ thể khi tiếp tục công việc. Không nối input người dùng thành lệnh shell.
+With the current v1 contract, start with `codex exec` in the image adapter because this interface matches one-shot jobs and supports output schema. Start process with executable + argv with `shell: false`, pass prompt as data/stdin, parse JSONL line by line, read final output separately and separate stderr. The SDK is the typed choice when thread control is needed; Use the specific thread ID when continuing work. Do not concatenate user input into shell commands.
 
-Khi thêm App Server: hoàn thành handshake `initialize`/`initialized`, quản lý request ID, thread ID, turn ID và permission requests. Approval response phải gắn với request đang chờ trên đúng connection. Sinh schema theo binary đã khóa và kiểm tra adapter với schema đó. Đây là kế hoạch triển khai dựa trên [App Server protocol và message schema](https://learn.chatgpt.com/docs/app-server).
+When adding App Server: complete handshake `initialize`/`initialized`, manage request ID, thread ID, turn ID and permission requests. Approval response must be associated with a pending request on the correct connection. Generate the schema according to the locked binary and test the adapter with that schema. This is a deployment plan based on [App Server protocol and message schema](https://learn.chatgpt.com/docs/app-server).
 
 ### OpenCode
 
-Supervisor chạy một server trong phạm vi workspace/tenant đã cô lập; adapter tạo client nội bộ. Subscribe event trước khi gửi prompt để giảm khoảng hở stream, lọc theo session/message ID và luôn dùng session state/result để xác nhận kết thúc.
+Supervisor runs a server within the isolated workspace/tenant; adapter creates internal client. Subscribe to events before sending prompts to reduce stream gaps, filter by session/message ID, and always use session state/result to confirm completion.
 
-Server có HTTP Basic Auth cấu hình bằng `OPENCODE_SERVER_PASSWORD`; khi qua mạng cần TLS/private network và xác thực của AgentFlow. Không để browser gọi server thẳng hoặc coi CORS là phân quyền. Thông tin auth của runtime: [OpenCode Server — Authentication](https://opencode.ai/docs/server/).
+Server has HTTP Basic Auth configured with `OPENCODE_SERVER_PASSWORD`; when going over the network requires TLS/private network and AgentFlow authentication. Do not let the browser call the server directly or consider CORS as decentralized. Runtime auth information: [OpenCode Server — Authentication](https://opencode.ai/docs/server/).
 
-OpenCode hỗ trợ cấu hình permission `allow`, `ask`, `deny`. AgentFlow phải chủ động render policy theo project/runtime version. Nguồn: [OpenCode Permissions](https://opencode.ai/docs/permissions/).
+OpenCode supports permission configuration `allow`, `ask`, `deny`. AgentFlow must proactively render policies according to project/runtime version. Source: [OpenCode Permissions](https://opencode.ai/docs/permissions/).
 
-## 6. Approval giữa turn và approval trong workflow
+## 6. Between-turn approval and workflow approval
 
-| Loại | Cách đề xuất | Giới hạn |
+| Type | Recommended way | Limit |
 | --- | --- | --- |
-| Workflow Approval node | Agent tạo artifact xong, runner có thể đóng; Temporal chờ người duyệt | Phù hợp chờ nhiều giờ/ngày |
-| Permission request giữa turn | Adapter lưu request, UI trả decision, adapter reply vào runtime đang chờ | Có thể phụ thuộc process/connection còn sống |
+| Workflow Approval node | Once the agent creates the artifact, the runner can close; Temporal waiting for approval | Suitable for waiting many hours/day |
+| Permission request between turn | The adapter saves the request, the UI returns a decision, the adapter replies to the waiting runtime | May depend on process/connection being alive |
 
-MVP ưu tiên duyệt ở ranh giới node. Agent tạo diff/test report; connector có quyền tạo PR chạy sau approval. Khi runtime phát yêu cầu quyền ngoài capability MVP, fail/pause có thông báo rõ; không tự bật quyền rộng để cho qua.
+MVP prioritizes browsing at node boundaries. Agent creates diff/test report; connector has the right to create a PR that runs after approval. When the runtime issues a permission request outside of the MVP capability, fail/pause has a clear message; Don't turn on permissions to let it go.
 
-Với approval giữa turn, đặt thời hạn chờ ngắn hơn giới hạn giữ sandbox. Nếu runtime chết, request cũ trở thành stale. Việc tiếp tục cần tạo request mới sau khi xác minh action còn giống; không replay mù permission response cũ. Không hứa tiếp tục chính xác mọi shell command đang dang dở.
+For mid-turn approvals, set the waiting period shorter than the sandbox holding limit. If the runtime dies, the old request becomes stale. Continuing requires creating a new request after verifying the action is the same; Do not blindly replay old permission responses. No promise to continue exactly every unfinished shell command.
 
-## 7. Workspace, artifact và chuyển giao agent
+## 7. Workspaces, artifacts, and Agent handoff
 
-Mỗi run bắt đầu từ commit SHA đã chốt, dùng checkout/snapshot riêng. Git worktree giúp quản lý phiên bản nhưng **không phải sandbox bảo mật**. Hai agent song song không cùng ghi vào một working directory.
+Each run starts from the committed SHA commit, using its own checkout/snapshot. Git worktree helps with version management but is **not a security sandbox**. Two parallel agents do not write to the same working directory.
 
-Ví dụ Codex sửa code rồi OpenCode review:
+For example, Codex fixes the code and then OpenCode reviews:
 
 ```mermaid
 flowchart LR
-    BASE[Repo tại commit đã chốt] --> CODEX[Codex workspace]
-    CODEX --> SNAP[Snapshot và diff bất biến]
+    BASE[Repo at the committed commit] --> CODEX[Codex workspace]
+    CODEX --> SNAP[Snapshot and immutable diff]
     SNAP --> TEST[Test runner]
-    SNAP --> REVIEW[OpenCode workspace chỉ đọc]
+    SNAP --> REVIEW[OpenCode workspace read-only]
     TEST --> RESULT[Artifact reports]
     REVIEW --> RESULT
-    RESULT --> APPROVE[Duyệt đúng snapshot]
-    APPROVE --> PR[Connector tạo PR từ snapshot đã duyệt]
+    RESULT --> APPROVE[Browse the correct snapshot]
+    APPROVE --> PR[Connector creates PR from approved snapshot]
 ```
 
-Chuyển giao bằng task summary, commit SHA, diff/snapshot và JSON report. Không sao chép dữ liệu session nội bộ của Codex sang OpenCode. Nếu hai nhánh cùng sửa code, cần bước merge riêng và báo conflict; chưa đưa merge tự động vào MVP.
+Commit using task summary, commit SHA, diff/snapshot and JSON report. Do not copy Codex internal session data to OpenCode. If two branches modify the same code, a separate merge step is needed and a conflict report is needed; Automatic merge has not been included in MVP.
 
-Artifact manifest gồm ID, tenant/project, run/execution, checksum, content type, size, base commit, snapshot ref và thời điểm tạo. Download qua URL ngắn hạn sau kiểm tra ACL; không tin đường dẫn file do model trả về. Kiểm tra path traversal, symlink và kích thước khi thu artifact.
+Artifact manifest includes ID, tenant/project, run/execution, checksum, content type, size, base commit, snapshot ref and creation time. Download via short URL after ACL check; Do not trust the file path returned by the model. Check path traversal, symlink and size when capturing artifacts.
 
-## 8. Ranh giới bảo mật của runner
+## 8. Runner security boundary
 
-Đây là yêu cầu thiết kế do coding agent có thể chạy shell và repository code:
+This is a design requirement since the coding agent can run shell and repository code:
 
-- API/control plane không thực thi code của repo hoặc plugin người dùng.
-- Runner chạy non-root, giới hạn CPU/RAM/PID/disk/time, không mount Docker socket hay home của host.
-- Credential cho model và quyền gọi connector được tách khỏi môi trường chạy test/script không tin cậy. Ưu tiên credential proxy với token ngắn hạn, quota và phạm vi rõ.
-- Policy network chặn metadata service, private/control-plane endpoints; kiểm tra DNS resolution và redirect đối với HTTP node để hạn chế SSRF.
-- Repo README/AGENTS.md, issue text và tool output là input có thể chứa prompt injection. Chúng không được tự nâng quyền network, credential hoặc xuất bản.
-- Node thực thi code tùy ý phải chạy trong runner cô lập tương tự agent; không dùng `eval` hay Node `vm` như ranh giới sandbox cho tenant.
-- Tách quyền sửa workspace khỏi quyền Git push/tạo PR/deploy. Quyền xuất bản nằm ở connector và kiểm tra approval cụ thể.
+- The API/control plane does not execute repo or user plugin code.
+- Runner runs non-root, limits CPU/RAM/PID/disk/time, does not mount Docker socket or host's home.
+- Model credentials and connector calling permissions are isolated from untrusted test/script execution environments. Prioritize credential proxies with short-term tokens, clear quota and scope.
+- Policy network blocks metadata service, private/control-plane endpoints; Check DNS resolution and redirect for HTTP node to limit SSRF.
+- Repo README/AGENTS.md, issue text and tool output are inputs that may contain prompt injection. They are not self-promoted, credentialed, or published.
+- Nodes that execute arbitrary code must run in an isolated runner similar to an agent; Do not use `eval` or Node `vm` as the sandbox boundary for the tenant.
+- Separate permissions to edit workspace from Git push/create PR/deploy permissions. Publishing rights lie with the connector and check specific approvals.
 
-Với workload từ người dùng không tin cậy, cần đánh giá sandbox tăng cường hoặc VM. gVisor dùng application kernel để tăng cách ly syscall; vẫn cần kiểm tra tính tương thích và chính sách host/network. Nguồn: [What is gVisor?](https://gvisor.dev/docs/).
+For workloads from untrusted users, an enhanced sandbox or VM needs to be evaluated. gVisor uses application kernel to increase syscall isolation; Still need to check compatibility and host/network policies. Source: [What is gVisor?](https://gvisor.dev/docs/).
 
-## 9. Chi phí và lỗi
+## 9. Costs and errors
 
-Budget phải áp dụng trên toàn run, gồm các node song song và retry. Trước khi gọi provider, reserve ngân sách trong ledger; sau khi có usage thì reconcile phần đã dùng. Không nhận usage được thì ghi `unknown`, không ghi bằng 0. Ước tính chi phí lưu kèm pricing version; chưa chốt giá model trong thiết kế này.
+The budget must apply across the run, including parallel and retry nodes. Before calling provider, reserve budget in ledger; After having usage, reconcile the used part. If you cannot receive usage, write `unknown`, do not write 0. Cost estimate is saved with pricing version; The price of the model in this design has not been finalized yet.
 
-Token usage thường chỉ có sau một phần hoặc toàn bộ turn, nên budget phía AgentFlow có thể vượt nhẹ trong tác vụ đang chạy. Muốn giới hạn chặt cần gateway/quota provider, giới hạn concurrency và timeout; không hứa một bộ đếm ứng dụng là hard billing cap.
+Token usage is usually only available after part or all of the turn, so AgentFlow's budget may be slightly exceeded in the running task. If you want tight limits, you need a gateway/quota provider, concurrency and timeout limits; do not promise an application counter is a hard billing cap.
 
-Các mã lỗi chuẩn đề xuất: `AUTH_REQUIRED`, `POLICY_DENIED`, `CAPABILITY_UNSUPPORTED`, `PROVIDER_RATE_LIMIT`, `OUTPUT_INVALID`, `WORKSPACE_LOST`, `SESSION_UNAVAILABLE`, `RESULT_UNKNOWN`, `BUDGET_EXCEEDED`, `CANCELLED`. Giữ mã lỗi gốc trong metadata đã che dữ liệu nhạy cảm để debug.
+Recommended standard error codes: `AUTH_REQUIRED`, `POLICY_DENIED`, `CAPABILITY_UNSUPPORTED`, `PROVIDER_RATE_LIMIT`, `OUTPUT_INVALID`, `WORKSPACE_LOST`, `SESSION_UNAVAILABLE`, `RESULT_UNKNOWN`, `BUDGET_EXCEEDED`, Keeping the original error code in the metadata masks sensitive data for debugging.

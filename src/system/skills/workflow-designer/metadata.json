@@ -1,4 +1,4 @@
 {
   "name": "Workflow Designer",
-  "description": "Hướng dẫn agent đề xuất workflow nhỏ, rõ input/output và có bước kết thúc."
+  "description": "Guides agents to propose small workflows with clear inputs, outputs, and an explicit end step."
 }

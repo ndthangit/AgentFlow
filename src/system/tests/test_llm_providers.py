@@ -35,7 +35,7 @@ from providers.secrets import ProviderSecretStore
 class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
     def test_create_requires_non_empty_api_key(self):
         with self.assertRaises(ValidationError):
-            LlmProviderCreate(name="OpenRouter cá nhân", kind="openrouter", api_key="")
+            LlmProviderCreate(name="Personal OpenRouter", kind="openrouter", api_key="")
 
     def test_create_requires_a_provider_instance_name(self):
         with self.assertRaises(ValidationError):
@@ -43,12 +43,12 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
 
     def test_create_contract_accepts_named_instances_of_the_same_kind(self):
         first = LlmProviderCreate(
-            name="OpenRouter cá nhân",
+            name="Personal OpenRouter",
             kind="openrouter",
             api_key="test-secret-1",
         )
         second = LlmProviderCreate(
-            name="OpenRouter công ty",
+            name="Company OpenRouter",
             kind="openrouter",
             api_key="test-secret-2",
         )
@@ -103,7 +103,7 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
         with patch("api.providers._encrypt_api_key", return_value="encrypted"):
             provider = await create_llm_provider(
                 LlmProviderCreate(
-                    name="OpenRouter nhóm A",
+                    name="Team A OpenRouter",
                     kind="openrouter",
                     api_key="test-secret",
                 ),
@@ -112,7 +112,7 @@ class LlmProviderTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIs(provider, session.added)
-        self.assertEqual(provider.name, "OpenRouter nhóm A")
+        self.assertEqual(provider.name, "Team A OpenRouter")
         self.assertEqual(provider.kind, "openrouter")
         self.assertEqual(provider.settings, {})
         self.assertFalse(provider.enabled)

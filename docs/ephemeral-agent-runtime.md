@@ -1,35 +1,35 @@
-# Thiết kế agent runtime dùng một lần cho mỗi node attempt
+# Disposable Agent runtime design for each node attempt
 
-Ngày cập nhật: **03/10/2026**. Trạng thái: **đã triển khai lát cắt M0b bằng agent mặc định trong `src/agents/default` trên Docker local; runtime tùy biến có thể đặt tại `src/agents/<runtime-name>`; không dùng Codex trong đường chạy hiện tại; job/lease/reconciler bền vững vẫn thuộc các giai đoạn tiếp theo**. Phạm vi: node `agent`; node `llm.call` đơn giản tiếp tục gọi provider trực tiếp nếu không cần tool, shell hoặc workspace.
+Update date: **October 3, 2026**. Status: **deployed M0b slice using default agent in `src/agents/default` on Docker local; Custom runtime can be located at `src/agents/<runtime-name>`; Do not use Codex in the current run; Sustainable job/lease/reconciler remains in the next stages**. Scope: node `agent`; Node `llm.call` simply continues to call the provider directly if no tool, shell or workspace is needed.
 
-## 1. Quyết định kiến trúc
+## 1. Architectural decisions
 
-Mỗi lần thực thi một **attempt của agent node** sẽ chạy trong một container mới từ image agent đã khóa bằng digest. Container chỉ nhận một yêu cầu, trả một kết quả rồi bị dừng và xóa. Retry tạo attempt và container mới; không tái sử dụng process, graph state, filesystem ghi được hoặc model client của attempt trước.
+Each execution of an agent node **attempt** will run in a new container from the digest-locked agent image. The container only receives one request, returns one result, then is stopped and deleted. Retry creates new attempts and containers; Do not reuse the process, graph state, recorded filesystem, or client model of a previous attempt.
 
-Container là tài nguyên thực thi tạm thời, không phải nguồn trạng thái bền vững. Trạng thái job, lease, kết quả, log cần giữ và artifact phải được lưu bên ngoài container trước khi xóa.
+Containers are temporary executable resources, not persistent sources of state. Job, lease status, results, logs to keep, and artifacts must be saved outside the container before deletion.
 
-Quyết định này thay thế đường production dùng một HTTP agent service chạy lâu dài. HTTP server trong `src/agents/default` có thể được giữ để phát triển và kiểm thử contract, nhưng workflow worker không gọi nó trong đường production mới.
+This decision replaces the production route using a persistent HTTP agent service. The HTTP server in `src/agents/default` can be kept for contract development and testing, but the workflow worker does not call it in the new production pipeline.
 
-### Vì sao chọn đơn vị “attempt”
+### Why use an “attempt” as the execution unit?
 
-- Một node execution có thể được retry; mỗi attempt cần môi trường sạch và nhận diện riêng.
-- Cùng một workflow có thể có nhiều agent node chạy song song mà không chia sẻ memory hoặc filesystem ghi được.
-- Container hỏng hoặc bị mất không làm mất trạng thái điều phối đã commit.
-- Có thể đo CPU, RAM, thời gian và chi phí theo attempt.
-- Có thể nâng số runner theo chiều ngang mà không đổi contract của workflow engine.
+- An execution node can be retried; Each attempt needs a clean environment and its own identification.
+- The same workflow can have multiple agent nodes running in parallel without sharing memory or a writable filesystem.
+- Damaged or lost containers do not cause the commit state to be lost.
+- Can measure CPU, RAM, time and cost per attempt.
+- Can increase the number of runners horizontally without changing the workflow engine contract.
 
-Đây không phải cam kết rằng hàng triệu node sẽ chạy đồng thời với độ trễ không đổi. Hệ thống có năng lực hữu hạn và còn phụ thuộc database, Redis, image registry, băng thông, artifact storage và giới hạn của LLM provider. Mục tiêu đúng là: nhận tải bền vững, xếp hàng có giới hạn, tạo backpressure rõ ràng và tăng throughput gần tuyến tính khi bổ sung runner trong phạm vi các nút thắt còn lại.
+This is not a promise that millions of nodes will run simultaneously with constant latency. The system has finite capacity and depends on the database, Redis, image registry, bandwidth, artifact storage and LLM provider limitations. The correct goal is: get a sustained load, limit the queue, create clear backpressure and increase throughput nearly linearly when adding runners within the remaining bottlenecks.
 
-## 2. Hiện trạng và khoảng cách cần lấp
+## 2. Current status and gaps to be filled
 
-Repository hiện có hai đường thực thi cho Agent node:
+The Repository currently has two execution routes for the Agent node:
 
-1. `agent` là alias của runtime mặc định, tạo container `agentflow-agent-*` từ image allow-list trong `AGENT_RUNTIME_IMAGES`, chạy CLI `agent` đúng một lần và luôn gọi provider/model thật đã cấu hình. Stack hiện đăng ký `default`, `codex`, `opencode` và `openhands`.
-2. `direct` gọi LLM provider trực tiếp trong workflow-worker làm đường tương thích.
+1. `agent` is the default runtime alias, create `agentflow-agent-*` container from image allow-list in The stack currently registers `default`, `codex`, `opencode` and `openhands`.
+2. `direct` calls the LLM provider directly in workflow-worker as the compatible path.
 
-Lát cắt local hiện để workflow-worker gọi Docker Engine trực tiếp và luôn cleanup trong `finally`. Đây chưa phải mô hình production đích: vẫn cần **Agent Runner Supervisor** độc lập, job/attempt bền vững và reconciler để workflow-worker không nắm Docker socket.
+The local slice now lets the workflow-worker call the Docker Engine directly and always cleanup in `finally`. This is not the target production model: still needs an independent **Agent Runner Supervisor**, a persistent job/attempt, and a reconciler so that the workflow-worker does not take hold of the Docker socket.
 
-## 3. Kiến trúc đích
+## 3. Target architecture
 
 ```mermaid
 flowchart LR
@@ -40,9 +40,9 @@ flowchart LR
     AQ --> RS[Runner supervisor]
     RS --> DE[Container engine]
     REG[(Image registry)] --> DE
-    DE --> C[Container một lần chạy]
-    C --> MODEL[LLM qua egress proxy]
-    C --> WS[Workspace tạm]
+    DE --> C[Container once run]
+    C --> MODEL[LLM through egress proxy]
+    C --> WS[temporary Workspace]
     RS --> OBJ[(Artifact storage)]
     RS --> DB
     DB --> WW
@@ -50,38 +50,38 @@ flowchart LR
     REAP --> DE
 ```
 
-Trách nhiệm:
+Responsibility:
 
-| Thành phần | Trách nhiệm |
+| Ingredients | Responsibility |
 | --- | --- |
-| Workflow worker | Quyết định node nào được chạy; tạo `node_attempt` và agent job; chờ kết quả bền vững; không gọi Docker |
-| Agent job queue | Phân phối `job_id`, at-least-once; payload lớn chỉ truyền bằng reference |
-| Runner supervisor | Claim lease, kiểm tra quota, tạo/dừng/xóa container, heartbeat, thu kết quả và artifact |
-| Container agent | Thực thi đúng một request; không nhận job thứ hai; không tự ghi database control plane |
-| Reconciler/Reaper | Phát hiện lease hết hạn, job/container mồ côi, hoàn tất cleanup idempotent |
-| PostgreSQL | Nguồn trạng thái job/attempt có thẩm quyền |
-| Artifact storage | Lưu output lớn, log, diff, test report và result manifest bất biến |
+| Workflow workers | Decide which node is run; create `node_attempt` and agent job; waiting for sustainable results; don't call Docker |
+| Agent job queue | `job_id` distribution, at-least-once; Large payloads are only transmitted by reference |
+| Runner supervisor | Claim lease, check quota, create/stop/delete containers, heartbeat, collect results and artifact |
+| Container agents | Correct execution of a request; do not accept a second job; Do not automatically write database control plane |
+| Reconciler/Reaper | Detect expired leases, orphaned jobs/containers, complete idempotent cleanup |
+| PostgreSQL | Authoritative job/attempt status source |
+| Artifact storage | Save large output, log, diff, test report and immutable result manifest |
 
-Chỉ supervisor đáng tin được truy cập Docker Engine hoặc container runtime. API, workflow-worker và container agent không được mount Docker socket.
+Only trusted supervisors can access Docker Engine or the container runtime. APIs, workflow-workers, and container agents cannot mount Docker sockets.
 
-## 4. Contract thực thi một lần
+## 4. One-shot execution contract
 
-MVP kế thừa contract JSON của CLI trong `src/agents/default`; runtime tùy biến phải tuân theo [contract chung](../src/agents/README.md). Sau đó có thể bổ sung chế độ đọc request và ghi result qua file được mount để supervisor kiểm soát kích thước và thu artifact. Không cần mở port hay health endpoint cho container chỉ chạy một job.
+MVP inherits CLI's JSON contract in `src/agents/default`; Custom runtime must comply with [general contract](../src/agents/README.md). You can then add a mode to read the request and write the result through the mounted file so that the supervisor can control the size and capture the artifact. There is no need to open ports or health endpoints for containers that only run one job.
 
-Lệnh logic:
+Logical command:
 
 ```text
 agent-runtime run --request /run/input/request.json --result /run/output/result.json
 ```
 
-Supervisor mount các vùng riêng:
+Supervisor mount private areas:
 
-- `/run/input`: chỉ đọc, chứa request hoặc các reference đã resolve.
-- `/run/output`: ghi được, có quota, chỉ dùng cho result manifest và artifact tạm.
-- `/workspace`: tùy loại agent, là volume/snapshot riêng của attempt.
-- Root filesystem: chỉ đọc; `/tmp` là `tmpfs` có giới hạn.
+- `/run/input`: read only, contains resolved requests or references.
+- `/run/output`: writable, has quota, only used for result manifest and temporary artifacts.
+- `/workspace`: depends on the agent type, is the attempt's own volume/snapshot.
+- Root filesystem: read only; `/tmp` is a limited `tmpfs`.
 
-Không truyền prompt, token hoặc secret trên command line. Không ghi secret vào label, stdout, image layer hay result manifest.
+Do not transmit prompt, token or secret on the command line. Do not write the secret to the label, stdout, image layer or result manifest.
 
 ### Request envelope
 
@@ -110,7 +110,7 @@ Không truyền prompt, token hoặc secret trên command line. Không ghi secre
 }
 ```
 
-Các trường có khả năng lớn như workspace snapshot hoặc file input phải dùng `artifactRef` kèm checksum, không nhét vào queue message. `operationKey` được tạo từ node execution, attempt và input/config snapshot; request trùng key phải trả cùng `job_id`, không tạo thêm container.
+Potentially large fields such as workspace snapshots or input files must use `artifactRef` with checksum, not stuffing into message queue. `operationKey` is created from node execution, attempt and input/config snapshot; Requests for duplicate keys must be paid with `job_id`, no additional containers will be created.
 
 ### Result envelope
 
@@ -128,20 +128,20 @@ Các trường có khả năng lớn như workspace snapshot hoặc file input p
 }
 ```
 
-Supervisor không tin nội dung do container khai báo. Nó phải kiểm tra schema, `jobId`, giới hạn kích thước, đường dẫn/symlink, tự tính checksum, upload artifact, sau đó tạo result manifest có reference bền vững.
+Supervisor does not believe the content declared by the container. It must check the schema,
 
-Quy ước process:
+Process convention:
 
-| Kết quả | Exit code | Yêu cầu |
+| Results | Exit code | Request |
 | --- | ---: | --- |
-| Thành công | `0` | Có result hợp lệ và đúng `jobId` |
-| Lỗi runtime/provider | `1` | Có error envelope đã che dữ liệu nhạy cảm |
-| Input/contract sai | `2` | Không retry tự động |
-| Process bị kill/OOM/timeout | do supervisor xác định | Không tin output dở dang |
+| Success | `0` | There is a valid and correct result `jobId` |
+| Runtime/provider error | `1` | There is an error envelope that has covered sensitive data |
+| Input/contract is wrong | `2` | No automatic retry |
+| Process killed/OOM/timeout | determined by supervisor | Don't believe the output is unfinished |
 
-Exit code `0` nhưng thiếu/sai result vẫn là `RESULT_INVALID`. Có file result không đồng nghĩa job thành công nếu process chưa kết thúc hợp lệ.
+Exit code `0` but missing/wrong result is still `RESULT_INVALID`. Having a result file does not mean the job is successful if the process has not ended properly.
 
-## 5. Vòng đời job và thứ tự commit
+## 5. Job lifecycle and commit order
 
 ```mermaid
 sequenceDiagram
@@ -152,35 +152,35 @@ sequenceDiagram
     participant C as Agent container
     participant A as Artifact storage
 
-    W->>D: Tạo node_attempt + agent_job QUEUED
-    W->>Q: Gửi job_id qua outbox
+    W->>D: Create node_attempt + agent_job QUEUED
+    W->>Q: Send job_id via outbox
     R->>D: Claim lease + generation
-    R->>C: Create/start container một lần chạy
-    loop Khi đang chạy
+    R->>C: Create/start container once run
+    loop While running
         R->>D: Heartbeat lease
     end
-    C-->>R: Exit + result/artifact tạm
+    C-->>R: Exit + temporary result/artifact
     R->>A: Upload artifact/result manifest
     R->>D: Commit terminal state + result_ref
-    R->>C: Stop/remove container và volume tạm
-    R->>D: Đánh dấu cleanup hoàn tất
-    D-->>W: Node attempt đã terminal
+    R->>C: Stop/remove containers and temporary volumes
+    R->>D: Mark cleanup completed
+    D-->>W: Node attempt is terminal
 ```
 
-Thứ tự bắt buộc:
+Required order:
 
-1. Commit attempt/job và outbox trước khi enqueue.
-2. Runner claim bằng lease có `generation`; mọi lần ghi sau phải kèm generation để fence runner cũ.
-3. Ghi `container_ref` ngay sau create để reconciler có thể tìm và dọn.
-4. Thu và upload result manifest trước khi ghi `SUCCEEDED`.
-5. Commit trạng thái terminal trước khi xóa container.
-6. Cleanup luôn chạy trong `finally`; nếu thất bại, giữ terminal result và chuyển `cleanup_status=REQUIRED` để reaper xử lý.
+1. Commit attempt/job and outbox before enqueue.
+2. Runner claims by lease with `generation`; Every subsequent recording must include generation for the old fence runner.
+3. Write `container_ref` right after create so the reconciler can find and clean up.
+4. Collect and upload the result manifest before recording `SUCCEEDED`.
+5. Commit the terminal state before deleting the container.
+6. Cleanup always runs in `finally`; If it fails, hold terminal result and pass `cleanup_status=REQUIRED` to the reaper to process.
 
-Không giữ transaction database mở trong khi pull image, chạy model hoặc upload artifact.
+Do not keep the transaction database open while pulling images, running models, or uploading artifacts.
 
-### State machine đề xuất
+### State machine proposal
 
-Trạng thái thực thi và trạng thái cleanup được tách riêng:
+Execution state and cleanup state are separated:
 
 ```text
 QUEUED -> LEASED -> PROVISIONING -> RUNNING -> COLLECTING
@@ -194,106 +194,106 @@ cleanup_status: NOT_STARTED -> REQUIRED -> RUNNING -> CLEANED
                                              `-----> RETRY_REQUIRED
 ```
 
-Container bị xóa không được dùng làm tín hiệu duy nhất rằng job đã hoàn tất. Trạng thái `UNKNOWN` hoặc `LOST` cần đối soát; không tự retry một agent có side effect nếu chưa chứng minh attempt trước chưa gây tác động.
+A deleted container should not be used as the sole signal that a job is complete. Status `UNKNOWN` or `LOST` needs to be checked; Do not retry an agent with a side effect without proving that the previous attempt did not have an impact.
 
-### Session và approval
+### Sessions and approvals
 
-- Không lưu session cần resume chỉ trong filesystem của container. Session ID, checkpoint hoặc snapshot phải được ghi ra kho bền vững trước khi container kết thúc, và chỉ runtime khai báo capability tương ứng mới được resume trong container mới.
-- MVP ưu tiên approval ở ranh giới node: agent tạo output/artifact, container đóng, sau đó workflow chờ người duyệt. Chờ duyệt nhiều giờ hoặc nhiều ngày không giữ container sống.
-- Permission request giữa turn chỉ được hỗ trợ khi có deadline ngắn, event bền vững và cơ chế resume/reattach đã kiểm chứng. Nếu chưa có, runtime trả `CAPABILITY_UNSUPPORTED` thay vì treo container vô hạn hoặc tự cấp quyền.
-- Prompt tiếp theo sau approval là một attempt/turn mới theo contract đã snapshot; không dựa vào memory process của container cũ.
+- Do not save sessions that need to be resumed only in the container's filesystem. The session ID, checkpoint, or snapshot must be written to the persistent store before the container terminates, and only the runtime declaring the corresponding capability can be resumed in the new container.
+- MVP prioritizes approval at node boundaries: agent creates output/artifact, container closes, then workflow waits for approval. Waiting for approval for many hours or days does not keep the container alive.
+- Permission requests between turns are only supported when there are short deadlines, sustainable events and proven resume/reattach mechanisms. If not present, the runtime returns `CAPABILITY_UNSUPPORTED` instead of suspending the container indefinitely or granting permissions itself.
+- The next prompt after approval is a new attempt/turn according to the snapshotted contract; Does not rely on the old container's memory process.
 
-## 6. Dữ liệu cần bổ sung
+## 6. Additional required data
 
 ### `node_attempts`
 
-| Trường | Ý nghĩa |
+| School | Meaning |
 | --- | --- |
-| `id`, `node_execution_id`, `attempt` | Định danh; unique theo execution + attempt |
-| `operation_key` | Khóa idempotency bất biến |
-| `status`, `error_code`, `error_metadata` | Kết quả chuẩn hóa |
-| `input_hash`, `config_hash`, `runtime_image_digest` | Provenance của lần chạy |
-| `started_at`, `completed_at`, `deadline_at` | Deadline và đo thời gian |
-| `result_ref`, `usage` | Manifest và usage đã xác minh |
+| `id`, `node_execution_id`, `attempt` | Identifier; unique by execution + attempt |
+| `operation_key` | Immutable idempotency key |
+| `status`, `error_code`, `error_metadata` | Normalization results |
+| `input_hash`, `config_hash`, `runtime_image_digest` | Provenance of the run |
+| `started_at`, `completed_at`, `deadline_at` | Deadline and time measurement |
+| `result_ref`, `usage` | Manifest and usage verified |
 
 ### `agent_jobs`
 
-| Trường | Ý nghĩa |
+| School | Meaning |
 | --- | --- |
-| `id`, `attempt_id`, `operation_key` | Một job cho một attempt; `operation_key` unique |
+| `id`, `attempt_id`, `operation_key` | One job per attempt; `operation_key` unique |
 | `status` | State machine provisioning/execution |
-| `runner_id`, `lease_expires_at`, `lease_generation` | Ownership và fencing |
-| `container_runtime`, `container_ref` | Reference nội bộ để inspect/cleanup |
-| `heartbeat_at`, `exit_code`, `termination_reason` | Chẩn đoán |
-| `cleanup_status`, `cleanup_attempts`, `cleaned_at` | Theo dõi dọn tài nguyên độc lập |
-| `result_ref`, `created_at`, `updated_at` | Kết quả và audit |
+| `runner_id`, `lease_expires_at`, `lease_generation` | Ownership and fencing |
+| `container_runtime`, `container_ref` | Internal reference to inspect/cleanup |
+| `heartbeat_at`, `exit_code`, `termination_reason` | Diagnosis |
+| `cleanup_status`, `cleanup_attempts`, `cleaned_at` | Monitor independent resource cleanup |
+| `result_ref`, `created_at`, `updated_at` | Results and audit |
 
-Nên có thêm `agent_job_events` dạng append-only cho transition/audit và bảng `artifacts` như thiết kế hiện có. Không lưu container ID như public API; nó là chi tiết của runner.
+There should be an append-only `agent_job_events` for transition/audit and an `artifacts` table like the existing design. Do not save container ID like public API; it is the runner's detail.
 
-## 7. Concurrency, backpressure và mở rộng
+## 7. Concurrency, backpressure and expansion
 
-Không tạo container ngay trong vòng lặp đọc workflow queue. Agent job đi qua queue riêng để workflow-worker không bị block và runner có thể scale độc lập.
+Do not create containers within the workflow queue reading loop. Agent jobs go through a separate queue so the workflow-worker is not blocked and the runner can scale independently.
 
-Mỗi runner công bố năng lực và chỉ claim khi còn đủ tài nguyên. Dùng giới hạn theo trọng số thay vì chỉ đếm số container, ví dụ một job yêu cầu `cpu=2`, `memory=4 GiB`, `pids=256`. Các giới hạn tối thiểu:
+Each runner announces their abilities and only claims when they have enough resources. Use weighted limits instead of just counting containers, for example a job requests `cpu=2`, `memory=4 GiB`, `pids=256`. Minimum limits:
 
-- Toàn cụm và theo runner.
-- Theo tenant/project để tránh một người dùng chiếm hết tài nguyên.
-- Theo runtime/image và network profile.
-- Theo LLM provider/model để tôn trọng rate limit.
-- Số job đang provisioning để tránh image pull/container create làm nghẽn host.
+- Whole cluster and by runner.
+- According to tenant/project to avoid one user taking up all the resources.
+- According to runtime/image and network profile.
+- Follow LLM provider/model to respect rate limit.
+- Number of jobs being provisioned to avoid image pull/container create clogging the host.
 
-Khi hết năng lực, job ở `QUEUED`; API vẫn có thể nhận tới quota backlog. Khi backlog hoặc thời gian chờ vượt ngưỡng, trả lỗi quota/rate limit rõ ràng thay vì tiếp tục nhận vô hạn.
+When you run out of capacity, the job is at `QUEUED`; The API can still receive up to the backlog quota. When backlog or timeout exceeds a threshold, return quota/rate limit errors explicitly instead of continuing to receive indefinitely.
 
-Ước lượng ban đầu bằng Little's Law:
+Initial estimate using Little's Law:
 
 ```text
-concurrency cần thiết xấp xỉ arrival_rate × thời gian chạy trung bình
+The required concurrency is approximately arrival_rate × average runtime
 ```
 
-Ví dụ 10 job/giây với thời gian trung bình 120 giây cần khoảng 1.200 slot chạy, chưa tính burst, retry và headroom. Trước khi tuyên bố quy mô hàng triệu node, phải benchmark riêng queue admission, container start, registry pull, artifact upload, database write rate và provider quota.
+For example, 10 jobs/second with an average time of 120 seconds requires about 1,200 slots to run, not counting bursts, retries and headroom. Before declaring the scale of millions of nodes, you must separately benchmark queue admission, container start, registry pull, artifact upload, database write rate and provider quota.
 
-Hướng scale:
+Scale direction:
 
-1. Pre-pull image theo digest trên runner; không pull cùng một image đồng thời nhiều lần.
-2. Image nhỏ, dependency khóa phiên bản; không build image theo từng job.
-3. Nhiều runner độc lập cùng consumer group; scheduler ưu tiên data locality khi có workspace lớn.
-4. Autoscale theo queue age và resource demand, không chỉ queue length.
-5. Có headroom và rate limit cho cleanup/reconciliation để tránh “retry storm”.
+1. Pre-pull image according to digest on runner; Do not pull the same image multiple times at the same time.
+2. Small image, version lock dependency; Do not build images for each job.
+3. Many independent runners in the same consumer group; Scheduler prioritizes data locality when there is a large workspace.
+4. Autoscale according to queue age and resource demand, not just queue length.
+5. Have headroom and rate limit for cleanup/reconciliation to avoid “retry storm”.
 
-MVP không dùng warm container pool vì phá vỡ giả định mỗi attempt có môi trường mới. Có thể đánh giá snapshot/VM hoặc pre-created sandbox sau khi có benchmark và vẫn phải bảo đảm không tái sử dụng writable state.
+MVP does not use a warm container pool because it breaks the assumption that each attempt has a new environment. You can evaluate snapshots/VMs or pre-created sandboxes after benchmarking and still ensure that writable state is not reused.
 
-## 8. Cô lập và bảo mật bắt buộc
+## 8. Required isolation and security
 
-Profile container mặc định:
+Default container profile:
 
-- Chạy non-root với UID/GID cố định; không privileged.
-- `read_only` root filesystem, `no-new-privileges`, drop toàn bộ Linux capabilities.
-- Giới hạn CPU, memory, PID, thời gian, dung lượng workspace/output và file size.
-- Seccomp/AppArmor/SELinux theo môi trường; cân nhắc gVisor hoặc microVM cho mã không tin cậy.
-- Không mount Docker socket, home host, credential control plane hoặc volume dùng chung có quyền ghi.
-- Network mặc định `none`. Job cần LLM dùng egress proxy/allowlist; chặn metadata service, private network và control-plane endpoints.
-- Credential ngắn hạn, đúng scope, cấp tại biên tin cậy; ưu tiên proxy để container không giữ API key dài hạn.
-- Workspace theo attempt; tuyệt đối không để hai container cùng ghi một workspace.
-- Log được giới hạn tốc độ/kích thước và che secret trước khi lưu.
+- Run non-root with fixed UID/GID; not privileged.
+- `read_only` root filesystem, `no-new-privileges`, drop all Linux capabilities.
+- Limit CPU, memory, PID, time, workspace/output capacity and file size.
+- Seccomp/AppArmor/SELinux according to environment; consider gVisor or microVM for untrusted code.
+- Do not mount Docker socket, home host, credential control plane or shared volume with write access.
+- Default network `none`. Job requires LLM using egress proxy/allowlist; block metadata service, private network and control-plane endpoints.
+- Credential is short-term, in the right scope, issued at the trusted edge; Prioritize proxies so containers don't keep long-term API keys.
+- Workspace by attempt; Absolutely do not let two containers record the same workspace.
+- Log is limited in speed/size and secreted before saving.
 
-Việc mount Docker socket vào một container supervisor tương đương trao quyền rất lớn trên host. Local Compose có thể chấp nhận có ghi chú rủi ro; production nên chạy supervisor như dịch vụ host được harden hoặc dùng API scheduler/container runtime có xác thực và policy rõ ràng.
+Mounting a Docker socket to an equivalent container supervisor grants great authority to the host. Local Compose is acceptable with a risk note; production should run a supervisor as a hardened host service or use an API scheduler/container runtime with clear authentication and policies.
 
-Agent không được tự push Git, tạo PR, gửi email hoặc deploy chỉ vì có shell. Các side effect này thuộc connector sau một ranh giới approval/idempotency riêng.
+Agents cannot push Git, create PRs, send emails or deploy just because they have a shell. These side effects belong to the connector behind a separate approval/idempotency boundary.
 
-## 9. Timeout, cancel, retry và shutdown
+## 9. Timeout, cancel, retry and shutdown
 
-- Deadline lấy từ database; runner tính thời gian còn lại, không reset timeout sau retry delivery.
-- Cancel chuyển intent vào database trước, sau đó supervisor gửi `SIGTERM`, chờ grace period ngắn rồi `SIGKILL`; cuối cùng xóa cả container và volume/network tạm.
-- Supervisor mất heartbeat: reconciler inspect container. Nếu container còn chạy nhưng lease đã đổi generation, fence/stop nó trước khi cấp attempt mới.
-- Retry lỗi hạ tầng tạm thời tạo attempt mới theo policy. Lỗi input, policy, auth và output schema không retry tự động.
-- Provider timeout sau khi request đã gửi có thể vẫn phát sinh chi phí. Ghi usage `unknown` nếu không xác nhận được, không ghi `0`.
-- Khi runner shutdown có kiểm soát: ngừng claim, đánh dấu draining, chờ job trong grace period rồi checkpoint/terminate theo contract; không ACK job trước terminal commit.
+- Deadline taken from database; runner calculates remaining time, does not reset timeout after retry delivery.
+- Cancel transfers the intent to the database first, then the supervisor sends `SIGTERM`, waits for a short grace period, then `SIGKILL`; Finally, delete both the container and the temporary volume/network.
+- Supervisor lost heartbeat: reconciler inspect container. If the container is still running but the lease has changed generation, fence/stop it before granting a new attempt.
+- Retrying infrastructure errors temporarily creates new attempts according to policy. Input, policy, auth and output schema errors are not retried automatically.
+- Provider timeout after the request has been sent may still incur costs. Record usage `unknown` if you cannot confirm, do not record `0`.
+- When runner shutdown is controlled: stop claiming, mark draining, wait for job in grace period then checkpoint/terminate according to contract; Do not ACK job before terminal commit.
 
-Các mã lỗi bổ sung: `IMAGE_UNAVAILABLE`, `PROVISION_FAILED`, `CONTAINER_OOM`, `CONTAINER_EXITED`, `RESULT_INVALID`, `ARTIFACT_UPLOAD_FAILED`, `LEASE_LOST`, `CLEANUP_FAILED`, `RUNNER_LOST`.
+Additional error codes: `IMAGE_UNAVAILABLE`, `PROVISION_FAILED`, `CONTAINER_OOM`, `CONTAINER_EXITED`, `RESULT_INVALID`, `ARTIFACT_UPLOAD_FAILED`, `LEASE_LOST`, `CLEANUP_FAILED`, `RUNNER_LOST`.
 
-## 10. Reconciler và dọn container mồ côi
+## 10. Reconciler and cleanup of orphaned containers
 
-Mọi container do AgentFlow tạo phải có label không chứa secret:
+Every container created by AgentFlow must have a label that does not contain a secret:
 
 ```text
 io.agentflow.managed=true
@@ -303,43 +303,43 @@ io.agentflow.lease-generation=<number>
 io.agentflow.created-at=<timestamp>
 ```
 
-Reconciler chạy khi supervisor khởi động và theo chu kỳ:
+Reconciler runs when the supervisor starts and periodically:
 
-1. Liệt kê container có `io.agentflow.managed=true` trong phạm vi runner.
-2. Đối chiếu `job-id`, lease generation và trạng thái database.
-3. Dừng/xóa container không có job, job đã terminal, lease sai hoặc quá deadline.
-4. Đưa job không có container và hết lease về trạng thái đối soát; chỉ requeue khi retry policy cho phép.
-5. Dọn volume/network tạm theo label và TTL; không xóa resource không có nhãn quản lý.
+1. List containers with `io.agentflow.managed=true` in the runner scope.
+2. Compare `job-id`, lease generation and database status.
+3. Stop/delete containers without jobs, jobs that have been terminated, leased incorrectly, or expired.
+4. Return jobs without containers and lease ends to control status; only requeue when the retry policy allows it.
+5. Clean temporary volume/network by label and TTL; Do not delete resources that do not have a management label.
 
-Cleanup phải idempotent: “container không tồn tại” được xem là đã dọn. Result/artifact đã upload không bị xóa cùng container; retention của chúng do policy dữ liệu quản lý riêng.
+Cleanup must be idempotent: “container does not exist” is considered cleaned up. The uploaded result/artifact is not deleted with the container; Their retention is managed separately by data policy.
 
-## 11. Observability và SLO ban đầu
+## 11. Observability and initial SLO
 
-Metric không dùng `job_id` làm label:
+Metric does not use `job_id` as a label:
 
 - `agent_jobs_queued`, `agent_jobs_running`, `agent_queue_age_seconds`.
 - `agent_container_start_seconds`, `agent_job_duration_seconds`.
 - `agent_job_total{status,error_code,runtime}`.
-- CPU/memory/OOM/exit reason theo runner và runtime.
+- CPU/memory/OOM/exit reason according to runner and runtime.
 - `agent_cleanup_pending`, `agent_orphan_containers`, `agent_lease_expired_total`.
 - Image pull duration/error, artifact upload duration/error, provider rate-limit.
 
-Log/trace phải liên kết `run_id`, `node_execution_id`, `attempt_id`, `job_id`, `runner_id` trong field có cấu trúc. Prompt và tool output chỉ được lưu khi policy cho phép.
+Log/trace must link `run_id`, `node_execution_id`, `attempt_id`, `job_id`, `runner_id` in a structured field. Prompt and tool output are only saved when the policy allows it.
 
-Mục tiêu PoC đề xuất:
+Proposed PoC goals:
 
-| Chỉ số | Mục tiêu |
+| Index | Goal |
 | --- | --- |
-| Job được nhận bền vững | API/workflow worker commit trước khi trả thành công |
-| Container start với image đã pre-pull | p95 dưới 2 giây trên cấu hình benchmark công bố |
-| Phát hiện runner mất heartbeat | dưới 60 giây |
-| Cleanup sau terminal | p99 dưới 60 giây; không còn container sau TTL reaper |
-| Cô lập | Không chia sẻ writable filesystem/process state giữa hai attempt |
-| Overload | Queue/backpressure có giới hạn; không làm crash control plane |
+| Job is received sustainably | API/workflow worker commit before successful return |
+| Container starts with pre-pull image | p95 under 2 seconds on published benchmark configuration |
+| Detect runner losing heartbeat | under 60 seconds |
+| Cleanup after terminal | p99 under 60 seconds; no more containers after TTL reaper |
+| Isolation | Do not share writable filesystem/process state between two attempts |
+| Overload | Queue/backpressure is limited; does not crash the control plane |
 
-Các con số phải được điều chỉnh sau benchmark, không coi là SLA production.
+Numbers must be adjusted after benchmarking, not considered production SLA.
 
-## 12. Cấu hình dự kiến
+## 12. Proposed configuration
 
 ```dotenv
 AGENT_EXECUTION_MODE=ephemeral-container
@@ -358,84 +358,84 @@ AGENT_CONTAINER_PIDS=256
 AGENT_CONTAINER_NETWORK_PROFILE=llm-only
 ```
 
-Không dùng tag trôi như `latest` trong job snapshot. Workflow version hoặc attempt phải ghi image digest thực tế để tái hiện và audit.
+Do not use drift tags like `latest` in job snapshots. The Workflow version or attempt must record the actual image digest for reproduction and auditing.
 
-## 13. Kế hoạch triển khai
+## 13. Implementation plan
 
-### Giai đoạn 0 — chốt contract và benchmark nền
+### Phase 0 — contract closing and baseline benchmarking
 
-- Chốt request/result schema version 1 và error taxonomy.
-- Đo thời gian chạy hiện tại, cold/warm image start, memory/CPU của agent mẫu.
-- Chốt Docker Engine cho local/PoC và abstraction `ContainerBackend` để không khóa production vào một runtime.
-- Chốt artifact store, credential flow và network profile trước khi cho agent có shell.
+- Close request/result schema version 1 and error taxonomy.
+- Measure current run time, cold/warm image start, memory/CPU of the sample agent.
+- Lock Docker Engine for local/PoC and abstraction `ContainerBackend` to not lock production to one runtime.
+- Finalize artifact store, credential flow and network profile before allowing the agent to have a shell.
 
-### Giai đoạn 1 — đường chạy một container trên một host
+### Phase 1 — running a container on a host
 
-- Bổ sung CLI `agent-runtime run` ghi result vào output file; giữ stdout cho structured log giới hạn.
-- Thêm migration `node_attempts`, `agent_jobs`, `agent_job_events`, `artifacts` tối thiểu.
-- Tách `AgentExecutor` hiện tại thành client tạo job/chờ result.
-- Xây supervisor Docker: create/start/wait/collect/remove trong `finally`.
-- Thêm feature flag `AGENT_EXECUTION_MODE`; đường cũ chỉ dùng làm rollback tạm thời.
-- Bỏ phụ thuộc production vào service HTTP `agent:8001` và `AGENT_BASE_URL`.
+- Add CLI `agent-runtime run` to write result to output file; keep stdout for limited structured log.
+- Add minimum `node_attempts`, `agent_jobs`, `agent_job_events`, `artifacts` migrations.
+- Split the current `AgentExecutor` into a client that creates job/wait for result.
+- Build Docker supervisor: create/start/wait/collect/remove in `finally`.
+- Add feature flag `AGENT_EXECUTION_MODE`; The old route is only used as a temporary rollback.
+- Remove production dependency on HTTP services `agent:8001` and `AGENT_BASE_URL`.
 
-### Giai đoạn 2 — độ bền và an toàn
+### Phase 2 — durability and safety
 
-- Lease generation, heartbeat, outbox, requeue và startup reconciliation.
-- Timeout/cancel, resource limits, network policy, secret broker và artifact validation.
-- Reaper container/volume/network mồ côi; dashboard cleanup.
-- Fault injection tại mọi khoảng hở: sau create, sau start, sau result, sau artifact upload, trước/sau terminal commit.
+- Lease generation, heartbeat, outbox, request and startup reconciliation.
+- Timeout/cancel, resource limits, network policy, secret broker and artifact validation.
+- Orphaned Reaper container/volume/network; dashboard cleanup.
+- Fault injection at every gap: after create, after start, after result, after artifact upload, before/after terminal commit.
 
-### Giai đoạn 3 — nhiều runner và kiểm soát tải
+### Phase 3 — multiple runners and load control
 
-- Consumer group cho agent jobs, runner registry/capacity, tenant quota và provider concurrency.
-- Pre-pull image, draining/rolling deploy, scheduler theo resource class.
-- Load test burst, runner loss, registry outage, database slow và provider rate limit.
+- Consumer group for agent jobs, runner registry/capacity, tenant quota and provider concurrency.
+- Pre-pull images, use draining/rolling deployments, and schedule by resource class.
+- Load test burst, runner loss, registry outage, database slow and provider rate limit.
 
-### Giai đoạn 4 — production hardening
+### Stage 4 — production hardening
 
-- Sandbox tăng cường cho code không tin cậy; audit security boundary.
-- Autoscaling theo queue age/resource demand, SLO/alert và capacity plan.
-- Rollback image theo digest, compatibility matrix của contract, retention/backup/restore.
-- Đánh giá Kubernetes Job, containerd/gVisor hoặc microVM khi cần nhiều host/tenant mạnh hơn.
+- Enhanced sandbox for untrusted code; security audit boundary.
+- Autoscaling according to queue age/resource demand, SLO/alert and capacity plan.
+- Rollback images according to digest, contract compatibility matrix, retention/backup/restore.
+- Evaluate Kubernetes Job, containerd/gVisor or microVM when more powerful hosts/tenants are needed.
 
-## 14. Kiểm thử nghiệm thu
+## 14. Acceptance testing
 
-| Kịch bản | Kết quả bắt buộc |
+| Script | Required Results |
 | --- | --- |
-| Hai agent node song song | Hai container/workspace khác nhau, không thấy dữ liệu của nhau |
-| Redelivery cùng `operation_key` | Không tạo container thứ hai cho cùng attempt |
-| Retry hợp lệ | Attempt và container mới; provenance liên kết execution cũ |
-| Supervisor chết sau create/start | Reconciler tìm được container qua label và xử lý an toàn |
-| Agent xong, supervisor chết trước terminal commit | Result manifest cho phép đối soát; không tự gọi model lại mù quáng |
-| Terminal commit xong, remove thất bại | Node vẫn terminal; cleanup được retry tới `CLEANED` |
-| Timeout/cancel | Cả process tree bị dừng, container/volume/network được dọn |
-| OOM hoặc output quá lớn | Lỗi chuẩn hóa; không đọc output dở dang; runner còn khỏe |
-| Image digest không tồn tại | Fail `IMAGE_UNAVAILABLE`, không fallback sang tag khác |
-| Container thử truy cập Docker socket/control plane | Bị chặn |
-| Burst vượt capacity | Job chờ trong queue theo quota; control plane không sập |
-| Runner cũ ghi sau mất lease | Bị fencing từ chối |
+| Two parallel agent nodes | Two different containers/workspaces, can't see each other's data |
+| Redelivery with `operation_key` | Do not create a second container for the same attempt |
+| Valid retries | Attempt and new containers; old execution link provenance |
+| Supervisor died after create/start | Reconciler finds the container through the label and processes it safely |
+| Agent finished, supervisor died before terminal commit | Result manifest allows comparison; Don't call the model blindly |
+| Terminal commit completed, removal failed | Node is still terminal; cleanup is retried to `CLEANED` |
+| Timeout/cancel | The entire process tree is stopped, containers/volumes/network are cleaned up |
+| OOM or output too large | Standardized error; do not read unfinished output; Runner is still healthy |
+| Image digest does not exist | Fail `IMAGE_UNAVAILABLE`, no fallback to another tag |
+| Container tries to access Docker socket/control plane | Blocked |
+| Burst exceeds capacity | Job waits in queue according to quota; control plane does not crash |
+| Old runner recorded later lost lease | Rejected by fencing |
 
-## 15. Điều kiện hoàn thành MVP
+## 15. MVP completion conditions
 
-MVP được xem là hoàn thành khi:
+MVP is considered completed when:
 
-1. Mọi agent attempt trong đường thực thi mới tạo đúng một container từ image digest đã snapshot.
-2. Không có HTTP agent service dùng chung trong đường production.
-3. Kết quả bền vững được commit trước cleanup; cleanup có reconciler và không phụ thuộc happy path.
-4. Retry/redelivery không tạo trùng container cho cùng attempt.
-5. CPU, RAM, PID, disk, timeout và network policy đều được áp dụng và có test.
-6. Có dashboard queue age, active jobs, error, OOM, lease và orphan cleanup.
-7. Load test công bố cấu hình phần cứng, giới hạn provider, throughput, p95/p99 và điểm bão hòa.
-8. Có runbook cho runner mất kết nối, registry lỗi, artifact lỗi, cleanup backlog và rollback image.
+1. Every agent attempt in the new execution path creates exactly one container from the snapshotted image digest.
+2. There is no shared HTTP agent service in the production pipeline.
+3. Sustainable results are committed before cleanup; cleanup has a reconciler and does not depend on happy path.
+4. Retry/redelivery does not create duplicate containers for the same attempt.
+5. CPU, RAM, PID, disk, timeout and network policies are all applied and tested.
+6. Has dashboard queue age, active jobs, error, OOM, lease and orphan cleanup.
+7. Load test reveals hardware configuration, provider limits, throughput, p95/p99 and saturation point.
+8. There are runbooks for runner lost connection, registry errors, artifact errors, cleanup backlog and rollback image.
 
-## 16. Các quyết định cần chốt trước khi code
+## 16. Decisions required before implementation
 
-- Container backend PoC là Docker Engine local socket hay remote engine có TLS.
-- Container có cần workspace/repository ngay trong mốc đầu hay chỉ chạy agent lập kế hoạch JSON.
-- Artifact store của MVP là volume có interface S3 hay object storage thật.
-- Egress LLM đi qua proxy nào và credential ngắn hạn được cấp ra sao.
-- Giới hạn tài nguyên mặc định và quota theo tenant/project.
-- Retry policy nào an toàn cho agent có tool/side effect.
-- Retention của logs, result manifest, workspace snapshot và failed container diagnostics.
+- PoC backend container is Docker Engine local socket or remote engine with TLS.
+- Does the container need a workspace/repository right from the start or just run a JSON planning agent?
+- MVP's Artifact store is a volume with an S3 interface or real object storage.
+- Which proxy does Egress LLM go through and how is the short-term credential issued?
+- Default resource limit and quota by tenant/project.
+- Which retry policy is safe for agents with tools/side effects?
+- Retention of logs, result manifest, workspace snapshot and failed container diagnostics.
 
-Nếu chưa chốt hết, có thể bắt đầu với agent lập kế hoạch hiện tại: network chỉ tới LLM, không workspace, không shell, input/output JSON nhỏ. Đây là lát cắt ít rủi ro để chứng minh lifecycle create–run–collect–remove trước khi mở rộng sang coding agent.
+If it's not all finalized, you can start with the current planning agent: network only up to LLM, no workspace, no shell, small JSON input/output. This is a low-risk slice to demonstrate the create–run–collect–remove lifecycle before expanding to agent coding.

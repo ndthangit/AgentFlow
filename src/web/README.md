@@ -1,41 +1,45 @@
 # AgentFlow Web
 
-Giao diện React/Vite tối giản cho FastAPI System. Web đăng nhập Keycloak bằng Authorization Code + PKCE, sau đó cho phép tạo, sửa JSON draft, validate, publish workflow và tạo run.
+A minimal React/Vite interface for the FastAPI System. The web app signs in to
+Keycloak with Authorization Code + PKCE, then lets users create workflows, edit
+JSON drafts, validate and publish them, and create runs.
 
 ```powershell
 npm.cmd install
 npm.cmd run dev
 ```
 
-Mặc định web chạy ở `http://localhost:5173`. Bản Docker được public tại `http://localhost:3000`.
+By default, the web app runs at `http://localhost:5173`. The Docker build is exposed
+at `http://localhost:3000`.
 
-## Cấu trúc mã nguồn
+## Source structure
 
-Mã trong `src` được chia theo trách nhiệm để thay đổi một tính năng không kéo theo
-các phần không liên quan:
+Code under `src` is grouped by responsibility so feature changes do not pull in
+unrelated areas:
 
 ```text
 src/
-├── app/                 # App shell, điều hướng và phối hợp trạng thái trang
+├── app/                 # App shell, navigation, and page-level state
 ├── features/
-│   ├── mcp/             # Quản lý MCP server
-│   ├── models/          # Quản lý provider và model
-│   └── workflows/       # Template, tóm tắt và workflow editor
-│       └── editor/      # Canvas, graph utilities, schema builder và types
-├── shared/              # API client, xác thực và contract dùng chung
-└── styles/              # CSS entry point của ứng dụng
+│   ├── mcp/             # MCP server management
+│   ├── models/          # Provider and model management
+│   └── workflows/       # Templates, summaries, and workflow editor
+│       └── editor/      # Canvas, graph utilities, schema builder, and types
+├── shared/              # Shared API client, authentication, and contracts
+└── styles/              # Application CSS entry point
 ```
 
-Logic biến đổi graph thuần nằm trong `features/workflows/editor/graph.ts`; component
-React chỉ giữ việc quản lý state và render. Các workflow mẫu nằm riêng trong
-`features/workflows/templates.ts` để tránh trộn dữ liệu demo với app shell.
+Pure graph transformation logic lives in `features/workflows/editor/graph.ts`;
+React components only manage state and rendering. Sample workflows live separately
+in `features/workflows/templates.ts` so demo data is not mixed into the app shell.
 
-Workflow editor tự lưu draft sau mỗi thao tác graph hợp lệ. Nút lưu trong drawer
-node vừa cập nhật graph vừa xếp thao tác ghi database; các lần ghi được tuần tự hóa
-theo revision để tránh ghi đè. Publish luôn chờ draft mới nhất lưu xong rồi mới tạo
-version, vì vậy không có nút “Lưu draft” riêng.
+The workflow editor autosaves the draft after every valid graph operation. The save
+button in the node drawer updates the graph and queues a database write; writes are
+serialized by revision to prevent overwrites. Publishing waits for the latest draft
+to finish saving before creating a version, so there is no separate “Save draft”
+button.
 
-Kiểm tra production build sau khi thay đổi:
+Verify the production build after making changes:
 
 ```powershell
 npm.cmd run build

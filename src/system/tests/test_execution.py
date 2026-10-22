@@ -17,11 +17,11 @@ class RestrictedPythonTests(unittest.TestCase):
     cleaned_text = ' '.join(inputs['draft'].split())
     return {'cleaned_text': cleaned_text, 'word_count': len(cleaned_text.split())}
 """,
-            {"draft": "Xin   chao\nAgentFlow"},
+            {"draft": "Hello   from\nAgentFlow"},
         )
 
         self.assertEqual(
-            result, {"cleaned_text": "Xin chao AgentFlow", "word_count": 3}
+            result, {"cleaned_text": "Hello from AgentFlow", "word_count": 3}
         )
 
     def test_rejects_imports_instead_of_executing_them(self):
@@ -357,13 +357,13 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         async def agent(node, inputs):
             if node["id"] == "draft":
-                return {"draft": f"  Noi dung   {inputs['topic']}  "}
+                return {"draft": f"  Content   {inputs['topic']}  "}
             return {"final": inputs["content"]}
 
         result = await execute_workflow(graph, {"topic": "AI"}, agent)
 
         self.assertEqual(result.status, "succeeded")
-        self.assertEqual(result.output, {"final": "Noi dung AI"})
+        self.assertEqual(result.output, {"final": "Content AI"})
         self.assertEqual(
             [(step.node_id, step.status) for step in result.steps],
             [
@@ -372,8 +372,8 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ("review", "succeeded"),
             ],
         )
-        self.assertEqual(result.steps[1].input, {"draft": "  Noi dung   AI  "})
-        self.assertEqual(result.steps[1].output, {"cleaned": "Noi dung AI"})
+        self.assertEqual(result.steps[1].input, {"draft": "  Content   AI  "})
+        self.assertEqual(result.steps[1].output, {"cleaned": "Content AI"})
 
     async def test_marks_failure_and_skips_downstream_steps(self):
         graph = {

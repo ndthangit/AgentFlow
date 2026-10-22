@@ -24,7 +24,7 @@ async def verify(url: str) -> None:
             "write_file",
             {
                 "path": "demo/hello-agentflow.txt",
-                "content": "Xin chào từ MCP filesystem demo!",
+                "content": "Hello from the MCP filesystem demo!",
             },
         )
         read_result = await session.call_tool(

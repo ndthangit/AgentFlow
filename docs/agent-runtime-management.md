@@ -1,24 +1,31 @@
-# Quản lý nhiều Agent runtime
+# Managing multiple Agent runtimes
 
-Ngày cập nhật: **14/10/2026**. Trạng thái: **thiết kế mục tiêu cho lát cắt triển khai hiện tại**.
+Updated: **October 14, 2026**. Status: **target design for the current implementation slice**.
 
-Hướng dẫn triển khai cụ thể cho runtime bên ngoài nằm tại [Tích hợp Codex và OpenCode vào AgentFlow](codex-opencode-runtime-integration.md) và [Tích hợp OpenHands](openhands-runtime-integration.md).
+Concrete external-runtime implementation guidance is available in
+[Integrating Codex and OpenCode with AgentFlow](codex-opencode-runtime-integration.md)
+and [Integrating OpenHands](openhands-runtime-integration.md).
 
-## 1. Mục tiêu
+## 1. Goals
 
-AgentFlow cho phép tích hợp nhiều Agent runtime độc lập. Mỗi runtime có source, dependency và image container riêng; workflow chọn runtime theo từng node thay vì buộc toàn bộ stack dùng chung một image.
+AgentFlow supports multiple independent Agent runtimes. Each runtime has its own
+source, dependencies, and container image; workflows select a runtime per node
+instead of forcing the entire stack to share one image.
 
-Lát cắt này cung cấp:
+This slice provides:
 
-- quy ước thư mục `src/agents/<runtime-id>`;
-- manifest `runtime.json` để discover, validate và build image;
-- lệnh quản lý để liệt kê, kiểm tra và build một hoặc tất cả runtime;
-- `AgentRuntimeManager` trong worker để chọn runtime từ catalog allow-list, gửi request JSON qua `stdin` và nhận result JSON qua `stdout`;
-- tương thích workflow cũ: giá trị `runtime: "agent"` được ánh xạ sang runtime mặc định.
+- the `src/agents/<runtime-id>` directory convention;
+- a `runtime.json` manifest for image discovery, validation, and builds;
+- management commands to list, validate, and build one or all runtimes;
+- an `AgentRuntimeManager` in the worker that selects a runtime from an allow-listed catalog, sends JSON over `stdin`, and receives JSON over `stdout`;
+- backward compatibility: `runtime: "agent"` maps to the default runtime.
 
-Lát cắt này chưa cung cấp cài runtime từ repository bên ngoài, hot reload image, session dài hạn, streaming, approval giữa turn hoặc build image từ API. Build là thao tác quản trị/deploy, không chạy từ request của người dùng.
+This slice does not provide installation from external repositories, image hot
+reload, long-lived sessions, streaming, between-turn approval, or API-triggered
+image builds. Building is an administrative/deployment action, never a user-request
+path.
 
-## 2. Cấu trúc thư mục
+## 2. Directory structure
 
 ```text
 src/agents/
@@ -36,11 +43,13 @@ src/agents/
     └── ...
 ```
 
-`runtime-id` phải là slug chữ thường gồm `a-z`, `0-9`, `-`, bắt đầu và kết thúc bằng chữ hoặc số. Mỗi thư mục trực tiếp là một đơn vị build; runtime không được đọc source hoặc credential của runtime khác.
+`runtime-id` must be a lowercase slug containing `a-z`, `0-9`, and `-`, beginning
+and ending with a letter or digit. Each direct directory is one build unit; a
+runtime must not read another runtime's source or credentials.
 
-## 3. Manifest `runtime.json`
+## 3. The `runtime.json` manifest
 
-Manifest tối thiểu:
+Minimal manifest:
 
 ```json
 {
@@ -51,32 +60,35 @@ Manifest tối thiểu:
 }
 ```
 
-Quy tắc:
+Rules:
 
-- `schema_version` hiện chỉ nhận `1`;
-- `id` phải trùng tên thư mục;
-- `image` là image reference đầy đủ được dùng khi build và khi khai báo catalog cho worker;
-- `description` là chuỗi tùy chọn phục vụ CLI/UI;
-- `Dockerfile` luôn nằm trong chính thư mục runtime; không cho manifest trỏ build context ra ngoài `src/agents`.
+- `schema_version` currently accepts only `1`.
+- `id` must match the directory name.
+- `image` is the full image reference used for builds and the worker catalog.
+- `description` is an optional CLI/UI description.
+- `Dockerfile` always lives in the runtime directory; the manifest cannot point the build context outside `src/agents`.
 
-Manifest là metadata deploy, không chứa API key, token hoặc cấu hình model. Image nên được khóa bằng version bất biến hoặc digest trong môi trường production.
+The manifest is deployment metadata and contains no API key, token, or model
+configuration. Production images should be pinned to immutable versions or digests.
 
-## 4. Contract container
+## 4. Container contract
 
-Mọi image runtime phải cung cấp executable `agent` trên `PATH`. Supervisor chạy `agent` không có argument, truyền đúng một JSON document UTF-8 qua `stdin` và chờ đúng một JSON document trên `stdout`. Log chẩn đoán chỉ ghi vào `stderr`.
+Every runtime image must provide an `agent` executable on `PATH`. The supervisor
+runs `agent` without arguments, sends exactly one UTF-8 JSON document over `stdin`,
+and expects exactly one JSON document on `stdout`. Diagnostics go only to `stderr`.
 
-Request phiên bản hiện tại:
+Current request version:
 
 ```json
 {
-  "task": "Nhiệm vụ đã render",
+  "task": "Rendered task",
   "context": "{\"input\":\"serialized JSON\"}",
   "skills": [],
   "output_schema": {"type": "object"}
 }
 ```
 
-Kết quả thành công:
+Successful result:
 
 ```json
 {
@@ -87,11 +99,13 @@ Kết quả thành công:
 }
 ```
 
-Kết quả lỗi public dùng `{ "error": { "code": "...", "message": "..." } }` và exit code khác `0`. Supervisor giới hạn kích thước request/output, timeout, CPU, memory, PID, network và chỉ chấp nhận các error code đã allow-list.
+Public failures use `{ "error": { "code": "...", "message": "..." } }` and a
+nonzero exit code. The supervisor limits request/output size, timeout, CPU, memory,
+PIDs, and network access and accepts only allow-listed error codes.
 
-## 5. Build và catalog deploy
+## 5. Builds and deployment catalog
 
-Lệnh quản lý chạy từ repository root:
+Run management commands from the repository root:
 
 ```powershell
 python src/agents/manage.py list
@@ -100,20 +114,25 @@ python src/agents/manage.py build default
 python src/agents/manage.py build --all
 ```
 
-`build` gọi Docker với argument dạng mảng, dùng thư mục runtime làm build context và tag từ manifest. Tên runtime luôn được validate trước khi dùng; CLI không ghép input người dùng thành shell command.
+`build` invokes Docker with an argument array, using the runtime directory as the
+build context and the manifest tag. Runtime names are always validated before use;
+the CLI never interpolates user input into a shell command.
 
-Worker không tự quét filesystem và không tự build image. Nó chỉ chạy catalog do operator cấp:
+The worker neither scans the filesystem nor builds images. It runs only the
+operator-supplied catalog:
 
 ```dotenv
 AGENT_RUNTIME_DEFAULT=default
 AGENT_RUNTIME_IMAGES={"default":"agentflow-agent-default:0.1.0","codex":"agentflow-agent-codex:0.1.0","opencode":"agentflow-agent-opencode:0.1.0","openhands":"agentflow-agent-openhands:0.1.0"}
 ```
 
-Catalog là allow-list. Node yêu cầu runtime không có trong catalog phải fail trước khi Docker được gọi. Cách này tách quyền build/publish image khỏi quyền thực thi workflow và tránh để graph tùy ý chọn image reference.
+The catalog is an allow-list. A node requesting an absent runtime must fail before
+Docker is called. This separates permission to build/publish images from permission
+to execute workflows and prevents graphs from selecting arbitrary image references.
 
-## 6. Chọn runtime trong workflow
+## 6. Selecting a runtime in a workflow
 
-Agent node lưu runtime id trong `config.runtime`:
+An Agent node stores the runtime ID in `config.runtime`:
 
 ```json
 {
@@ -126,17 +145,19 @@ Agent node lưu runtime id trong `config.runtime`:
 }
 ```
 
-Các giá trị có ý nghĩa đặc biệt:
+Special values:
 
-- `direct`: đường tương thích gọi provider trực tiếp trong worker, không chạy Agent container;
-- `agent`: alias cũ, được resolve thành `AGENT_RUNTIME_DEFAULT`;
-- một runtime id hợp lệ: chọn đúng entry trong `AGENT_RUNTIME_IMAGES`.
+- `direct`: compatibility path that calls the provider in the worker without an Agent container.
+- `agent`: legacy alias resolved to `AGENT_RUNTIME_DEFAULT`.
+- a valid runtime ID: selects the corresponding `AGENT_RUNTIME_IMAGES` entry.
 
-Validation của workflow chỉ kiểm tra định dạng runtime id vì catalog thuộc cấu hình deploy và có thể khác giữa control plane với worker. Worker chịu trách nhiệm kiểm tra runtime có được đăng ký trước khi thực thi.
+Workflow validation checks only the runtime-ID format because the catalog belongs to
+deployment configuration and may differ between the control plane and worker. The
+worker verifies registration before execution.
 
 ## 7. `AgentRuntimeManager`
 
-Worker chỉ tương tác với runtime qua một lớp:
+The worker interacts with runtimes through one class:
 
 ```python
 class AgentRuntimeManager:
@@ -151,7 +172,7 @@ class AgentRuntimeManager:
     ) -> dict[str, Any]: ...
 ```
 
-Luồng gọi:
+Invocation flow:
 
 ```mermaid
 sequenceDiagram
@@ -165,16 +186,19 @@ sequenceDiagram
     D->>A: agent
     A-->>D: RunResult JSON stdout
     D-->>M: exit code + bounded stdout/stderr
-    M-->>W: output hoặc WorkflowExecutionError
+    M-->>W: output or WorkflowExecutionError
 ```
 
-Manager dùng chung semaphore giới hạn tổng số container. Mỗi invocation tạo container mới và luôn cleanup khi thành công, lỗi, timeout hoặc cancellation. Credential chỉ tồn tại trong environment của invocation và không được đưa vào request, graph hay log.
+The manager uses a shared semaphore to limit total containers. Every invocation
+creates a new container and always cleans it up after success, failure, timeout, or
+cancellation. Credentials exist only in the invocation environment and never enter
+the request, graph, or logs.
 
-## 8. Tiêu chí hoàn thành
+## 8. Acceptance criteria
 
-1. `manage.py validate` phát hiện manifest sai, id trùng/sai thư mục và thiếu Dockerfile.
-2. `manage.py build <id>` build đúng context và image tag; runtime không đăng ký bị từ chối.
-3. `AgentRuntimeManager` resolve alias `agent`, chọn image theo runtime id và không nhận image trực tiếp từ graph.
-4. Hai node trong cùng một deployment có thể chọn hai runtime id khác nhau nếu cả hai có trong catalog.
-5. Test xác nhận request/response, giới hạn bảo mật, runtime không tồn tại, catalog sai và tương thích `runtime: "agent"`.
-6. Tài liệu local/Compose mô tả rõ bước build image và cấu hình catalog.
+1. `manage.py validate` detects invalid manifests, duplicate/mismatched IDs, and missing Dockerfiles.
+2. `manage.py build <id>` uses the correct context and image tag; unregistered runtimes are rejected.
+3. `AgentRuntimeManager` resolves the `agent` alias, selects images by runtime ID, and never accepts an image directly from a graph.
+4. Two nodes in one deployment can select different runtime IDs when both are in the catalog.
+5. Tests cover request/response behavior, security limits, missing runtimes, invalid catalogs, and `runtime: "agent"` compatibility.
+6. Local/Compose documentation clearly describes image builds and catalog configuration.

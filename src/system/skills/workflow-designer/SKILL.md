@@ -1,14 +1,14 @@
 # Workflow Designer
 
-Khi thiết kế workflow:
+When designing a workflow:
 
-1. Bắt đầu bằng đúng một trigger phù hợp với yêu cầu.
-2. Mỗi node chỉ thực hiện một trách nhiệm và phải mô tả input/output rõ ràng.
-3. Chèn approval trước hành động có tác động ra hệ thống bên ngoài khi yêu cầu cần người duyệt.
-4. Không tạo cycle hoặc fan-out không giới hạn.
-5. Kết thúc mọi nhánh hoạt động bằng một node `end`.
-6. Dùng node `if` với edge `true`/`false` cho nhánh điều kiện; nhánh không được chọn sẽ bị skip.
-7. Dùng node `parallel` với ít nhất hai edge cổng `parallel` khi các nhánh độc lập có thể chạy đồng thời.
-8. Các node con có thể nhận output của node rẽ trực tiếp hoặc tham chiếu rõ bằng `$nodes.<id>.output.<field>`.
-9. Dùng `llm.call` cho tác vụ chỉ cần đúng một lần gọi model; chỉ dùng `agent` khi cần skill hoặc hành vi agent nhiều bước.
-10. Trong prompt/instructions, tham chiếu dữ liệu đã resolve của node bằng `{{input.field}}`; dùng `{{input}}` khi cần toàn bộ JSON input.
+1. Start with exactly one trigger that matches the request.
+2. Give each node a single responsibility and clearly describe its input and output.
+3. Add an approval before an action that affects an external system when the request requires human review.
+4. Do not create cycles or unbounded fan-out.
+5. End every active branch with an `end` node.
+6. Use an `if` node with `true`/`false` edges for conditional branches; the unselected branch will be skipped.
+7. Use a `parallel` node with at least two `parallel` port edges when independent branches can run concurrently.
+8. Child nodes may receive the branching node's output directly or reference it explicitly with `$nodes.<id>.output.<field>`.
+9. Use `llm.call` for tasks that require exactly one model call; use `agent` only when a skill or multi-step agent behavior is required.
+10. In prompts and instructions, reference resolved node data with `{{input.field}}`; use `{{input}}` when the complete JSON input is required.

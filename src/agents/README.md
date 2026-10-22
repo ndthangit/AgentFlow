@@ -1,46 +1,51 @@
 # Agent runtimes
 
-Mỗi thư mục con trực tiếp trong `src/agents` là một implementation Agent runtime độc lập. Dự án có runtime [`default`](default/README.md), [`codex`](codex/README.md), [`opencode`](opencode/README.md) và [`openhands`](openhands/README.md).
+Each direct child directory under `src/agents` is an independent Agent runtime
+implementation. The project includes the [`default`](default/README.md),
+[`codex`](codex/README.md), [`opencode`](opencode/README.md), and
+[`openhands`](openhands/README.md) runtimes.
 
-Thiết kế và lộ trình adapter cụ thể cho Codex/OpenCode nằm tại [tài liệu tích hợp runtime](../../docs/codex-opencode-runtime-integration.md).
+The Codex/OpenCode adapter design and roadmap are documented in the
+[runtime integration guide](../../docs/codex-opencode-runtime-integration.md).
 
 ```text
 src/agents/
-├── default/          # Deep Agents/LangGraph runtime đi kèm dự án
+├── default/          # Bundled Deep Agents/LangGraph runtime
 ├── codex/            # OpenAI Codex CLI one-shot runtime
 ├── opencode/         # OpenCode SDK/server one-shot runtime
 ├── openhands/        # OpenHands Software Agent SDK one-shot runtime
-├── my-runtime/       # Runtime tùy biến của người dùng
-└── README.md         # Quy ước tích hợp
+├── my-runtime/       # User-defined custom runtime
+└── README.md         # Integration contract
 ```
 
-## Build catalog runtime cho Docker Compose
+## Build the runtime catalog for Docker Compose
 
-Compose build sẵn các runtime `default`, `codex`, `opencode` và `openhands`, rồi đăng ký bốn image trong
-`AGENT_RUNTIME_IMAGES` của workflow worker:
+Compose builds the `default`, `codex`, `opencode`, and `openhands` runtimes and
+registers the four images in the workflow worker's `AGENT_RUNTIME_IMAGES` setting:
 
 ```powershell
 docker compose --env-file docker/.env -f docker/compose.yaml build agent-runtime-default-image agent-runtime-codex-image agent-runtime-opencode-image agent-runtime-openhands-image
 docker compose --env-file docker/.env -f docker/compose.yaml up -d workflow-worker
 ```
 
-Workflow chọn runtime bằng `config.runtime`; `agent` là alias của
-`AGENT_RUNTIME_DEFAULT`. Muốn thêm `my-runtime`, hãy thêm service build/pull image
-và entry tương ứng vào `AGENT_RUNTIME_IMAGES`. Worker vẫn tạo một container dùng
-một lần cho mỗi Agent node attempt.
+Workflows select a runtime with `config.runtime`; `agent` is an alias for
+`AGENT_RUNTIME_DEFAULT`. To add `my-runtime`, add a service that builds or pulls the
+image and a corresponding `AGENT_RUNTIME_IMAGES` entry. The worker creates a fresh,
+single-use container for every Agent node attempt.
 
-## Contract tối thiểu cho runtime mới
+## Minimum contract for a new runtime
 
-Một thư mục runtime mới phải:
+A new runtime directory must:
 
-1. Có `Dockerfile` build được từ chính thư mục đó.
-2. Cung cấp executable `agent` trên `PATH` của image.
-3. Đọc đúng một JSON request UTF-8 từ `stdin` khi chạy `agent` không có tham số.
-4. Ghi đúng một JSON result vào `stdout`; log chẩn đoán phải ghi vào `stderr`.
-5. Không ghi credential, provider response thô hoặc secret vào output/log.
-6. Chạy được với filesystem chỉ đọc, user không đặc quyền, giới hạn CPU/RAM/PID và network do supervisor áp đặt.
+1. Have a `Dockerfile` that builds from that directory.
+2. Provide an `agent` executable on the image's `PATH`.
+3. Read exactly one UTF-8 JSON request from `stdin` when `agent` runs without arguments.
+4. Write exactly one JSON result to `stdout`; diagnostic logs must go to `stderr`.
+5. Never write credentials, raw provider responses, or secrets to output or logs.
+6. Run with a read-only filesystem, an unprivileged user, and supervisor-enforced CPU, RAM, PID, and network limits.
 
-Request hiện tại có các field `task`, `context`, `skills` và `output_schema`. Khi thành công, runtime trả:
+The current request has `task`, `context`, `skills`, and `output_schema` fields. On
+success, the runtime returns:
 
 ```json
 {
@@ -51,4 +56,9 @@ Request hiện tại có các field `task`, `context`, `skills` và `output_sche
 }
 ```
 
-Khi thất bại, runtime nên trả JSON `{ "error": { "code": "...", "message": "...", "detail": "..." } }` và exit code khác `0`. `message` là mô tả ổn định; `detail` là nguyên nhân gốc đã giới hạn 500 ký tự và phải loại bỏ API key, token, mật khẩu cùng thông tin xác thực trước khi trả về. Có thể sao chép [`default`](default/README.md) làm điểm khởi đầu, nhưng không nên commit `.env`, `.venv`, cache hoặc credential vào runtime mới.
+On failure, the runtime should return
+`{ "error": { "code": "...", "message": "...", "detail": "..." } }` and a nonzero
+exit code. `message` is a stable description; `detail` is the root cause, limited to
+500 characters, with API keys, tokens, passwords, and authentication data removed.
+You can copy [`default`](default/README.md) as a starting point, but do not commit
+`.env`, `.venv`, cache, or credential files in a new runtime.

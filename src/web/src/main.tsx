@@ -14,10 +14,10 @@ initializeAuth()
     </StrictMode>,
   ))
   .catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : "Không thể kết nối Keycloak";
+    const message = error instanceof Error ? error.message : "Could not connect to Keycloak";
     root.render(
       <main className="boot-error">
-        <h1>Không thể đăng nhập</h1>
+        <h1>Could not sign in</h1>
         <p>{message}</p>
       </main>,
     );

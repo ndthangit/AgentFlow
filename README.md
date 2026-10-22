@@ -1,12 +1,13 @@
 # AgentFlow
 
-AgentFlow là nền tảng thiết kế và chạy workflow bằng giao diện kéo thả. Workflow hỗ
-trợ xử lý dữ liệu, rẽ nhánh, chạy song song, gọi LLM, Agent container và MCP.
+AgentFlow is a platform for designing and running workflows through a drag-and-drop
+interface. Workflows support data processing, branching, parallel execution, LLM
+calls, Agent containers, and MCP.
 
-## Cách chạy
+## Running the application
 
-Yêu cầu Docker Desktop hoặc Docker Engine có Docker Compose v2. Các lệnh dưới đây
-đều chạy từ thư mục `docker`:
+Docker Desktop or Docker Engine with Docker Compose v2 is required. Run all commands
+below from the `docker` directory:
 
 ```powershell
 Set-Location docker
@@ -15,27 +16,27 @@ Set-Location docker
 ### Local
 
 ```powershell
-# Chỉ cần sao chép ở lần cấu hình đầu tiên.
+# Copy this file only during initial setup.
 Copy-Item .env.example .env
-# Đổi các mật khẩu mẫu trong .env.
+# Replace the sample passwords in .env.
 docker compose up -d --build
 ```
 
-| Thành phần | Địa chỉ |
+| Component | Address |
 | --- | --- |
-| Giao diện | http://localhost:3000 |
+| Web UI | http://localhost:3000 |
 | System API | http://localhost:8000 |
 | API docs | http://localhost:8000/docs |
 | Keycloak | http://localhost:8080 |
 
-Đăng nhập bằng `KEYCLOAK_DEV_USER` và `KEYCLOAK_DEV_USER_PASSWORD` trong
+Sign in with `KEYCLOAK_DEV_USER` and `KEYCLOAK_DEV_USER_PASSWORD` from
 `docker/.env`.
 
 ### Server dev
 
 ```powershell
 Copy-Item .env.dev.example .env.dev
-# Sửa secret và các biến WEB/SYSTEM/KEYCLOAK_PUBLIC_URL trong .env.dev.
+# Update the secrets and WEB/SYSTEM/KEYCLOAK_PUBLIC_URL variables in .env.dev.
 docker compose --env-file .env.dev -f compose.yaml -f compose.dev.yaml up -d --build
 ```
 
@@ -43,12 +44,12 @@ docker compose --env-file .env.dev -f compose.yaml -f compose.dev.yaml up -d --b
 
 ```powershell
 Copy-Item .env.prod.example .env.prod
-# Sửa secret, URL HTTPS và tên image đã được CI build trong .env.prod.
+# Update the secrets, HTTPS URLs, and CI-built image names in .env.prod.
 docker compose --env-file .env.prod -f compose.yaml -f compose.prod.yaml pull
 docker compose --env-file .env.prod -f compose.yaml -f compose.prod.yaml up -d --remove-orphans
 ```
 
-### Kiểm tra và dừng local
+### Inspecting and stopping the local stack
 
 ```powershell
 docker compose ps
@@ -56,40 +57,40 @@ docker compose logs -f system workflow-worker web
 docker compose down
 ```
 
-Lệnh `down` giữ nguyên dữ liệu. Chỉ dùng `down --volumes` khi muốn xóa toàn bộ
-database và cấu hình đã lưu.
+The `down` command preserves data. Use `down --volumes` only when you intend to
+delete the entire database and all saved configuration.
 
-## Sử dụng
+## Usage
 
-1. Khai báo provider và model trong mục Models.
-2. Tạo workflow, thêm node và nối các node trên canvas.
-3. Cấu hình từng node rồi nhấn **Lưu thay đổi**.
-4. Validate, publish, chạy workflow và xem kết quả từng step.
+1. Configure a provider and its models under Models.
+2. Create a workflow, add nodes, and connect them on the canvas.
+3. Configure each node and select **Save changes**.
+4. Validate, publish, and run the workflow, then inspect each step's result.
 
-Lưu node sẽ tự cập nhật draft. Publish luôn dùng draft mới nhất nên không có nút
-**Lưu draft** riêng.
+Saving a node automatically updates the draft. Publishing always uses the latest
+draft, so there is no separate **Save draft** button.
 
-## Cấu trúc
+## Project structure
 
-- `src/web`: giao diện React/Vite.
-- `src/system`: FastAPI, orchestrator và workflow worker.
-- `src/agents`: các Agent runtime chạy trong container.
-- `src/mcp-filesystem`: MCP filesystem dùng để demo.
-- `docker`: Compose, env mẫu và cấu hình Keycloak.
-- `docs`: tài liệu thiết kế và vận hành.
+- `src/web`: React/Vite web interface.
+- `src/system`: FastAPI, the orchestrator, and workflow workers.
+- `src/agents`: Agent runtimes that run in containers.
+- `src/mcp-filesystem`: demo filesystem MCP server.
+- `docker`: Compose files, environment templates, and Keycloak configuration.
+- `docs`: design and operations documentation.
 
-Docker được tách thành ba môi trường: local, server dev và production. Xem lệnh chạy,
-HTTPS và cấu hình image trong [hướng dẫn Docker](docker/README.md).
+Docker supports three environments: local, server development, and production. See
+the [Docker guide](docker/README.md) for commands, HTTPS, and image configuration.
 
-## Tài liệu
+## Documentation
 
-- [Bản đồ codebase](docs/codebase-map.md)
-- [Workflow và cơ chế thực thi](docs/workflow-execution.md)
-- [Quản lý Agent runtime](docs/agent-runtime-management.md)
-- [Kế hoạch worker chạy đồng thời và quản lý nhiều Agent container](docs/worker-concurrency-and-agent-runtime-scaling.md)
-- [Tích hợp Codex và OpenCode](docs/codex-opencode-runtime-integration.md)
-- [Provider và model LLM](docs/llm-providers.md)
-- [Tích hợp và test OpenAI, Anthropic, NVIDIA không cần key thật](docs/provider-integration-testing.md)
-- [Kế hoạch tích hợp giám sát hệ thống và workflow](docs/observability.md)
+- [Codebase map](docs/codebase-map.md)
+- [Workflow execution](docs/workflow-execution.md)
+- [Agent runtime management](docs/agent-runtime-management.md)
+- [Worker concurrency and Agent runtime scaling](docs/worker-concurrency-and-agent-runtime-scaling.md)
+- [Codex and OpenCode integration](docs/codex-opencode-runtime-integration.md)
+- [LLM providers and models](docs/llm-providers.md)
+- [Provider integration testing without real API keys](docs/provider-integration-testing.md)
+- [System and workflow observability](docs/observability.md)
 
-Giấy phép: [MIT](LICENSE).
+License: [MIT](LICENSE).

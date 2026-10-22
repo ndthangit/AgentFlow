@@ -6,8 +6,8 @@ try {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      task: "Đề xuất flow nhận đơn hàng, kiểm tra dữ liệu và chờ duyệt",
-      context: "Kết quả sẽ được dùng làm output của một agent node trong AgentFlow.",
+      task: "Propose a flow that receives orders, validates data, and waits for approval",
+      context: "The result will be used as the output of an Agent node in AgentFlow.",
     }),
     signal: AbortSignal.timeout(130_000),
   });
