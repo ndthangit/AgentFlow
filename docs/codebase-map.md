@@ -2,7 +2,8 @@
 
 This document describes the current execution flow and the ownership of each
 responsibility. Unimplemented target designs are documented separately in the other
-architecture documents.
+architecture documents. Node-level scheduling across several executor workers is
+specified in [parallel workflow execution](parallel-workflow-execution.md).
 
 ## Execution flow from UI to worker
 

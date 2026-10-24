@@ -1,8 +1,10 @@
 """DAG workflow runtime with conditional and parallel branch support."""
 
 import asyncio
+import os
 import time
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +19,20 @@ from runtime.restricted_python import execute_restricted_python
 AgentExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 LlmExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 tracer = trace.get_tracer("agentflow.workflow")
+
+
+def _python_executor_size() -> int:
+    try:
+        configured = int(os.getenv("PYTHON_EXECUTOR_THREADS", "4"))
+    except ValueError:
+        configured = 4
+    return max(1, min(configured, 32))
+
+
+_python_executor = ThreadPoolExecutor(
+    max_workers=_python_executor_size(),
+    thread_name_prefix="agentflow-python",
+)
 
 
 def _langfuse_node_type(node_type: str) -> str:
@@ -231,7 +247,7 @@ async def execute_workflow(
     max_parallel = graph.get("settings", {}).get("maxParallelNodes", 4)
     if not isinstance(max_parallel, int) or isinstance(max_parallel, bool):
         max_parallel = 4
-    semaphore = asyncio.Semaphore(max(1, min(max_parallel, 32)))
+    max_parallel = max(1, min(max_parallel, 32))
 
     def edge_is_active(edge: dict[str, Any]) -> bool:
         source = edge["from"]
@@ -292,239 +308,269 @@ async def execute_workflow(
             ),
         )
         metric_started = time.perf_counter()
-        async with semaphore:
-            started_at = datetime.now(UTC)
-            node_input: dict[str, Any] | None = None
-            states[node_id] = "running"
-            await observe(
-                ExecutionStep(
-                    sequence=sequence,
-                    node_id=node_id,
-                    node_type=node_type,
-                    node_name=node.get("name", node_id),
-                    status="running",
-                    input=None,
-                    output=None,
-                    error=None,
-                    started_at=started_at,
-                    completed_at=None,
-                )
+        started_at = datetime.now(UTC)
+        node_input: dict[str, Any] | None = None
+        states[node_id] = "running"
+        await observe(
+            ExecutionStep(
+                sequence=sequence,
+                node_id=node_id,
+                node_type=node_type,
+                node_name=node.get("name", node_id),
+                status="running",
+                input=None,
+                output=None,
+                error=None,
+                started_at=started_at,
+                completed_at=None,
             )
-            try:
-                if node_type == "input.schema":
-                    node_input = dict(run_input)
-                    errors = schema_errors(run_input, node.get("schema", {}))
+        )
+        try:
+            if node_type == "input.schema":
+                node_input = dict(run_input)
+                errors = schema_errors(run_input, node.get("schema", {}))
+                if errors:
+                    raise WorkflowExecutionError("; ".join(errors))
+                node_output = dict(run_input)
+            else:
+                node_input = _node_input(node, parents[node_id], run_input, outputs)
+                if node_type == "math.add":
+                    left, right = node_input.get("left"), node_input.get("right")
+                    if (
+                        not isinstance(left, (int, float))
+                        or isinstance(left, bool)
+                        or not isinstance(right, (int, float))
+                        or isinstance(right, bool)
+                    ):
+                        raise WorkflowExecutionError("math.add inputs must be numbers")
+                    config = node.get("config", {})
+                    node_output = {config.get("outputKey", "sum"): left + right}
+                elif node_type == "agent":
+                    config = node.get("config", {})
+                    errors = schema_errors(node_input, config.get("inputSchema", {}))
                     if errors:
                         raise WorkflowExecutionError("; ".join(errors))
-                    node_output = dict(run_input)
-                else:
-                    node_input = _node_input(node, parents[node_id], run_input, outputs)
-                    if node_type == "math.add":
-                        left, right = node_input.get("left"), node_input.get("right")
-                        if (
-                            not isinstance(left, (int, float))
-                            or isinstance(left, bool)
-                            or not isinstance(right, (int, float))
-                            or isinstance(right, bool)
-                        ):
-                            raise WorkflowExecutionError(
-                                "math.add inputs must be numbers"
-                            )
-                        config = node.get("config", {})
-                        node_output = {config.get("outputKey", "sum"): left + right}
-                    elif node_type == "agent":
-                        config = node.get("config", {})
-                        errors = schema_errors(
-                            node_input, config.get("inputSchema", {})
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                        node_output = await execute_agent(node, node_input)
-                        errors = schema_errors(
-                            node_output, config.get("outputSchema", {}), "$output"
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                    elif node_type == "llm.call":
-                        config = node.get("config", {})
-                        errors = schema_errors(
-                            node_input, config.get("inputSchema", {})
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                        if execute_llm is None:
-                            raise WorkflowExecutionError(
-                                "LLM Call executor is not configured"
-                            )
-                        node_output = await execute_llm(node, node_input)
-                        errors = schema_errors(
-                            node_output, config.get("outputSchema", {}), "$output"
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                    elif node_type == "code.python":
-                        config = node.get("config", {})
-                        errors = schema_errors(
-                            node_input, config.get("inputSchema", {})
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                        node_output = execute_restricted_python(
-                            config.get("code", ""), node_input
-                        )
-                        errors = schema_errors(
-                            node_output, config.get("outputSchema", {}), "$output"
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                    elif node_type == "if":
-                        condition = _evaluate_condition(
-                            node_input.get("value"), node.get("config", {})
-                        )
-                        node_output = {**node_input, "condition": condition}
-                    elif node_type == "parallel":
-                        node_output = dict(node_input)
-                    elif node_type == "output.schema":
-                        node_output = dict(node_input)
-                        errors = schema_errors(
-                            node_output, node.get("schema", {}), "$output"
-                        )
-                        if errors:
-                            raise WorkflowExecutionError("; ".join(errors))
-                    else:
-                        raise WorkflowExecutionError(
-                            f"unsupported node type: {node_type}"
-                        )
-
-                outputs[node_id] = node_output
-                selected_ports[node_id] = _outgoing_port(node, node_output)
-                states[node_id] = "succeeded"
-                completed_step = ExecutionStep(
-                    sequence=sequence,
-                    node_id=node_id,
-                    node_type=node_type,
-                    node_name=node.get("name", node_id),
-                    status="succeeded",
-                    input=node_input,
-                    output=node_output,
-                    error=None,
-                    started_at=started_at,
-                    completed_at=datetime.now(UTC),
-                )
-                steps_by_id[node_id] = completed_step
-                await observe(completed_step)
-                record_node_attempt(
-                    node_type, "succeeded", time.perf_counter() - metric_started
-                )
-                span.set_attribute("agentflow.node.status", "succeeded")
-                annotate_langfuse_span(
-                    span,
-                    _langfuse_node_type(node_type),
-                    input_data=node_input,
-                    output_data=node_output,
-                    metadata={"status": "succeeded"},
-                )
-                return node_id, node_output
-            except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
-                states[node_id] = "failed"
-                error_code = (
-                    exc.code
-                    if isinstance(exc, WorkflowExecutionError)
-                    else "STEP_EXECUTION_FAILED"
-                )
-                error = {"code": error_code, "message": str(exc)}
-                if (
-                    isinstance(exc, WorkflowExecutionError)
-                    and exc.detail is not None
-                ):
-                    error["detail"] = exc.detail
-                failed_step = ExecutionStep(
-                    sequence=sequence,
-                    node_id=node_id,
-                    node_type=node_type,
-                    node_name=node.get("name", node_id),
-                    status="failed",
-                    input=node_input,
-                    output=None,
-                    error=error,
-                    started_at=started_at,
-                    completed_at=datetime.now(UTC),
-                )
-                steps_by_id[node_id] = failed_step
-                await observe(failed_step)
-                record_node_attempt(
-                    node_type,
-                    "failed",
-                    time.perf_counter() - metric_started,
-                    error_code,
-                )
-                span.set_attribute("agentflow.node.status", "failed")
-                span.set_attribute("error.type", error_code)
-                span.set_status(Status(StatusCode.ERROR, error_code))
-                annotate_langfuse_span(
-                    span,
-                    _langfuse_node_type(node_type),
-                    input_data=node_input,
-                    metadata={"status": "failed", "error_code": error_code},
-                    level="ERROR",
-                    status_message=str(exc),
-                )
-                return node_id, None
-
-    while any(state == "pending" for state in states.values()):
-        progressed = False
-        for node_id in sequence_by_id:
-            if states[node_id] != "pending" or not incoming[node_id]:
-                continue
-            if not all(
-                states[edge["from"]] in TERMINAL_NODE_STATES
-                for edge in incoming[node_id]
-            ):
-                continue
-            if not any(edge_is_active(edge) for edge in incoming[node_id]):
-                await skip_node(
-                    node_id,
-                    "BRANCH_NOT_SELECTED",
-                    "Skipped because no incoming branch was selected",
-                )
-                progressed = True
-
-        ready = [
-            node_id
-            for node_id in sequence_by_id
-            if states[node_id] == "pending"
-            and (
-                not incoming[node_id]
-                or (
-                    all(
-                        states[edge["from"]] in TERMINAL_NODE_STATES
-                        for edge in incoming[node_id]
+                    node_output = await execute_agent(node, node_input)
+                    errors = schema_errors(
+                        node_output, config.get("outputSchema", {}), "$output"
                     )
-                    and any(edge_is_active(edge) for edge in incoming[node_id])
-                )
-            )
-        ]
-        if ready:
-            await asyncio.gather(*(execute_node(node_id) for node_id in ready))
-            progressed = True
+                    if errors:
+                        raise WorkflowExecutionError("; ".join(errors))
+                elif node_type == "llm.call":
+                    config = node.get("config", {})
+                    errors = schema_errors(node_input, config.get("inputSchema", {}))
+                    if errors:
+                        raise WorkflowExecutionError("; ".join(errors))
+                    if execute_llm is None:
+                        raise WorkflowExecutionError(
+                            "LLM Call executor is not configured"
+                        )
+                    node_output = await execute_llm(node, node_input)
+                    errors = schema_errors(
+                        node_output, config.get("outputSchema", {}), "$output"
+                    )
+                    if errors:
+                        raise WorkflowExecutionError("; ".join(errors))
+                elif node_type == "code.python":
+                    config = node.get("config", {})
+                    errors = schema_errors(node_input, config.get("inputSchema", {}))
+                    if errors:
+                        raise WorkflowExecutionError("; ".join(errors))
+                    loop = asyncio.get_running_loop()
+                    node_output = await loop.run_in_executor(
+                        _python_executor,
+                        execute_restricted_python,
+                        config.get("code", ""),
+                        node_input,
+                    )
+                    errors = schema_errors(
+                        node_output, config.get("outputSchema", {}), "$output"
+                    )
+                    if errors:
+                        raise WorkflowExecutionError("; ".join(errors))
+                elif node_type == "if":
+                    condition = _evaluate_condition(
+                        node_input.get("value"), node.get("config", {})
+                    )
+                    node_output = {**node_input, "condition": condition}
+                elif node_type == "parallel":
+                    node_output = dict(node_input)
+                elif node_type == "output.schema":
+                    node_output = dict(node_input)
+                    errors = schema_errors(
+                        node_output, node.get("schema", {}), "$output"
+                    )
+                    if errors:
+                        raise WorkflowExecutionError("; ".join(errors))
+                else:
+                    raise WorkflowExecutionError(f"unsupported node type: {node_type}")
 
-        failed_ids = [node_id for node_id, state in states.items() if state == "failed"]
-        if failed_ids:
-            failed_id = failed_ids[0]
+            outputs[node_id] = node_output
+            selected_ports[node_id] = _outgoing_port(node, node_output)
+            states[node_id] = "succeeded"
+            completed_step = ExecutionStep(
+                sequence=sequence,
+                node_id=node_id,
+                node_type=node_type,
+                node_name=node.get("name", node_id),
+                status="succeeded",
+                input=node_input,
+                output=node_output,
+                error=None,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+            steps_by_id[node_id] = completed_step
+            await observe(completed_step)
+            record_node_attempt(
+                node_type, "succeeded", time.perf_counter() - metric_started
+            )
+            span.set_attribute("agentflow.node.status", "succeeded")
+            annotate_langfuse_span(
+                span,
+                _langfuse_node_type(node_type),
+                input_data=node_input,
+                output_data=node_output,
+                metadata={"status": "succeeded"},
+            )
+            return node_id, node_output
+        except (RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
+            states[node_id] = "failed"
+            error_code = (
+                exc.code
+                if isinstance(exc, WorkflowExecutionError)
+                else "STEP_EXECUTION_FAILED"
+            )
+            error = {"code": error_code, "message": str(exc)}
+            if isinstance(exc, WorkflowExecutionError) and exc.detail is not None:
+                error["detail"] = exc.detail
+            failed_step = ExecutionStep(
+                sequence=sequence,
+                node_id=node_id,
+                node_type=node_type,
+                node_name=node.get("name", node_id),
+                status="failed",
+                input=node_input,
+                output=None,
+                error=error,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+            steps_by_id[node_id] = failed_step
+            await observe(failed_step)
+            record_node_attempt(
+                node_type,
+                "failed",
+                time.perf_counter() - metric_started,
+                error_code,
+            )
+            span.set_attribute("agentflow.node.status", "failed")
+            span.set_attribute("error.type", error_code)
+            span.set_status(Status(StatusCode.ERROR, error_code))
+            annotate_langfuse_span(
+                span,
+                _langfuse_node_type(node_type),
+                input_data=node_input,
+                metadata={"status": "failed", "error_code": error_code},
+                level="ERROR",
+                status_message=str(exc),
+            )
+            return node_id, None
+
+    running: dict[asyncio.Task[tuple[str, dict[str, Any] | None]], str] = {}
+    try:
+        while any(state == "pending" for state in states.values()) or running:
+            progressed = False
             for node_id in sequence_by_id:
-                if states[node_id] == "pending":
+                if states[node_id] != "pending" or not incoming[node_id]:
+                    continue
+                if not all(
+                    states[edge["from"]] in TERMINAL_NODE_STATES
+                    for edge in incoming[node_id]
+                ):
+                    continue
+                if not any(edge_is_active(edge) for edge in incoming[node_id]):
                     await skip_node(
                         node_id,
-                        "UPSTREAM_STEP_FAILED",
-                        f"Skipped because node {failed_id} failed",
+                        "BRANCH_NOT_SELECTED",
+                        "Skipped because no incoming branch was selected",
                     )
-            return WorkflowExecution(
-                status="failed",
-                output=None,
-                steps=sorted(steps_by_id.values(), key=lambda step: step.sequence),
-            )
-        if not progressed:
-            raise WorkflowExecutionError("workflow scheduler reached a deadlock")
+                    progressed = True
+
+            failed_ids = [
+                node_id for node_id, state in states.items() if state == "failed"
+            ]
+            if failed_ids:
+                if running:
+                    done, _pending = await asyncio.wait(
+                        running, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in done:
+                        running.pop(task)
+                        task.result()
+                    continue
+                failed_id = failed_ids[0]
+                for node_id in sequence_by_id:
+                    if states[node_id] == "pending":
+                        await skip_node(
+                            node_id,
+                            "UPSTREAM_STEP_FAILED",
+                            f"Skipped because node {failed_id} failed",
+                        )
+                return WorkflowExecution(
+                    status="failed",
+                    output=None,
+                    steps=sorted(steps_by_id.values(), key=lambda step: step.sequence),
+                )
+
+            available_slots = max_parallel - len(running)
+            if available_slots > 0:
+                ready = [
+                    node_id
+                    for node_id in sequence_by_id
+                    if states[node_id] == "pending"
+                    and (
+                        not incoming[node_id]
+                        or (
+                            all(
+                                states[edge["from"]] in TERMINAL_NODE_STATES
+                                for edge in incoming[node_id]
+                            )
+                            and any(edge_is_active(edge) for edge in incoming[node_id])
+                        )
+                    )
+                ][:available_slots]
+                for node_id in ready:
+                    states[node_id] = "queued"
+                    task = asyncio.create_task(
+                        execute_node(node_id), name=f"workflow-node:{node_id}"
+                    )
+                    running[task] = node_id
+                    progressed = True
+
+            if running:
+                done, _pending = await asyncio.wait(
+                    running, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    running.pop(task)
+                    task.result()
+                continue
+            if any(state == "pending" for state in states.values()) and not progressed:
+                raise WorkflowExecutionError("workflow scheduler reached a deadlock")
+    finally:
+        if running:
+            for task in running:
+                task.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+
+    failed_ids = [node_id for node_id, state in states.items() if state == "failed"]
+    if failed_ids:
+        return WorkflowExecution(
+            status="failed",
+            output=None,
+            steps=sorted(steps_by_id.values(), key=lambda step: step.sequence),
+        )
 
     active_terminals = [
         node_id

@@ -254,6 +254,14 @@ Number of workers configured with `WORKFLOW_WORKER_REPLICAS`. Replicas are share
 Redis consumer group but has its own consumer name, so one message can only be one
 worker claim at a time.
 
+Inside one claimed run, the graph scheduler executes independent ready nodes up to
+the workflow's `settings.maxParallelNodes` limit (default 4, maximum 32). It
+recalculates readiness after each completion, so a fast branch can continue
+without waiting for an unrelated slow branch. LLM and Agent calls use async tasks;
+restricted Python uses the bounded `PYTHON_EXECUTOR_THREADS` pool (default 4) so
+it does not block those calls on the event loop. Agent containers remain
+separately bounded by `AGENT_RUNTIME_MAX_CONTAINERS`.
+
 The worker holds the lease in PostgreSQL and renews it according to `WORKFLOW_HEARTBEAT_SECONDS`.
 If `WORKFLOW_LEASE_TTL_SECONDS` is too high, `workflow-recovery` switches to run/step running
 to `failed` with code `WORKER_LOST`, then clear the container according to the label. Control cycle

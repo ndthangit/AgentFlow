@@ -44,6 +44,61 @@ import type {
 } from "./types";
 import { workflowNodeTypes } from "./WorkflowCanvasNode";
 
+type AgentRuntimeOption = {
+  id: string;
+  name: string;
+};
+
+const agentRuntimeOptions: AgentRuntimeOption[] = [
+  {
+    id: "default",
+    name: "Default Agent (recommended)",
+  },
+  {
+    id: "codex",
+    name: "Codex CLI",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+  },
+  {
+    id: "openhands",
+    name: "OpenHands",
+  },
+  {
+    id: "direct",
+    name: "Direct provider",
+  },
+  {
+    id: "agent",
+    name: "Legacy alias",
+  },
+];
+
+function AgentRuntimePicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (runtime: string) => void;
+}) {
+  const selected = agentRuntimeOptions.find((option) => option.id === value);
+
+  return (
+    <label className="agent-runtime-select">
+      Agent runtime
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {!selected && value && <option value={value}>{value} (custom)</option>}
+        {agentRuntimeOptions.map((option) => (
+          <option key={option.id} value={option.id}>{option.name}</option>
+        ))}
+      </select>
+      <small>Choose the runtime that executes this Agent node.</small>
+    </label>
+  );
+}
+
 function WorkflowEditorView({
   value,
   onChange,
@@ -523,22 +578,14 @@ function WorkflowEditorView({
 
               {(selectedNode.type === "agent" || selectedNode.type === "llm.call") && (
                 <>
-                  {selectedNode.type === "agent" && <section className="agent-model-picker">
-                    <div><strong>Agent runtime</strong><span>The selected runtime in src/agents/&lt;runtime-name&gt; is created and removed for each node execution.</span></div>
-                    <label>Runtime<input list="agent-runtime-options" value={form.runtime} placeholder="default" onChange={(event) => {
-                      const runtime = event.target.value;
-                      setForm({ ...form, runtime, ...(runtime === "direct" ? { mcpServerIds: [] } : {}) });
-                    }} /></label>
-                    <datalist id="agent-runtime-options">
-                      <option value="default">Default container runtime</option>
-                      <option value="codex">OpenAI Codex CLI runtime</option>
-                      <option value="opencode">OpenCode SDK runtime</option>
-                      <option value="openhands">OpenHands Software Agent SDK runtime</option>
-                      <option value="agent">Legacy default alias</option>
-                      <option value="direct">Direct provider</option>
-                    </datalist>
-                    <p>Enter a runtime ID registered in <code>AGENT_RUNTIME_IMAGES</code>.</p>
-                  </section>}
+                  {selectedNode.type === "agent" && <AgentRuntimePicker
+                    value={form.runtime}
+                    onChange={(runtime) => setForm({
+                      ...form,
+                      runtime,
+                      ...(runtime === "direct" ? { mcpServerIds: [] } : {}),
+                    })}
+                  />}
                   <section className="agent-model-picker">
                     <div><strong>{selectedNode.type === "agent" ? "Agent model" : "LLM Call model"}</strong><span>Select a model from the registered active providers.</span></div>
                     <label>Provider<select

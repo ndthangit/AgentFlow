@@ -1,6 +1,7 @@
 import asyncio
+import threading
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from domain.errors import WorkflowExecutionError
 from runtime.engine import execute_workflow
@@ -193,6 +194,130 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 }
             },
         )
+
+    async def test_downstream_node_starts_without_waiting_for_unrelated_branch(self):
+        graph = {
+            "settings": {"maxParallelNodes": 2},
+            "nodes": [
+                {
+                    "id": "fast",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+                {
+                    "id": "slow",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+                {
+                    "id": "after_fast",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+            ],
+            "edges": [{"from": "fast", "to": "after_fast"}],
+        }
+        release_slow = asyncio.Event()
+        downstream_started = asyncio.Event()
+
+        async def agent(node, _inputs):
+            if node["id"] == "slow":
+                await release_slow.wait()
+            elif node["id"] == "after_fast":
+                downstream_started.set()
+            return {"node": node["id"]}
+
+        execution = asyncio.create_task(execute_workflow(graph, {}, agent))
+        try:
+            await asyncio.wait_for(downstream_started.wait(), timeout=0.5)
+            self.assertFalse(release_slow.is_set())
+        finally:
+            release_slow.set()
+        result = await execution
+
+        self.assertEqual(result.status, "succeeded")
+
+    async def test_agent_and_llm_nodes_run_concurrently(self):
+        graph = {
+            "settings": {"maxParallelNodes": 2},
+            "nodes": [
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+                {
+                    "id": "llm",
+                    "type": "llm.call",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+            ],
+            "edges": [],
+        }
+        started: set[str] = set()
+        both_started = asyncio.Event()
+
+        async def wait_for_peer(node_id):
+            started.add(node_id)
+            if len(started) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=0.5)
+            return {"node": node_id}
+
+        async def agent(node, _inputs):
+            return await wait_for_peer(node["id"])
+
+        async def llm(node, _inputs):
+            return await wait_for_peer(node["id"])
+
+        result = await execute_workflow(graph, {}, agent, execute_llm=llm)
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(started, {"agent", "llm"})
+
+    async def test_python_node_runs_off_the_event_loop(self):
+        graph = {
+            "settings": {"maxParallelNodes": 2},
+            "nodes": [
+                {
+                    "id": "python",
+                    "type": "code.python",
+                    "config": {
+                        "code": "def main(inputs):\n    return inputs\n",
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                },
+                {
+                    "id": "agent",
+                    "type": "agent",
+                    "config": {"inputSchema": {}, "outputSchema": {}},
+                },
+            ],
+            "edges": [],
+        }
+        agent_started = threading.Event()
+        python_thread_ids: list[int] = []
+        event_loop_thread_id = threading.get_ident()
+
+        def blocking_python(_code, inputs):
+            python_thread_ids.append(threading.get_ident())
+            if not agent_started.wait(timeout=0.5):
+                raise RuntimeError("agent could not run while Python was active")
+            return dict(inputs)
+
+        async def agent(_node, _inputs):
+            agent_started.set()
+            return {"agent": "done"}
+
+        with patch(
+            "runtime.engine.execute_restricted_python", side_effect=blocking_python
+        ):
+            result = await execute_workflow(graph, {"value": 1}, agent)
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(len(python_thread_ids), 1)
+        self.assertNotEqual(python_thread_ids[0], event_loop_thread_id)
 
     async def test_if_executes_only_selected_branch_and_skips_the_other(self):
         graph = {

@@ -1,6 +1,6 @@
 # Workflow persistence and execution
 
-This document describes the path of data from the time a user creates a draft to the time a workflow run ends. The **existing** section reflects the code in `src/system`; The **target runtime** section describes persistent capabilities that need to be added.
+This document describes the path of data from the time a user creates a draft to the time a workflow run ends. The **existing** section reflects the code in `src/system`; The **target runtime** section describes persistent capabilities that need to be added. The detailed design for distributing ready nodes across bounded executor pools is in [parallel workflow execution](parallel-workflow-execution.md).
 
 ## 1. Service boundaries and data storage
 
@@ -138,6 +138,16 @@ Specific steps:
 
 `llm.call`'s prompt and `agent`'s instructions support templates according to the node's own resolved input. Use `{{input.field}}` for a single field, `{{input.nested.field}}` for nested paths, or `{{input}}` for the entire JSON. When a node has only one parent and does not declare `inputs`, the parent's output automatically becomes the node's input; A reference that does not exist causes step to fail with an obvious error.
 
+The current engine runs ready nodes concurrently inside one run and immediately
+recalculates readiness whenever a node completes. Restricted Python is executed
+in a bounded thread pool so it does not block LLM or Agent I/O on the event loop.
+A workflow worker still awaits one run message at a time and owns that run's
+in-memory graph state. The target architecture persists ready/queued node attempts
+so any compatible executor can claim them while a fenced run coordinator remains
+the only authority that unlocks downstream nodes. See
+[parallel workflow execution](parallel-workflow-execution.md) for the concurrency,
+ordering, result collection, and migration contract.
+
 ## 4. Runtime sustainability goals
 
 Workers are now processed according to snapshots and Redis consumer groups. Remaining advanced statuses/abilities:
@@ -161,7 +171,7 @@ A suggested processing cycle:
 1. API creates `run`, `StartRun command` and outbox event in **one transaction**. Only pay `202` after commit.
 2. Dispatcher claims outbox with lease and sends run to workflow worker. Resend must use the same operation key.
 3. Worker loads `workflow_versions.graph`, verifies `content_hash`, creates execution status from snapshot and input.
-4. Graph interpreter finds all nodes with sufficient dependencies and then runs them simultaneously up to the `settings.maxParallelNodes` limit (default 4, maximum 32).
+4. Graph interpreter finds all nodes with sufficient dependencies and then runs them simultaneously up to the `settings.maxParallelNodes` limit (default 4, maximum 32). In the target node-task architecture, the coordinator persists this ready set and bounded executor workers claim individual attempts; thread timing never determines dependency order.
 5. Executor resolves input mapping from `$input` and output node first; secret is only resolved right before calling connector/agent.
 6. Pure Node like transform/if runs in worker. Node agent creates a persistent agent job; runner supervisor creates a disposable container for each attempt according to [ephemeral agent runtime design](ephemeral-agent-runtime.md). HTTP requests, tests, approvals and connectors use separate adapters.
 7. The output schema is checked before the node switches to `SUCCEEDED`. Large output is saved as an artifact and the database only keeps reference/checksum.

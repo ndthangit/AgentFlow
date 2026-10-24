@@ -6,6 +6,7 @@ This document converts the current PoC gaps into a work order that can be implem
 
 - [Workflow specification](workflow-spec.md)
 - [Workflow storage and execution](workflow-execution.md)
+- [Parallel workflow execution](parallel-workflow-execution.md)
 - [Disposable Agent runtime](ephemeral-agent-runtime.md)
 - [event-driven design](event-driven.md)
 
