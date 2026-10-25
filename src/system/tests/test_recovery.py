@@ -1,9 +1,15 @@
+import asyncio
 import unittest
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-from runtime.recovery import ManagedContainer, reap_orphan_containers, recovery_iteration
+from runtime.recovery import (
+    ManagedContainer,
+    reap_orphan_containers,
+    recovery_iteration,
+    run_recovery_controller,
+)
 
 
 class ContainerRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -66,6 +72,19 @@ class ContainerRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((recovered, removed), (2, 0))
         recover_timeouts.assert_awaited_once_with(42.0)
+
+    async def test_embedded_controller_uses_host_lifecycle_event(self):
+        stop = asyncio.Event()
+
+        async def run_once():
+            stop.set()
+            return 0, 0
+
+        iteration = AsyncMock(side_effect=run_once)
+        with patch("runtime.recovery.recovery_iteration", iteration):
+            await run_recovery_controller(stop)
+
+        iteration.assert_awaited_once_with()
 
 
 if __name__ == "__main__":

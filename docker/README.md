@@ -234,9 +234,8 @@ Direct Access Grant of CLI local.
 | `redis` | Redis Stream queue and pending jobs |
 | `db-init` | Create idempotent schema `system` and `keycloak` |
 | `keycloak` | OIDC, user and web client PKCE |
-| `system` | FastAPI control plane, migration and outbox orchestrator |
+| `system` | FastAPI control plane, migration, outbox orchestrator and workflow recovery |
 | `workflow-worker` | Claim queue, execute graph and write run/step |
-| `workflow-recovery` | Fail run loses heartbeat and recovers orphaned Agent container |
 | `agent-runtime-default-image` | Build/pull the default Deep Agents image before the worker runs |
 | `agent-runtime-codex-image` | Build/pull Codex CLI image before worker runs |
 | `agent-runtime-opencode-image` | Build/pull image OpenCode SDK/server before worker runs |
@@ -263,7 +262,7 @@ it does not block those calls on the event loop. Agent containers remain
 separately bounded by `AGENT_RUNTIME_MAX_CONTAINERS`.
 
 The worker holds the lease in PostgreSQL and renews it according to `WORKFLOW_HEARTBEAT_SECONDS`.
-If `WORKFLOW_LEASE_TTL_SECONDS` is too high, `workflow-recovery` switches to run/step running
+If `WORKFLOW_LEASE_TTL_SECONDS` is too high, the recovery controller hosted by `system` switches run/step running
 to `failed` with code `WORKER_LOST`, then clear the container according to the label. Control cycle
 configured with `WORKFLOW_RECOVERY_INTERVAL_SECONDS`. Outbox playback still shakes
 `pending` after `WORKFLOW_OUTBOX_REDISPATCH_SECONDS`, so Redis restart or lose

@@ -1,7 +1,9 @@
 # AgentFlow System
 
-AgentFlow's FastAPI control plane also hosts the orchestrator: the backend lifecycle
-runs `runtime.orchestrator` to dispatch the outbox to a Redis Stream.
+AgentFlow's FastAPI control plane also hosts the orchestrator and recovery controller:
+the backend lifecycle runs `runtime.orchestrator` to dispatch the outbox to a Redis
+Stream and `runtime.recovery` to reconcile expired/timed-out runs and remove orphaned
+Agent containers.
 `runtime.worker` remains an independent process/container responsible for workflow
 execution.
 
@@ -31,7 +33,7 @@ uv run python -m runtime.worker
 
 ## Backend structure
 
-- `main.py`: application factory and orchestrator lifecycle.
+- `main.py`: application factory, orchestrator, and recovery lifecycle.
 - `api/`: small FastAPI routers grouped by resource.
 - `core/`: authentication and database infrastructure.
 - `domain/`: persistence models, schemas, examples, errors, and graph validation.
@@ -40,5 +42,5 @@ uv run python -m runtime.worker
 - `services/`: reusable application services such as the skill catalog.
 
 OpenAPI: `http://localhost:8000/docs`. The `GET /ready` endpoint checks PostgreSQL
-readiness. The orchestrator runs inside the backend; Compose adds Redis and the
-worker. The UI polls runs while they are `pending` or `running`.
+readiness. The orchestrator and recovery controller run inside the backend; Compose
+adds Redis and the worker. The UI polls runs while they are `pending` or `running`.

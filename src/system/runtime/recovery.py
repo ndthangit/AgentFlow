@@ -174,12 +174,20 @@ async def recovery_iteration() -> tuple[int, int]:
     return recovered_count, removed
 
 
-async def run_recovery_controller() -> None:
+async def run_recovery_controller(stop: asyncio.Event | None = None) -> None:
+    """Run recovery until ``stop`` is set.
+
+    FastAPI supplies the shared lifecycle event in normal operation. A local
+    event and signal handlers are only created for the standalone diagnostic
+    entry point.
+    """
+
     interval = max(1.0, float(os.getenv("WORKFLOW_RECOVERY_INTERVAL_SECONDS", "10")))
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for name in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(name, stop.set)
+    if stop is None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for name in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(name, stop.set)
     logger.info("Workflow recovery controller started")
     while not stop.is_set():
         try:

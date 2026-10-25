@@ -19,6 +19,7 @@ from core.database import engine as database_engine
 from core.telemetry import configure_telemetry, instrument_fastapi
 from providers.adapters import validate_provider_endpoint_configuration
 from runtime.orchestrator import orchestrate
+from runtime.recovery import run_recovery_controller
 from services.skills import sync_builtin_skills
 from services.workflows import sync_default_workflows
 
@@ -36,12 +37,18 @@ async def lifespan(_app: FastAPI):
         )
 
     stop_event = Event()
-    task = create_task(orchestrate(stop_event), name="workflow-orchestrator")
+    orchestrator_task = create_task(
+        orchestrate(stop_event), name="workflow-orchestrator"
+    )
+    recovery_task = create_task(
+        run_recovery_controller(stop_event), name="workflow-recovery"
+    )
     try:
         yield
     finally:
         stop_event.set()
-        await task
+        await orchestrator_task
+        await recovery_task
 
 
 def create_app() -> FastAPI:
