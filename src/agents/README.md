@@ -5,9 +5,6 @@ implementation. The project includes the [`default`](default/README.md),
 [`codex`](codex/README.md), [`opencode`](opencode/README.md), and
 [`openhands`](openhands/README.md) runtimes.
 
-The Codex/OpenCode adapter design and roadmap are documented in the
-[runtime integration guide](../../docs/codex-opencode-runtime-integration.md).
-
 ```text
 src/agents/
 ├── default/          # Bundled Deep Agents/LangGraph runtime

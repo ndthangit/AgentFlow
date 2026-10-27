@@ -14,8 +14,8 @@ runtime in the editor or set `config.runtime` to `agent`; Compose builds the
 `agentflow-agent-runtime` image. This is the default Agent node runtime and always
 calls the real model selected in the editor. It has no fake model. The FastAPI app
 below exists only for contract development and testing; it is not a shared workflow
-runtime. See the [runtime integration contract](../README.md) and the
-[ephemeral Agent runtime design](../../../docs/ephemeral-agent-runtime.md).
+runtime. See the [runtime integration contract](../README.md) and the architecture
+overview in the [project README](../../../README.md#architecture).
 
 You can test the container contract directly with the sample request in
 [examples/container-request.json](examples/container-request.json):
@@ -116,8 +116,8 @@ The output has this shape:
 ```
 
 The sample output illustrates only the schema. `output` is a sequential proposal,
-**not the executable DSL** in `docs/workflow-spec.md`. The integrated worker uses
-`output` as the Agent node result; it does not execute model-proposed steps.
+not an executable workflow definition. The integrated worker uses `output` as the
+Agent node result; it does not execute model-proposed steps.
 
 The CLI writes one JSON object to stdout and diagnostics to stderr. Exit codes are
 `0` for success, `1` for runtime/configuration failures, and `2` for invalid input
@@ -147,8 +147,8 @@ Invoke-RestMethod -Uri http://127.0.0.1:8001/v1/runs -Method Post -ContentType '
 When `AUTH_ENABLED=true`, `POST /v1/runs` requires a JWT bearer token. The Agent
 verifies the RS256 signature with JWKS and checks the issuer, audience, expiration,
 and required claims. Docker Compose configures this mode with Keycloak; see the
-[infrastructure guide](../../../docker/README.md). `GET /health` remains public for
-liveness probes.
+[project README](../../../README.md#run-agentflow). `GET /health` remains public
+for liveness probes.
 
 Sample Node.js client: [examples/invoke-agent.mjs](examples/invoke-agent.mjs). With
 the server running:

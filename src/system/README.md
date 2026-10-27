@@ -14,7 +14,7 @@ model, and API-key settings through its environment, returns JSON over stdout, a
 is cleaned up after every attempt. The `direct` runtime remains as a compatibility
 path that calls a provider adapter inside the worker. See the
 [Agent runtime contract](../agents/README.md) and the local setup and Docker socket
-notes in the [infrastructure guide](../../docker/README.md).
+notes in the [project README](../../README.md).
 
 The System also manages the skill catalog. Built-in skills live in
 `skills/<slug>/SKILL.md` with `metadata.json` and are synchronized to PostgreSQL at
