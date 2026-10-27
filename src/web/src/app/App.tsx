@@ -82,6 +82,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | undefined>(workflowIdFromLocation);
   const [editor, setEditor] = useState(JSON.stringify(starterDraft, null, 2));
   const [name, setName] = useState("");
+  const [isAddingWorkflow, setIsAddingWorkflow] = useState(false);
   const [message, setMessage] = useState("Loading data…");
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState<WorkflowVersion>();
@@ -593,19 +594,6 @@ export function App() {
               <p>Open Workflows to view, edit, or delete a workflow.</p>
               <button onClick={showWorkflowList}>View all workflows</button>
             </div>
-            <form className="new-flow" onSubmit={(event) => {
-              event.preventDefault();
-              if (!name.trim()) return;
-              void perform(async () => {
-                const created = await api.createWorkflow(name.trim());
-                setName("");
-                await refreshWorkflows(created.id);
-                setMessage("Workflow created");
-              });
-            }}>
-              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="New workflow name" maxLength={160} />
-              <button disabled={busy || !name.trim()}>Create</button>
-            </form>
           </>
         ) : activeTab === "skills" ? (
           <div className="sidebar-note">
@@ -648,6 +636,7 @@ export function App() {
         </header>
 
         {activeTab === "workflows" ? !selected ? (
+          <>
           <section className="workflow-catalog-page">
             <div className="workflow-catalog-hero">
               <div>
@@ -655,7 +644,10 @@ export function App() {
                 <h2>Your workflows</h2>
                 <p>Select a workflow to open the canvas, configure nodes, publish it, and view run history.</p>
               </div>
-              <span className="workflow-total"><strong>{workflows.length}</strong> workflow</span>
+              <div className="library-summary-actions">
+                <span className="workflow-total"><strong>{workflows.length}</strong> workflow</span>
+                <button className="add-provider-button" type="button" onClick={() => setIsAddingWorkflow(true)}>+ Create workflow</button>
+              </div>
             </div>
 
             <div className="workflow-card-grid">
@@ -684,11 +676,46 @@ export function App() {
                 <div className="workflow-catalog-empty">
                   <span>⌁</span>
                   <h3>No workflows yet</h3>
-                  <p>Create your first workflow using the form on the left.</p>
+                  <p>Select “Create workflow” to create your first workflow.</p>
                 </div>
               )}
             </div>
           </section>
+
+          {isAddingWorkflow && (
+            <div className="provider-modal-backdrop" role="presentation" onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !busy) setIsAddingWorkflow(false);
+            }}>
+              <div className="provider-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-form-title">
+                <div className="provider-modal-heading">
+                  <div>
+                    <p className="eyebrow">NEW AUTOMATION</p>
+                    <h2 id="workflow-form-title">Create workflow</h2>
+                    <p>Name the workflow now; you can configure its nodes after it opens.</p>
+                  </div>
+                  <button type="button" aria-label="Close create workflow form" disabled={busy} onClick={() => setIsAddingWorkflow(false)}>×</button>
+                </div>
+                <form className="provider-form provider-modal-form" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!name.trim()) return;
+                  void perform(async () => {
+                    const created = await api.createWorkflow(name.trim());
+                    setName("");
+                    setIsAddingWorkflow(false);
+                    await refreshWorkflows(created.id);
+                    setMessage("Workflow created");
+                  });
+                }}>
+                  <label>Workflow name<input autoFocus required maxLength={160} placeholder="New workflow name" value={name} onChange={(event) => setName(event.target.value)} /></label>
+                  <div className="provider-form-actions">
+                    <button type="button" disabled={busy} onClick={() => setIsAddingWorkflow(false)}>Cancel</button>
+                    <button className="install-button" disabled={busy || !name.trim()}>{busy ? "Creating…" : "Create workflow"}</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+          </>
         ) : (
           <>
             <section className="canvas-card">

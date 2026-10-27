@@ -28,10 +28,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .workflow { width: 100%; border: 0; color: #b9c5c0; background: transparent; display: flex; align-items: center; gap: 11px; text-align: left; padding: 11px 10px; border-radius: 9px; }
 .workflow:hover { background: #172520; }.workflow.active { color: white; background: #23352e; box-shadow: inset 2px 0 #b7ff71; }
 .workflow span:last-child { min-width: 0; }.workflow strong, .workflow small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.workflow strong { font-size: 13px; }.workflow small { color: #799087; font-size: 10px; margin-top: 3px; }
-.flow-icon { color: #b7ff71; font-size: 17px; }.new-flow { margin-top: auto; display: grid; gap: 8px; border-top: 1px solid #26332f; padding-top: 18px; }
-.new-flow input { width: 100%; color: white; background: #17231f; border: 1px solid #30423b; border-radius: 8px; padding: 10px 11px; outline: none; font-size: 12px; }.new-flow input:focus { border-color: #7da94e; }
-.new-flow button { border: 0; border-radius: 8px; padding: 10px; color: #17211e; background: #b7ff71; font-weight: 700; }
-.workflow-sidebar-note { margin: 0 0 18px; }.workflow-sidebar-note button { width: 100%; margin-top: 12px; padding: 8px 9px; border: 1px solid #3b5047; border-radius: 8px; color: #b7ff71; background: #101a17; font-size: 10px; font-weight: 700; }
+.flow-icon { color: #b7ff71; font-size: 17px; }
+.workflow-sidebar-note { margin: auto 0 18px; }.workflow-sidebar-note button { width: 100%; margin-top: 12px; padding: 8px 9px; border: 1px solid #3b5047; border-radius: 8px; color: #b7ff71; background: #101a17; font-size: 10px; font-weight: 700; }
 .workspace { min-width: 0; padding: 28px 36px 92px; position: relative; }
 .workflow-studio-workspace { height: 100vh; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding-top: 18px; }
 .workflow-studio-workspace > header { flex: 0 0 auto; margin-bottom: 12px; }
