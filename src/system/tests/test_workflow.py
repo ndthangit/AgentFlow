@@ -22,23 +22,47 @@ from runtime.builtin import (
     execute_builtin_workflow,
     execute_builtin_workflow_detailed,
 )
-from services.skills import WorkflowSkillSelection, content_hash
-from services.workflows import default_workflow_id
+from services.skills import (
+    SKILLS_PATH,
+    WorkflowSkillSelection,
+    content_hash,
+    sync_builtin_skills,
+)
+from services.workflows import (
+    default_mcp_server_id,
+    default_workflow_id,
+    sync_default_workflows,
+)
 
 
 class WorkflowValidationTests(unittest.TestCase):
-    def test_default_simple_agent_workflow_is_valid_and_has_no_mcp(self):
-        graph = simple_agent_workflow_draft()
+    def test_default_workflow_connects_mcp_and_skill_in_parallel(self):
+        skill_id = str(uuid.uuid4())
+        mcp_server_id = str(uuid.uuid4())
+        graph = simple_agent_workflow_draft(skill_id, mcp_server_id)
 
         self.assertEqual(validate_graph(graph), [])
-        self.assertEqual(agent_mcp_server_ids(graph), [])
-        agent = next(node for node in graph["nodes"] if node["type"] == "agent")
-        self.assertEqual(agent["config"]["mcpServerIds"], [])
-        self.assertEqual(agent["config"]["skillIds"], [])
+        self.assertEqual(agent_mcp_server_ids(graph), [mcp_server_id])
+        self.assertEqual(agent_skill_ids(graph), [skill_id])
+        self.assertEqual(
+            [node["type"] for node in graph["nodes"]],
+            ["input.schema", "parallel", "agent", "agent", "output.schema"],
+        )
+        parallel_edges = [edge for edge in graph["edges"] if edge["from"] == "parallel"]
+        self.assertEqual(len(parallel_edges), 2)
+        self.assertTrue(all(edge["port"] == "parallel" for edge in parallel_edges))
 
     def test_default_workflow_id_is_stable_and_scoped_to_owner(self):
         self.assertEqual(default_workflow_id("user-1"), default_workflow_id("user-1"))
-        self.assertNotEqual(default_workflow_id("user-1"), default_workflow_id("user-2"))
+        self.assertNotEqual(
+            default_workflow_id("user-1"), default_workflow_id("user-2")
+        )
+        self.assertEqual(
+            default_mcp_server_id("user-1"), default_mcp_server_id("user-1")
+        )
+        self.assertNotEqual(
+            default_mcp_server_id("user-1"), default_mcp_server_id("user-2")
+        )
 
     def test_agent_mcp_selections_are_scoped_and_validated(self):
         graph = {
@@ -551,7 +575,40 @@ class WorkflowValidationTests(unittest.TestCase):
             execute_builtin_workflow(sum_workflow_draft(), {"num1": 7})
 
 
+class DefaultWorkflowSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_seeds_connected_starter_only_when_owner_has_no_workflows(self):
+        skill_id = uuid.uuid4()
+        session = AsyncMock()
+        session.scalar.side_effect = [None, skill_id, None]
+
+        await sync_default_workflows(session, " new-user ")
+
+        self.assertEqual(session.execute.await_count, 2)
+        mcp_insert, workflow_insert = [
+            call.args[0].compile().params for call in session.execute.await_args_list
+        ]
+        self.assertEqual(mcp_insert["owner_subject"], "new-user")
+        self.assertEqual(mcp_insert["url"], "http://filesystem-mcp:8002/mcp")
+        draft = workflow_insert["draft"]
+        self.assertEqual(agent_skill_ids(draft), [str(skill_id)])
+        self.assertEqual(agent_mcp_server_ids(draft), [str(mcp_insert["id"])])
+        session.commit.assert_awaited_once()
+
+    async def test_preserves_an_existing_owner_workflow(self):
+        session = AsyncMock()
+        session.scalar.return_value = uuid.uuid4()
+
+        await sync_default_workflows(session, "existing-user")
+
+        session.execute.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+
 class SkillTests(unittest.TestCase):
+    def test_builtin_skill_path_contains_workflow_designer(self):
+        self.assertTrue((SKILLS_PATH / "workflow-designer" / "metadata.json").is_file())
+        self.assertTrue((SKILLS_PATH / "workflow-designer" / "SKILL.md").is_file())
+
     def test_content_hash_is_stable(self):
         self.assertEqual(content_hash("same"), content_hash("same"))
         self.assertNotEqual(content_hash("same"), content_hash("changed"))
@@ -562,6 +619,28 @@ class SkillTests(unittest.TestCase):
         skill_id = uuid.uuid4()
         with self.assertRaises(ValidationError):
             WorkflowSkillSelection(skill_ids=[skill_id, skill_id])
+
+
+class BuiltinSkillSyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reenables_unchanged_builtin_skill(self):
+        instructions = (
+            (SKILLS_PATH / "workflow-designer" / "SKILL.md")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+        skill = SimpleNamespace(
+            slug="workflow-designer",
+            content_hash=content_hash(instructions),
+            enabled=False,
+        )
+        session = AsyncMock()
+        session.scalar.return_value = skill
+        session.scalars.return_value = [skill]
+
+        await sync_builtin_skills(session)
+
+        self.assertTrue(skill.enabled)
+        session.commit.assert_awaited_once()
 
 
 class WorkflowSkillSnapshotTests(unittest.IsolatedAsyncioTestCase):

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain.models import Skill
 
 BUILTIN_OWNER = "__system__"
-SKILLS_PATH = Path(__file__).resolve().parents[2] / "skills"
+SKILLS_PATH = Path(__file__).resolve().parents[1] / "skills"
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
@@ -105,12 +105,13 @@ async def sync_builtin_skills(session: AsyncSession) -> None:
                     source="builtin",
                 )
             )
-        elif skill.content_hash != digest:
-            skill.name = metadata["name"]
-            skill.description = metadata.get("description", "")
-            skill.instructions = instructions
-            skill.content_hash = digest
-            skill.version += 1
+        else:
+            if skill.content_hash != digest:
+                skill.name = metadata["name"]
+                skill.description = metadata.get("description", "")
+                skill.instructions = instructions
+                skill.content_hash = digest
+                skill.version += 1
             skill.enabled = True
     existing = await session.scalars(
         select(Skill).where(Skill.owner_subject == BUILTIN_OWNER)

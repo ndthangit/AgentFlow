@@ -46,47 +46,86 @@ def default_workflow_draft() -> dict[str, Any]:
     }
 
 
-def simple_agent_workflow_draft() -> dict[str, Any]:
-    """Default runnable example that does not grant skills or MCP servers."""
+def simple_agent_workflow_draft(
+    skill_id: str,
+    mcp_server_id: str,
+) -> dict[str, Any]:
+    """Small starter workflow demonstrating a skill, MCP, and parallel branches."""
     return {
+        "settings": {"maxParallelNodes": 2},
         "nodes": [
             {
                 "id": "input",
                 "type": "input.schema",
-                "name": "Text Input",
-                "note": "Receive the text supplied in the run input.",
+                "name": "Request",
+                "note": "Receive a request to explore with the starter workflow.",
                 "schema": {
                     "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
+                    "properties": {"request": {"type": "string"}},
+                    "required": ["request"],
                     "additionalProperties": False,
                 },
             },
             {
-                "id": "summary_agent",
+                "id": "parallel",
+                "type": "parallel",
+                "name": "Run in Parallel",
+                "note": "Start the MCP and skill examples at the same time.",
+            },
+            {
+                "id": "filesystem_agent",
                 "type": "agent",
-                "name": "Summary Agent",
-                "note": "Summarize the text with the default model without MCP or skills.",
-                "inputs": {"text": {"from": "$input.text"}},
+                "name": "Filesystem MCP Agent",
+                "note": "Use the connected Filesystem MCP server without changing files.",
+                "inputs": {"request": {"from": "$nodes.parallel.output.request"}},
                 "config": {
                     "runtime": "default",
                     "instructions": (
-                        "Summarize the text in {{input.text}} in two or three clear "
-                        "English sentences. Return exactly one JSON object matching "
-                        "the output schema with a single summary string."
+                        "Use the Filesystem MCP tools to inspect the available files, "
+                        "then answer {{input.request}}. Do not modify files. Return "
+                        "exactly one JSON object matching the output schema."
                     ),
                     "skillIds": [],
-                    "mcpServerIds": [],
+                    "mcpServerIds": [mcp_server_id],
                     "inputSchema": {
                         "type": "object",
-                        "properties": {"text": {"type": "string"}},
-                        "required": ["text"],
+                        "properties": {"request": {"type": "string"}},
+                        "required": ["request"],
                         "additionalProperties": False,
                     },
                     "outputSchema": {
                         "type": "object",
-                        "properties": {"summary": {"type": "string"}},
-                        "required": ["summary"],
+                        "properties": {"filesystem_result": {"type": "string"}},
+                        "required": ["filesystem_result"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "id": "workflow_agent",
+                "type": "agent",
+                "name": "Skilled Workflow Agent",
+                "note": "Use the built-in Workflow Designer skill.",
+                "inputs": {"request": {"from": "$nodes.parallel.output.request"}},
+                "config": {
+                    "runtime": "default",
+                    "instructions": (
+                        "Use the assigned skill to propose a small workflow for "
+                        "{{input.request}}. Return exactly one JSON object matching "
+                        "the output schema."
+                    ),
+                    "skillIds": [skill_id],
+                    "mcpServerIds": [],
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"request": {"type": "string"}},
+                        "required": ["request"],
+                        "additionalProperties": False,
+                    },
+                    "outputSchema": {
+                        "type": "object",
+                        "properties": {"workflow_plan": {"type": "string"}},
+                        "required": ["workflow_plan"],
                         "additionalProperties": False,
                     },
                 },
@@ -94,22 +133,33 @@ def simple_agent_workflow_draft() -> dict[str, Any]:
             {
                 "id": "output",
                 "type": "output.schema",
-                "name": "Summary",
-                "note": "Return the summary created by the agent.",
+                "name": "Results",
+                "note": "Return the results after both parallel branches finish.",
                 "inputs": {
-                    "summary": {"from": "$nodes.summary_agent.output.summary"}
+                    "filesystem_result": {
+                        "from": "$nodes.filesystem_agent.output.filesystem_result"
+                    },
+                    "workflow_plan": {
+                        "from": "$nodes.workflow_agent.output.workflow_plan"
+                    },
                 },
                 "schema": {
                     "type": "object",
-                    "properties": {"summary": {"type": "string"}},
-                    "required": ["summary"],
+                    "properties": {
+                        "filesystem_result": {"type": "string"},
+                        "workflow_plan": {"type": "string"},
+                    },
+                    "required": ["filesystem_result", "workflow_plan"],
                     "additionalProperties": False,
                 },
             },
         ],
         "edges": [
-            {"from": "input", "to": "summary_agent", "port": "success"},
-            {"from": "summary_agent", "to": "output", "port": "success"},
+            {"from": "input", "to": "parallel", "port": "success"},
+            {"from": "parallel", "to": "filesystem_agent", "port": "parallel"},
+            {"from": "parallel", "to": "workflow_agent", "port": "parallel"},
+            {"from": "filesystem_agent", "to": "output", "port": "success"},
+            {"from": "workflow_agent", "to": "output", "port": "success"},
         ],
     }
 

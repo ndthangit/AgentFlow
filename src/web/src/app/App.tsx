@@ -638,14 +638,14 @@ export function App() {
         {activeTab === "workflows" ? !selected ? (
           <>
           <section className="workflow-catalog-page">
-            <div className="workflow-catalog-hero">
+            <div className="library-intro">
               <div>
                 <p className="eyebrow">YOUR AUTOMATIONS</p>
                 <h2>Your workflows</h2>
                 <p>Select a workflow to open the canvas, configure nodes, publish it, and view run history.</p>
               </div>
               <div className="library-summary-actions">
-                <span className="workflow-total"><strong>{workflows.length}</strong> workflow</span>
+                <span className="library-count"><strong>{workflows.length}</strong> workflow</span>
                 <button className="add-provider-button" type="button" onClick={() => setIsAddingWorkflow(true)}>+ Create workflow</button>
               </div>
             </div>
