@@ -119,6 +119,7 @@ function WorkflowEditorView({
   const [connectionMessage, setConnectionMessage] = useState("Drag from a node's lower port to the target node; select an edge and press Delete to remove it.");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>();
   const [isJsonOpen, setIsJsonOpen] = useState(false);
+  const [isCanvasExpanded, setIsCanvasExpanded] = useState(false);
   const [flowNodes, setFlowNodes] = useState<WorkflowFlowNode[]>([]);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<WorkflowFlowNode, WorkflowFlowEdge>>();
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -458,13 +459,21 @@ function WorkflowEditorView({
   }
 
   return (
-    <div className="workflow-editor">
+    <div className={isCanvasExpanded ? "workflow-editor canvas-expanded" : "workflow-editor"}>
       <div className="node-toolbar">
         <div>
           <strong>Nodes</strong>
           <span>Add and drag nodes into position; connect a lower port to the target node's upper port</span>
         </div>
         <div className="node-add-actions">
+          <button
+            className="canvas-tool-button"
+            aria-pressed={isCanvasExpanded}
+            onClick={() => setIsCanvasExpanded((expanded) => !expanded)}
+          >
+            {isCanvasExpanded ? "Exit expanded" : "Expand canvas"}
+          </button>
+          <span className="node-toolbar-divider" aria-hidden="true" />
           {nodeTypesByName.has("input.schema") && <button disabled={disabled || !graph || graph.nodes.some((node) => node.type === "input.schema")} onClick={() => addNode("input.schema")}>+ Start</button>}
           {nodeTypesByName.has("agent") && <button disabled={disabled || !graph} onClick={() => addNode("agent")}>+ Agent</button>}
           {nodeTypesByName.has("llm.call") && <button disabled={disabled || !graph} onClick={() => addNode("llm.call")}>+ LLM Call</button>}
