@@ -18,6 +18,7 @@ from runtime.restricted_python import execute_restricted_python
 
 AgentExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 LlmExecutor = Callable[[dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any]]]
+PythonExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 tracer = trace.get_tracer("agentflow.workflow")
 
 
@@ -227,6 +228,7 @@ async def execute_workflow(
     execute_agent: AgentExecutor,
     on_step_update: StepObserver | None = None,
     execute_llm: LlmExecutor | None = None,
+    execute_python: PythonExecutor | None = None,
 ) -> WorkflowExecution:
     """Execute a DAG, scheduling every simultaneously-ready node concurrently."""
     ordered, parents = ordered_nodes(graph)
@@ -376,13 +378,18 @@ async def execute_workflow(
                     errors = schema_errors(node_input, config.get("inputSchema", {}))
                     if errors:
                         raise WorkflowExecutionError("; ".join(errors))
-                    loop = asyncio.get_running_loop()
-                    node_output = await loop.run_in_executor(
-                        _python_executor,
-                        execute_restricted_python,
-                        config.get("code", ""),
-                        node_input,
-                    )
+                    if execute_python is None:
+                        loop = asyncio.get_running_loop()
+                        node_output = await loop.run_in_executor(
+                            _python_executor,
+                            execute_restricted_python,
+                            config.get("code", ""),
+                            node_input,
+                        )
+                    else:
+                        node_output = await execute_python(
+                            config.get("code", ""), node_input
+                        )
                     errors = schema_errors(
                         node_output, config.get("outputSchema", {}), "$output"
                     )

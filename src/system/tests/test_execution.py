@@ -319,6 +319,34 @@ class WorkflowRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(python_thread_ids), 1)
         self.assertNotEqual(python_thread_ids[0], event_loop_thread_id)
 
+    async def test_python_node_uses_the_configured_sandbox_executor(self):
+        code = "def main(inputs):\n    return inputs\n"
+        graph = {
+            "nodes": [
+                {
+                    "id": "python",
+                    "type": "code.python",
+                    "config": {
+                        "code": code,
+                        "inputSchema": {},
+                        "outputSchema": {},
+                    },
+                }
+            ],
+            "edges": [],
+        }
+        sandbox = AsyncMock(return_value={"value": 2})
+
+        result = await execute_workflow(
+            graph,
+            {"value": 1},
+            AsyncMock(),
+            execute_python=sandbox,
+        )
+
+        self.assertEqual(result.output, {"value": 2})
+        sandbox.assert_awaited_once_with(code, {"value": 1})
+
     async def test_if_executes_only_selected_branch_and_skips_the_other(self):
         graph = {
             "nodes": [

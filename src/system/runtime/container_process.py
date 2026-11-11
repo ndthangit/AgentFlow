@@ -59,13 +59,13 @@ async def run_container_process(
         )
         return ContainerResult(process.returncode or 0, stdout, stderr)
     except TimeoutError:
-        raise WorkflowExecutionError("Agent container timed out") from None
+        raise WorkflowExecutionError("Runtime container timed out") from None
     except FileNotFoundError:
         raise WorkflowExecutionError(
             "Docker CLI is not available to the worker"
         ) from None
     except OSError:
-        raise WorkflowExecutionError("Agent container could not be started") from None
+        raise WorkflowExecutionError("Runtime container could not be started") from None
     finally:
         await _force_remove(command[0], container_name)
         if process is not None and process.returncode is None:

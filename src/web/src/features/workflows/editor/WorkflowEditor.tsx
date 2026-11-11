@@ -715,7 +715,7 @@ function WorkflowEditorView({
               {selectedNode.type === "code.python" && (
                 <>
                   <label>Python code<textarea className="code-textarea" value={form.code} spellCheck={false} onChange={(event) => setForm({ ...form, code: event.target.value })} /></label>
-                  <p className="node-form-hint">Define a main(inputs) function that returns a JSON object.</p>
+                  <p className="node-form-hint">Define a main(inputs) function that returns a JSON object. Each run uses a disposable, networkless sandbox.</p>
                   <SchemaBuilder label="Input schema" value={form.inputSchema} onChange={(inputSchema) => setForm({ ...form, inputSchema })} />
                   <SchemaBuilder label="Output schema" value={form.outputSchema} onChange={(outputSchema) => setForm({ ...form, outputSchema })} />
                 </>

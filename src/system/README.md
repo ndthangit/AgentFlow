@@ -7,6 +7,11 @@ Agent containers.
 `runtime.worker` remains an independent process/container responsible for workflow
 execution.
 
+`code.python` nodes run in a fresh disposable container for every attempt. The
+container is read-only, networkless, capability-free, resource-bounded, and receives
+only the node code and JSON input over stdin. It is removed after success, failure,
+timeout, or cancellation.
+
 Agent nodes use the `agent`/`default` runtime by default. Compose builds a catalog
 containing `default`, `codex`, and `opencode`, and the worker resolves images from
 `AGENT_RUNTIME_IMAGES`. A container receives JSON over stdin and temporary provider,

@@ -133,7 +133,7 @@ docker compose --env-file .env.prod -f compose.yaml -f compose.prod.yaml up -d -
 
 Do not run an override file by itself. In production, place the web app, System
 API, and Keycloak behind an HTTPS reverse proxy and back up the named volumes
-before upgrades. Agent execution currently requires access to the Docker socket;
+before upgrades. Container execution currently requires access to the Docker socket;
 that grants host-level Docker control, so production deployments should move the
 runner to a dedicated, restricted host before accepting untrusted workloads.
 
@@ -158,7 +158,7 @@ flowchart LR
 
     subgraph Execution[Execution plane]
         X[Workflow workers]
-        D[Disposable Agent containers]
+        D[Disposable Agent and Python sandbox containers]
         M[Filesystem / remote MCP servers]
     end
 
@@ -206,7 +206,7 @@ the published graph. Independent nodes can run concurrently up to the workflow's
 Step results are written back to PostgreSQL. Durable stop commands are also
 broadcast through Redis for prompt cancellation. The recovery controller detects
 expired leases and workflow deadlines, marks abandoned work as failed, and removes
-orphaned Agent containers. PostgreSQL remains the source of truth if Redis is
+orphaned runtime containers. PostgreSQL remains the source of truth if Redis is
 restarted or a message must be dispatched again.
 
 ### Agent isolation
@@ -216,6 +216,10 @@ runtime setting. The worker sends a JSON request over standard input, injects th
 selected provider and model credentials only for that attempt, receives a JSON
 result, and removes the container. CPU, memory, process, timeout, output-size, and
 container-concurrency limits are enforced by the supervisor.
+
+Every Python-node attempt also runs in a fresh container. It is read-only, has no
+network, mounts no host data, receives no secrets, drops all Linux capabilities,
+and accepts only the node code and JSON input over standard input.
 
 The included runtime catalog contains:
 

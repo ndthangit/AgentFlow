@@ -44,6 +44,7 @@ from runtime.leases import (
     lock_owned_lease,
     renew_run_lease,
 )
+from runtime.python_sandbox import PythonSandboxExecutor
 from runtime.queue import RedisRunQueue, RunQueueMessage
 
 configure_telemetry(
@@ -112,6 +113,7 @@ async def load_and_execute(
         graph, providers, secret_store, mcp_servers=mcp_servers
     )
     execute_llm = create_llm_executor(graph, providers, secret_store)
+    execute_python = PythonSandboxExecutor().execute
 
     async def persist_progress(step: ExecutionStep) -> None:
         await persist_step(run_id, step, claim)
@@ -126,6 +128,7 @@ async def load_and_execute(
             execute_agent,
             on_step_update=persist_progress,
             execute_llm=execute_llm,
+            execute_python=execute_python,
         )
 
 
