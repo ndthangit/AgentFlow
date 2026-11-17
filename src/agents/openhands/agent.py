@@ -8,7 +8,6 @@ import os
 import re
 import signal
 import sys
-import tempfile
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, redirect_stdout
@@ -120,6 +119,7 @@ def build_prompt(request: dict[str, Any]) -> str:
             "to one JSON object matching the required output schema.",
             "If tool calling is unavailable, return only that JSON object as your final message.",
             "Do not write the final result to a file and do not merely describe it.",
+            "Save any requested files in AGENTFLOW_NODE_WORKSPACE and still finish with the required result.",
             "",
             "Task:",
             request["task"],
@@ -283,6 +283,7 @@ def build_openhands_agent(request: dict[str, Any], config: RuntimeConfig) -> Any
     """Build the pinned SDK agent without initializing a conversation."""
     from openhands.sdk import LLM, Agent
     from openhands.sdk.tool import Tool
+    from openhands.tools.file_editor import FileEditorTool
     from pydantic import SecretStr
 
     llm = LLM(
@@ -302,6 +303,7 @@ def build_openhands_agent(request: dict[str, Any], config: RuntimeConfig) -> Any
         openrouter_app_name="AgentFlow OpenHands runtime",
     )
     tools = [
+        Tool(name=FileEditorTool.name),
         Tool(
             name="FinishTool",
             params={"response_schema": wrapped_response_schema(request["output_schema"])},
@@ -326,53 +328,54 @@ def run_openhands(request: dict[str, Any], config: RuntimeConfig) -> dict[str, A
 
     agent = build_openhands_agent(request, config)
 
-    with tempfile.TemporaryDirectory(prefix="agentflow-openhands-") as workspace:
-        Path(workspace).chmod(0o700)
-        conversation = Conversation(
-            agent=agent,
-            workspace=workspace,
-            max_iteration_per_run=config.max_steps,
-            stuck_detection=True,
-            visualizer=None,
-        )
-        try:
-            conversation.send_message(build_prompt(request))
-            with _deadline(config.deadline_seconds):
-                conversation.run()
-            status = str(
-                getattr(conversation.state.execution_status, "value", "")
-            ).lower()
-            if status != "finished":
-                if "error" in status:
-                    raise PublicAgentError(
-                        "AGENT_FAILED", "OpenHands could not complete the task."
-                    )
+    workspace = os.environ.get("AGENTFLOW_NODE_WORKSPACE", "/workspace")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace).chmod(0o700)
+    conversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        max_iteration_per_run=config.max_steps,
+        stuck_detection=True,
+        visualizer=None,
+    )
+    try:
+        conversation.send_message(build_prompt(request))
+        with _deadline(config.deadline_seconds):
+            conversation.run()
+        status = str(
+            getattr(conversation.state.execution_status, "value", "")
+        ).lower()
+        if status != "finished":
+            if "error" in status:
                 raise PublicAgentError(
-                    "STEP_LIMIT",
-                    "OpenHands stopped before producing a final structured result.",
+                    "AGENT_FAILED", "OpenHands could not complete the task."
                 )
-            # Conversation validates/copies the Pydantic agent spec and lazily
-            # initializes that owned instance. The original `agent` remains an
-            # uninitialized spec, so runtime tools must be read from here.
-            finish_tool = conversation_finish_tool(conversation)
-            if finish_tool is None:
-                raise PublicAgentError(
-                    "AGENT_FAILED", "OpenHands finish tool is unavailable."
-                )
-            parsed = finish_tool.parse_last_response(conversation.state.events)
-            if hasattr(parsed, "model_dump"):
-                parsed = parsed.model_dump(mode="json")
-            if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
-                return parsed["result"]
-            fallback = final_message_result(conversation.state.events)
-            if fallback is not None:
-                return fallback
             raise PublicAgentError(
-                "OUTPUT_INVALID",
-                "OpenHands did not return the required structured result.",
+                "STEP_LIMIT",
+                "OpenHands stopped before producing a final structured result.",
             )
-        finally:
-            conversation.close()
+        # Conversation validates/copies the Pydantic agent spec and lazily
+        # initializes that owned instance. The original `agent` remains an
+        # uninitialized spec, so runtime tools must be read from here.
+        finish_tool = conversation_finish_tool(conversation)
+        if finish_tool is None:
+            raise PublicAgentError(
+                "AGENT_FAILED", "OpenHands finish tool is unavailable."
+            )
+        parsed = finish_tool.parse_last_response(conversation.state.events)
+        if hasattr(parsed, "model_dump"):
+            parsed = parsed.model_dump(mode="json")
+        if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
+            return parsed["result"]
+        fallback = final_message_result(conversation.state.events)
+        if fallback is not None:
+            return fallback
+        raise PublicAgentError(
+            "OUTPUT_INVALID",
+            "OpenHands did not return the required structured result.",
+        )
+    finally:
+        conversation.close()
 
 
 def conversation_finish_tool(conversation: Any) -> Any:

@@ -100,7 +100,9 @@ class OpenHandsAgentTests(unittest.TestCase):
             )
             try:
                 conversation.send_message("Initialize the agent without running it")
-                self.assertEqual(set(conversation.agent.tools_map), {"finish"})
+                self.assertEqual(
+                    set(conversation.agent.tools_map), {"file_editor", "finish"}
+                )
                 finish_tool = agent.conversation_finish_tool(conversation)
                 self.assertTrue(hasattr(finish_tool, "parse_last_response"))
             finally:

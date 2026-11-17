@@ -72,6 +72,12 @@ class FlowRunView(BaseModel):
     status: str
     input: dict[str, Any]
     output: dict[str, Any] | None
+    workspace_status: str
+    workspace_size_bytes: int | None
+    workspace_file_count: int | None
+    workspace_sha256: str | None
+    workspace_expires_at: datetime | None
+    workspace_downloadable: bool
     created_at: datetime
     updated_at: datetime
 

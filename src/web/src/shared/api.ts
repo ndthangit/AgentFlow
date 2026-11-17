@@ -39,6 +39,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function download(path: string, filename: string): Promise<void> {
+  const token = await accessToken();
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(payload?.detail || `HTTP ${response.status}`);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   listNodeTypes: () => request<NodeTypeDefinition[]>("/v1/node-types"),
   listMcpServers: () => request<McpServer[]>("/v1/mcp-servers"),
@@ -156,4 +173,6 @@ export const api = {
     }),
   listRunSteps: (runId: string) =>
     request<RunStep[]>(`/v1/runs/${runId}/steps`),
+  downloadRunWorkspace: (runId: string) =>
+    download(`/v1/runs/${runId}/workspace`, `agentflow-run-${runId.slice(0, 8)}-workspace.zip`),
 };

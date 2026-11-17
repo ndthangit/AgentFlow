@@ -141,6 +141,7 @@ export function buildPrompt(request) {
     "Complete the AgentFlow task below.",
     "Return exactly one JSON object matching the supplied output schema.",
     "Do not wrap the result in Markdown and do not include commentary outside the JSON object.",
+    "Save any requested files in AGENTFLOW_NODE_WORKSPACE and still return the required JSON object.",
     "",
     "Task:",
     request.task,
@@ -262,7 +263,7 @@ export function buildCodexArgs({ model, baseUrl, schemaPath, outputPath, mcpArgs
     "--color",
     "never",
     "--sandbox",
-    "read-only",
+    "workspace-write",
     "--model",
     model,
     "--output-schema",
@@ -293,7 +294,7 @@ export function buildCodexArgs({ model, baseUrl, schemaPath, outputPath, mcpArgs
 export function runCodex(binary, args, prompt, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, {
-      cwd: "/workspace",
+      cwd: env.AGENTFLOW_NODE_WORKSPACE || "/workspace",
       env,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],

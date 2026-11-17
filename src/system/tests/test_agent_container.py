@@ -148,6 +148,24 @@ class AgentDockerCommandTests(unittest.TestCase):
         self.assertIn("io.agentflow.lease-generation=7", labels)
         self.assertIn("io.agentflow.node-id=agent-node", labels)
 
+    def test_command_mounts_only_the_current_run_workspace(self):
+        run_id = uuid.uuid4()
+        command = build_agent_docker_command(
+            settings(),
+            "agentflow-agent-0123456789abcdef",
+            {"run-id": str(run_id), "node-id": "writer"},
+            "agentflow-workspaces",
+        )
+
+        mount = command[command.index("--mount") + 1]
+        self.assertEqual(
+            mount,
+            f"type=volume,src=agentflow-workspaces,dst=/workspace,volume-subpath=runs/{run_id}",
+        )
+        self.assertEqual(
+            command[command.index("--workdir") + 1], "/workspace/nodes/writer"
+        )
+
 
 class AgentContainerExecutorTests(unittest.IsolatedAsyncioTestCase):
     def test_accepts_only_structured_bounded_runtime_diagnostics(self):

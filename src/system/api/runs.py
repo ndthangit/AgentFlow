@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from opentelemetry import trace
 from opentelemetry.propagate import inject
 from redis.exceptions import RedisError
@@ -24,6 +25,7 @@ from domain.models import (
 from domain.schemas import FlowRunCancel, FlowRunCreate, FlowRunView, RunStepView
 from runtime.cancellation import CANCELLED_ERROR, publish_run_cancellation
 from runtime.engine import ordered_nodes
+from runtime.workspace import WorkspaceError, WorkspaceSettings
 
 router = APIRouter(tags=["runs"])
 
@@ -114,6 +116,43 @@ async def get_flow_run(
     if flow_run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return flow_run
+
+
+@router.get("/v1/runs/{run_id}/workspace", response_class=FileResponse)
+async def download_flow_run_workspace(
+    run_id: uuid.UUID,
+    claims: Claims,
+    session: DatabaseSession,
+):
+    flow_run = await session.scalar(
+        select(FlowRun).where(
+            FlowRun.id == run_id,
+            FlowRun.owner_subject == claims["sub"],
+            FlowRun.workspace_status == "ready",
+        )
+    )
+    now = datetime.now(UTC)
+    if (
+        flow_run is None
+        or flow_run.workspace_expires_at is None
+        or flow_run.workspace_expires_at <= now
+        or not flow_run.workspace_archive_key
+    ):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    settings = WorkspaceSettings.from_env()
+    if flow_run.workspace_archive_key != settings.archive_key(run_id):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    try:
+        archive_path = settings.resolve_archive(flow_run.workspace_archive_key)
+    except WorkspaceError:
+        raise HTTPException(status_code=404, detail="Workspace not found") from None
+    if not archive_path.is_file() or archive_path.is_symlink():
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=f"agentflow-run-{str(run_id)[:8]}-workspace.zip",
+    )
 
 
 @router.post(

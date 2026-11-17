@@ -8,6 +8,7 @@ import signal
 import socket
 import time
 import uuid
+from datetime import UTC, datetime
 
 from opentelemetry import trace
 from opentelemetry.propagate import extract
@@ -46,6 +47,12 @@ from runtime.leases import (
 )
 from runtime.python_sandbox import PythonSandboxExecutor
 from runtime.queue import RedisRunQueue, RunQueueMessage
+from runtime.workspace import (
+    WorkspaceSettings,
+    delete_workspace,
+    finalize_workspace,
+    prepare_run,
+)
 
 configure_telemetry(
     "agentflow-workflow-worker", sqlalchemy_engine=database_engine.sync_engine
@@ -56,6 +63,67 @@ tracer = trace.get_tracer("agentflow.worker")
 
 class WorkflowDeadlineExceeded(RuntimeError):
     """Raised only when the configured whole-workflow deadline expires."""
+
+
+async def activate_workspace(run_id: uuid.UUID) -> None:
+    settings = WorkspaceSettings.from_env()
+    await asyncio.to_thread(prepare_run, run_id, settings)
+    async with SessionFactory() as session:
+        await session.execute(
+            update(FlowRun)
+            .where(FlowRun.id == run_id)
+            .values(workspace_status="active")
+        )
+        await session.commit()
+
+
+async def persist_workspace_archive(run_id: uuid.UUID) -> None:
+    settings = WorkspaceSettings.from_env()
+    try:
+        archive = await asyncio.to_thread(finalize_workspace, run_id, settings)
+    except Exception:  # Archive failure must not change the workflow result.
+        logger.exception("Could not archive workspace for run %s", run_id)
+        values = {"workspace_status": "failed"}
+    else:
+        values = {
+            "workspace_status": "ready" if archive.archive_key else "none",
+            "workspace_size_bytes": archive.total_bytes,
+            "workspace_file_count": archive.file_count,
+            "workspace_sha256": archive.sha256,
+            "workspace_archive_key": archive.archive_key,
+            "workspace_expires_at": archive.expires_at,
+        }
+    async with SessionFactory() as session:
+        await session.execute(
+            update(FlowRun).where(FlowRun.id == run_id).values(**values)
+        )
+        await session.commit()
+
+
+async def cleanup_expired_workspaces() -> int:
+    settings = WorkspaceSettings.from_env()
+    async with SessionFactory() as session:
+        expired = list(
+            await session.scalars(
+                select(FlowRun)
+                .where(
+                    FlowRun.workspace_status == "ready",
+                    FlowRun.workspace_expires_at <= datetime.now(UTC),
+                )
+                .with_for_update(skip_locked=True)
+                .limit(100)
+            )
+        )
+        for flow_run in expired:
+            try:
+                await asyncio.to_thread(delete_workspace, flow_run.id, settings)
+            except OSError:
+                logger.exception("Could not delete expired workspace %s", flow_run.id)
+                continue
+            flow_run.workspace_status = "expired"
+            flow_run.workspace_archive_key = None
+        await session.commit()
+    return len(expired)
 
 
 async def load_and_execute(
@@ -333,6 +401,7 @@ async def process_message(
         )
         started = time.perf_counter()
         claim: RunLeaseClaim | None = None
+        should_finalize_workspace = False
         try:
             claim = await claim_run(
                 run_id,
@@ -349,6 +418,8 @@ async def process_message(
                 )
                 await queue.acknowledge(message.message_id)
                 return
+            await activate_workspace(run_id)
+            should_finalize_workspace = True
             logger.info(
                 "Executing workflow run %s",
                 run_id,
@@ -477,6 +548,8 @@ async def process_message(
             )
             if not failed:
                 return
+        if should_finalize_workspace:
+            await persist_workspace_archive(run_id)
         await queue.acknowledge(message.message_id)
 
 
@@ -505,6 +578,7 @@ async def run_worker() -> None:
         loop.add_signal_handler(name, stop.set)
     logger.info("Workflow worker %s started", consumer)
     next_reclaim = 0.0
+    next_workspace_cleanup = 0.0
     reconnect_delay = 1.0
     try:
         while not stop.is_set():
@@ -512,6 +586,12 @@ async def run_worker() -> None:
                 await queue.ensure_group()
                 record_worker_heartbeat()
                 now = loop.time()
+                if now >= next_workspace_cleanup:
+                    try:
+                        await cleanup_expired_workspaces()
+                    except Exception:  # Cleanup must not stop workflow processing.
+                        logger.exception("Workspace cleanup iteration failed")
+                    next_workspace_cleanup = now + 60
                 messages: list[RunQueueMessage] = []
                 if now >= next_reclaim:
                     messages = await queue.reclaim(

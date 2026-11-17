@@ -18,6 +18,7 @@ from runtime.container_process import (
     run_container_process,
 )
 from runtime.execution_context import current_execution_context
+from runtime.workspace import NODE_ID_PATTERN, WorkspaceSettings, prepare_node
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("agentflow.agent-container")
@@ -46,6 +47,8 @@ TELEMETRY_ENV = (
     "AGENTFLOW_RUN_ID",
     "AGENTFLOW_NODE_ID",
     "AGENTFLOW_AGENT_JOB_ID",
+    "AGENTFLOW_WORKSPACE",
+    "AGENTFLOW_NODE_WORKSPACE",
 )
 
 RUNTIME_CONTROL_ENV = (
@@ -238,6 +241,7 @@ def build_agent_docker_command(
     settings: AgentContainerSettings,
     container_name: str,
     execution_labels: dict[str, str] | None = None,
+    workspace_volume: str | None = None,
 ) -> list[str]:
     """Build argv without embedding credentials or user-controlled input."""
     command = [
@@ -273,6 +277,22 @@ def build_agent_docker_command(
     ]
     for name, value in sorted((execution_labels or {}).items()):
         command.extend(("--label", f"io.agentflow.{name}={value}"))
+    if workspace_volume and execution_labels:
+        run_id = uuid.UUID(execution_labels["run-id"])
+        node_id = execution_labels.get("node-id")
+        if not node_id or not NODE_ID_PATTERN.fullmatch(node_id):
+            raise ValueError("Workspace mount requires an Agent node id")
+        command.extend(
+            (
+                "--mount",
+                (
+                    f"type=volume,src={workspace_volume},dst=/workspace,"
+                    f"volume-subpath=runs/{run_id}"
+                ),
+                "--workdir",
+                f"/workspace/nodes/{node_id}",
+            )
+        )
     command.extend(("--add-host", "host.docker.internal:host-gateway"))
     for name in PASSTHROUGH_ENV:
         command.extend(("--env", name))
@@ -332,6 +352,7 @@ class AgentContainerExecutor:
         )
         execution = current_execution_context()
         execution_labels = None
+        workspace_settings = None
         if execution is not None:
             execution_labels = {
                 "run-id": str(execution.run_id),
@@ -339,8 +360,16 @@ class AgentContainerExecutor:
             }
             if execution.node_id:
                 execution_labels["node-id"] = execution.node_id
+                if os.getenv("WORKSPACE_ROOT"):
+                    workspace_settings = WorkspaceSettings.from_env()
+                    prepare_node(
+                        execution.run_id, execution.node_id, workspace_settings
+                    )
         command = build_agent_docker_command(
-            self.settings, container_name, execution_labels
+            self.settings,
+            container_name,
+            execution_labels,
+            workspace_settings.volume if workspace_settings else None,
         )
         environment = dict(os.environ)
         # Model credentials must come from the workflow/provider selection for
@@ -355,6 +384,11 @@ class AgentContainerExecutor:
             environment["AGENTFLOW_RUN_ID"] = str(execution.run_id)
             if execution.node_id:
                 environment["AGENTFLOW_NODE_ID"] = execution.node_id
+                if workspace_settings:
+                    environment["AGENTFLOW_WORKSPACE"] = "/workspace"
+                    environment["AGENTFLOW_NODE_WORKSPACE"] = (
+                        f"/workspace/nodes/{execution.node_id}"
+                    )
         carrier: dict[str, str] = {}
         inject(carrier)
         if traceparent := carrier.get("traceparent"):

@@ -1,10 +1,11 @@
 """Database projections owned by the AgentFlow control plane."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -98,6 +99,16 @@ class FlowRun(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     input: Mapped[dict] = mapped_column(JSONB, default=dict)
     output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    workspace_status: Mapped[str] = mapped_column(String(32), default="none")
+    workspace_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    workspace_file_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    workspace_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    workspace_archive_key: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
+    workspace_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -124,6 +135,14 @@ class FlowRun(Base):
     def session_id(self) -> str:
         """Stable Langfuse session identifier for this workflow run."""
         return str(self.id)
+
+    @property
+    def workspace_downloadable(self) -> bool:
+        return (
+            self.workspace_status == "ready"
+            and self.workspace_expires_at is not None
+            and self.workspace_expires_at > datetime.now(UTC)
+        )
 
 
 class RunExecutionLease(Base):

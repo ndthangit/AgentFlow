@@ -76,6 +76,13 @@ function isCurrentDraftPublished(workflow: Workflow, version: WorkflowVersion) {
     === canonicalJson(comparableGraph(version.graph));
 }
 
+function formatBytes(value: number | null) {
+  if (value === null) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("workflows");
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -828,6 +835,32 @@ export function App() {
                         <div className="run-session">
                           <span><strong>Langfuse session ID</strong><code>{run.session_id}</code></span>
                           <button type="button" onClick={() => void perform(() => copySessionId(run.session_id))}>Copy</button>
+                        </div>
+                        <div className={`run-workspace ${run.workspace_status}`}>
+                          <span>
+                            <strong>Workspace files</strong>
+                            <small>
+                              {run.workspace_status === "active" && "Preparing archive…"}
+                              {run.workspace_status === "ready" && (run.workspace_downloadable
+                                ? `${run.workspace_file_count ?? 0} files · ${formatBytes(run.workspace_size_bytes)}`
+                                : "Archive has expired")}
+                              {run.workspace_status === "none" && "No files were created"}
+                              {run.workspace_status === "failed" && "Archive could not be created"}
+                              {run.workspace_status === "expired" && "Archive has expired"}
+                            </small>
+                          </span>
+                          {run.workspace_downloadable && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void perform(async () => {
+                                await api.downloadRunWorkspace(run.id);
+                                setMessage("Workspace download started");
+                              })}
+                            >
+                              Download workspace
+                            </button>
+                          )}
                         </div>
                         <div className="run-io-summary">
                           <div><strong>Workflow input</strong><pre>{JSON.stringify(run.input, null, 2)}</pre></div>

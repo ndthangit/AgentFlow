@@ -23,6 +23,12 @@ export type FlowRun = {
   status: string;
   input: Record<string, unknown>;
   output: Record<string, unknown> | null;
+  workspace_status: "none" | "active" | "ready" | "failed" | "expired";
+  workspace_size_bytes: number | null;
+  workspace_file_count: number | null;
+  workspace_sha256: string | null;
+  workspace_expires_at: string | null;
+  workspace_downloadable: boolean;
   created_at: string;
   updated_at: string;
 };
